@@ -72,8 +72,11 @@ impl Config {
                     .parse()?,
             },
             cache: CacheConfig {
-                url: env::var("DRAGONFLY_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
-                max_pool_size: env::var("DRAGONFLY_POOL_MAX_SIZE").ok().map(|v| v.parse().unwrap_or(10)),
+                url: env::var("DRAGONFLY_URL")
+                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+                max_pool_size: env::var("DRAGONFLY_POOL_MAX_SIZE")
+                    .ok()
+                    .map(|v| v.parse().unwrap_or(10)),
             },
         };
 

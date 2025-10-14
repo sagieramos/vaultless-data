@@ -1,9 +1,6 @@
 pub mod health;
 
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{Router, routing::get};
 
 use crate::state::AppState;
 
@@ -14,6 +11,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health::health_check))
         .route("/ready", get(health::readiness_check))
         .route("/live", get(health::liveness_check))
+        .route("/check_cache", get(health::check_cache_handler))
         // TODO: Add authenticated API routes here
         // .nest("/api/v1", api_routes())
         .with_state(state)

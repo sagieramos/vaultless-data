@@ -1,6 +1,12 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
+use deadpool_redis::{
+    Pool as RedisPool,
+    redis::{AsyncCommands, cmd},
+};
 use serde::Serialize;
 use sqlx::PgPool;
+
+use tokio::time::{Duration, timeout};
 
 use crate::state::AppState;
 
@@ -14,9 +20,14 @@ pub struct HealthResponse {
 #[derive(Serialize)]
 pub struct DatabaseHealth {
     pub connected: bool,
-    pub pool_size: u32,
+    pub pool_size: usize,
 }
-
+#[derive(Serialize)]
+pub struct CacheHealth {
+    pub connected: bool,
+    pub pool_size: usize,
+    pub available: usize,
+}
 /// Health check endpoint
 /// GET /health
 pub async fn health_check(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
@@ -41,16 +52,54 @@ pub async fn health_check(State(state): State<AppState>) -> (StatusCode, Json<He
     (status, Json(response))
 }
 
+/// New Axum handler for the /check_cache route
+/// GET /check_cache
+pub async fn check_cache_handler(State(state): State<AppState>) -> (StatusCode, Json<CacheHealth>) {
+    let cache_health = check_cache(&state.cache).await;
+
+    let status = if cache_health.connected {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (status, Json(cache_health))
+}
+
+/// Check DragonflyDB (Redis) connectivity
+async fn check_cache(pool: &RedisPool) -> CacheHealth {
+    // Avoid waiting too long for a pool connection
+    let connected = match timeout(Duration::from_millis(200), pool.get()).await {
+        Ok(Ok(mut conn)) => {
+            match timeout(
+                Duration::from_millis(200),
+                cmd("PING").query_async::<String>(&mut conn),
+            )
+            .await
+            {
+                Ok(Ok(pong)) => pong == "PONG",
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+
+    let status = pool.status();
+
+    CacheHealth {
+        connected,
+        pool_size: status.size,
+        available: status.available,
+    }
+}
+
 /// Check database connectivity
 async fn check_database(pool: &PgPool) -> DatabaseHealth {
-    let connected = sqlx::query("SELECT 1")
-        .fetch_one(pool)
-        .await
-        .is_ok();
+    let connected = sqlx::query("SELECT 1").fetch_one(pool).await.is_ok();
 
     DatabaseHealth {
         connected,
-        pool_size: pool.size(),
+        pool_size: pool.size() as usize,
     }
 }
 

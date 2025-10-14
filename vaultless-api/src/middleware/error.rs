@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde_json::json;
 use vaultless_core::VaultlessError;
@@ -82,8 +82,9 @@ impl IntoResponse for ApiError {
 /// Convert VaultlessError to ApiError
 impl From<VaultlessError> for ApiError {
     fn from(err: VaultlessError) -> Self {
-        let status = StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        
+        let status =
+            StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
         let message = if err.is_client_error() {
             err.to_string()
         } else {
@@ -108,11 +109,9 @@ impl From<anyhow::Error> for ApiError {
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
         tracing::error!("Database error: {:?}", err);
-        
+
         match err {
-            sqlx::Error::RowNotFound => {
-                Self::not_found("Resource not found")
-            }
+            sqlx::Error::RowNotFound => Self::not_found("Resource not found"),
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
                 Self::conflict("Resource already exists")
             }

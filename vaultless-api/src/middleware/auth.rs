@@ -1,6 +1,6 @@
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     middleware::Next,
     response::Response,
 };
@@ -33,10 +33,7 @@ pub async fn extract_api_key(headers: &HeaderMap) -> Result<String, ApiError> {
 }
 
 /// Validate API key exists and is active
-pub async fn validate_api_key(
-    state: &AppState,
-    api_key: &str,
-) -> Result<ApiKey, ApiError> {
+pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey, ApiError> {
     // Hash the API key
     let key_hash = vaultless_core::hash_content(api_key.as_bytes());
 
@@ -50,12 +47,8 @@ pub async fn validate_api_key(
 
     // Validate key is usable
     api_key_record.validate().map_err(|e| match e {
-        VaultlessError::ApiKeyInactive => {
-            ApiError::forbidden("API key is inactive")
-        }
-        VaultlessError::ApiKeyExpired => {
-            ApiError::unauthorized("API key has expired")
-        }
+        VaultlessError::ApiKeyInactive => ApiError::forbidden("API key is inactive"),
+        VaultlessError::ApiKeyExpired => ApiError::unauthorized("API key has expired"),
         _ => ApiError::from(e),
     })?;
 
@@ -89,7 +82,10 @@ mod tests {
     #[test]
     fn test_extract_api_key_bearer() {
         let mut headers = HeaderMap::new();
-        headers.insert("Authorization", HeaderValue::from_static("Bearer test_key_123"));
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_static("Bearer test_key_123"),
+        );
 
         match tokio_test::block_on(extract_api_key(&headers)) {
             Ok(s) => assert_eq!(s, "test_key_123"),

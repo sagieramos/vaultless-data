@@ -1,12 +1,5 @@
-use axum::{
-    body::Body,
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
+use axum::{extract::Request, middleware::Next, response::Response};
 use std::time::Instant;
-use tracing::Span;
 
 /// Request logging middleware
 pub async fn log_request(request: Request, next: Next) -> Response {

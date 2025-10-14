@@ -1,6 +1,6 @@
+use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
 use std::sync::Arc;
-use deadpool_redis::Pool as RedisPool;
 
 use crate::config::Config;
 
