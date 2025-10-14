@@ -1,0 +1,131 @@
+use serde::Deserialize;
+use std::env;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    pub server: ServerConfig,
+    pub database: DatabaseConfig,
+    pub security: SecurityConfig,
+    pub rate_limit: RateLimitConfig,
+    pub cache: CacheConfig, // <-- Added cache
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub log_level: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DatabaseConfig {
+    pub url: String,
+    pub max_connections: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecurityConfig {
+    pub api_key_salt: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitConfig {
+    pub requests_per_minute: u32,
+}
+
+/// New struct for Dragonfly/Redis cache
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheConfig {
+    /// Redis / Dragonfly URL
+    pub url: String,
+    /// Max pool size
+    pub max_pool_size: Option<usize>,
+}
+
+impl Config {
+    /// Load configuration from environment variables
+    pub fn from_env() -> anyhow::Result<Self> {
+        dotenvy::dotenv().ok(); // Load .env file if it exists
+
+        let config = Config {
+            server: ServerConfig {
+                host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+                port: env::var("PORT")
+                    .unwrap_or_else(|_| "8080".to_string())
+                    .parse()?,
+                log_level: env::var("RUST_LOG")
+                    .unwrap_or_else(|_| "info,vaultless_api=debug".to_string()),
+            },
+            database: DatabaseConfig {
+                url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+                max_connections: env::var("DATABASE_MAX_CONNECTIONS")
+                    .unwrap_or_else(|_| "10".to_string())
+                    .parse()?,
+            },
+            security: SecurityConfig {
+                api_key_salt: env::var("API_KEY_SALT")
+                    .unwrap_or_else(|_| "default-salt-change-in-production".to_string()),
+            },
+            rate_limit: RateLimitConfig {
+                requests_per_minute: env::var("RATE_LIMIT_PER_MINUTE")
+                    .unwrap_or_else(|_| "60".to_string())
+                    .parse()?,
+            },
+            cache: CacheConfig {
+                url: env::var("DRAGONFLY_URL")
+                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+                max_pool_size: env::var("DRAGONFLY_POOL_MAX_SIZE")
+                    .ok()
+                    .map(|v| v.parse().unwrap_or(10)),
+            },
+        };
+
+        // Validate critical config
+        if config.database.url.is_empty() {
+            anyhow::bail!("DATABASE_URL cannot be empty");
+        }
+
+        if config.security.api_key_salt == "default-salt-change-in-production" {
+            tracing::warn!("⚠️  Using default API_KEY_SALT - change this in production!");
+        }
+
+        Ok(config)
+    }
+
+    /// Get server bind address
+    pub fn bind_address(&self) -> String {
+        format!("{}:{}", self.server.host, self.server.port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bind_address() {
+        let config = Config {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+                log_level: "info".to_string(),
+            },
+            database: DatabaseConfig {
+                url: "postgres://localhost".to_string(),
+                max_connections: 5,
+            },
+            security: SecurityConfig {
+                api_key_salt: "test-salt".to_string(),
+            },
+            rate_limit: RateLimitConfig {
+                requests_per_minute: 100,
+            },
+            cache: CacheConfig {
+                url: "redis://127.0.0.1:6379".to_string(),
+                max_pool_size: Some(10),
+            },
+        };
+
+        assert_eq!(config.bind_address(), "127.0.0.1:3000");
+    }
+}
