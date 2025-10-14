@@ -1,0 +1,25 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # every Monday
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🧰 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🦀 Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 📦 Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 🔒 Cargo audit
+        run: |
+          cargo install cargo-audit
+          cargo audit

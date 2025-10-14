@@ -25,9 +25,9 @@ impl SubscriptionTier {
     /// Get default message retention in seconds
     pub fn default_retention_seconds(&self) -> i32 {
         match self {
-            Self::Free => 604_800,      // 7 days
-            Self::Starter => 2_592_000,  // 30 days
-            Self::Pro => 7_776_000,      // 90 days
+            Self::Free => 604_800,          // 7 days
+            Self::Starter => 2_592_000,     // 30 days
+            Self::Pro => 7_776_000,         // 90 days
             Self::Enterprise => 31_536_000, // 365 days
         }
     }
@@ -46,9 +46,9 @@ impl SubscriptionTier {
     pub fn monthly_price_cents(&self) -> Option<i32> {
         match self {
             Self::Free => None,
-            Self::Starter => Some(2_900),     // $29
-            Self::Pro => Some(14_900),        // $149
-            Self::Enterprise => None,         // Custom pricing
+            Self::Starter => Some(2_900), // $29
+            Self::Pro => Some(14_900),    // $149
+            Self::Enterprise => None,     // Custom pricing
         }
     }
 }

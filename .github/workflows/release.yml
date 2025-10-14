@@ -1,0 +1,23 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 🧱 Build release binary (API)
+        run: cargo build -p vaultless-api --release
+
+      - name: 📦 Upload to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/release/vaultless-api

@@ -1,3 +1,4 @@
+pub mod crypto;
 pub mod error;
 pub mod models;
 pub mod types;
@@ -10,6 +11,12 @@ pub use types::SubscriptionTier;
 pub use models::{
     ApiKey, CreateApiKey, CreateMessage, CreateProof, Message, MessageMetadata, MessageProof,
     ProofVerificationResult, UsageMetric, UsageSummary, VerifyProofRequest,
+};
+
+// Re-export crypto functions
+pub use crypto::{
+    EncryptedData, SignedData, decrypt, encrypt, generate_encryption_key, generate_signing_keypair,
+    hash_content, sign_data, verify_hash, verify_signature,
 };
 
 // Version info
