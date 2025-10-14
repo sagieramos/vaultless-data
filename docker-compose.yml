@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -18,5 +16,24 @@ services:
       timeout: 5s
       retries: 5
 
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    container_name: vaultless-dragonfly
+    ports:
+      - "6379:6379"
+    command: >
+      --bind 0.0.0.0
+      --logtostderr
+      --dir /data
+    volumes:
+      - dragonfly_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
+  dragonfly_data:
