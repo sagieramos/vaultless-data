@@ -205,11 +205,10 @@ impl Message {
         }
 
         // Check access count
-        if let Some(max_count) = self.max_access_count {
-            if self.access_count >= max_count {
+        if let Some(max_count) = self.max_access_count
+            && self.access_count >= max_count {
                 return Err(VaultlessError::MessageAccessLimitReached);
             }
-        }
 
         Ok(())
     }

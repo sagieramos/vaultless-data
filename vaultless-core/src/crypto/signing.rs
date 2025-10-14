@@ -217,8 +217,8 @@ mod tests {
     #[test]
     fn test_invalid_signature_length() {
         let data = b"Data";
-        let short_sig = BASE64.encode(&[0u8; 32]); // Too short
-        let valid_key = BASE64.encode(&[0u8; PUBLIC_KEY_SIZE]);
+        let short_sig = BASE64.encode([0u8; 32]); // Too short
+        let valid_key = BASE64.encode([0u8; PUBLIC_KEY_SIZE]);
         
         let result = verify_signature(data, &short_sig, &valid_key);
         assert!(result.is_err());

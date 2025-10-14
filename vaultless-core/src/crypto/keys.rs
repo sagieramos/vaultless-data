@@ -35,7 +35,7 @@ pub fn generate_signing_keypair() -> Result<SigningKeypair> {
     let verifying_key = signing_key.verifying_key();
 
     Ok(SigningKeypair {
-        private_key: BASE64_STANDARD.encode(&signing_key.to_bytes()),
+        private_key: BASE64_STANDARD.encode(signing_key.to_bytes()),
         public_key: BASE64_STANDARD.encode(verifying_key.as_ref()),
     })
 }
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_decode_invalid_key_size() {
-        let short_key = BASE64.encode(&[0u8; 16]); // Too short
+        let short_key = BASE64.encode([0u8; 16]); // Too short
         let result = decode_encryption_key(&short_key);
 
         assert!(result.is_err());

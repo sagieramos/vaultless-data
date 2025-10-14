@@ -1,3 +1,4 @@
+
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
@@ -73,7 +74,7 @@ let nonce = Nonce::from(nonce);
 
     // Encode to base64
     let ciphertext = BASE64.encode(&ciphertext_bytes);
-    let nonce_b64 = BASE64.encode(&nonce_bytes);
+    let nonce_b64 = BASE64.encode(nonce_bytes);
 
     Ok(EncryptedData {
         ciphertext,

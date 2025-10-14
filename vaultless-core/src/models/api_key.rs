@@ -143,11 +143,10 @@ impl ApiKey {
             return Err(VaultlessError::ApiKeyInactive);
         }
 
-        if let Some(expires_at) = self.expires_at {
-            if expires_at < Utc::now() {
+        if let Some(expires_at) = self.expires_at
+            && expires_at < Utc::now() {
                 return Err(VaultlessError::ApiKeyExpired);
             }
-        }
 
         Ok(())
     }

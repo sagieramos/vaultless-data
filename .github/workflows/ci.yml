@@ -1,51 +1,51 @@
 name: Vaultless CI
 
 on:
-    push:
-        branches: [main]
-    pull_request:
-        branches: [main]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-    build-test:
-        name: 🦀 Build & Test (All Crates)
-        runs-on: ubuntu-latest
+  build-test:
+    name: 🦀 Build & Test (All Crates)
+    runs-on: ubuntu-latest
 
-        services:
-            postgres:
-                image: postgres:15
-                ports:
-                    - 5432:5432
-                env:
-                    POSTGRES_USER: postgres
-                    POSTGRES_PASSWORD: postgres
-                    POSTGRES_DB: vaultless_test
-                options: >-
-                    --health-cmd "pg_isready -U postgres"
-                    --health-interval 10s
-                    --health-timeout 5s
-                    --health-retries 5
+    services:
+      postgres:
+        image: postgres:15
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: vaultless_test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
-        steps:
-            - name: 🧰 Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: 🧰 Checkout code
+        uses: actions/checkout@v4
 
-            - name: 🦀 Install Rust (stable)
-              uses: dtolnay/rust-toolchain@stable
+      - name: 🦀 Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
 
-            - name: 📦 Cache Cargo dependencies
-              uses: Swatinem/rust-cache@v2
+      - name: 📦 Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
 
-            - name: 🔧 Build all crates
-              run: cargo build --workspace --verbose
+      - name: 🔧 Build all crates
+        run: cargo build --workspace --verbose
 
-            - name: 🧪 Run all tests
-              env:
-                  DATABASE_URL: postgres://postgres:postgres@localhost:5432/vaultless_test
-              run: cargo test --workspace --verbose
+      - name: 🧪 Run all tests
+        env:
+          DATABASE_URL: postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@localhost:5432/vaultless_test
+        run: cargo test --workspace --verbose
 
-            - name: 🧹 Clippy (Lint)
-              run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: 🧹 Clippy (Lint)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-            - name: 📏 Format check
-              run: cargo fmt --all -- --check
+      - name: 📏 Format check
+        run: cargo fmt --all -- --check
