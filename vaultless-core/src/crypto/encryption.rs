@@ -1,4 +1,3 @@
-
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
@@ -58,11 +57,10 @@ pub fn encrypt(plaintext: &[u8], key: &mut [u8]) -> Result<EncryptedData> {
         .map_err(|e| VaultlessError::Encryption(format!("Failed to generate nonce: {}", e)))?;
 
     let nonce: [u8; NONCE_SIZE] = nonce_bytes
-    .as_slice()
-    .try_into()
-    .map_err(|_| VaultlessError::Encryption("Nonce length mismatch".to_string()))?;
-let nonce = Nonce::from(nonce);
-
+        .as_slice()
+        .try_into()
+        .map_err(|_| VaultlessError::Encryption("Nonce length mismatch".to_string()))?;
+    let nonce = Nonce::from(nonce);
 
     // Encrypt
     let ciphertext_bytes = cipher

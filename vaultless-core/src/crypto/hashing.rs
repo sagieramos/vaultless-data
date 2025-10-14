@@ -1,7 +1,7 @@
+use crate::error::{Result, VaultlessError};
+use base64::Engine;
 use hex;
 use sha2::{Digest, Sha256};
-use base64::Engine;
-use crate::error::{Result, VaultlessError};
 
 /// SHA-256 hash size (32 bytes = 64 hex characters)
 pub const HASH_SIZE: usize = 32;
@@ -91,13 +91,12 @@ pub fn hash_combined(parts: &[&[u8]]) -> String {
 /// - Prevents length-extension attacks (unlike plain SHA-256)
 /// - Key should be at least 32 bytes
 pub fn hmac_sha256(data: &[u8], key: &[u8]) -> String {
-    use sha2::Sha256;
     use hmac::{Hmac, Mac};
-    
+    use sha2::Sha256;
+
     type HmacSha256 = Hmac<Sha256>;
-    
-    let mut mac = HmacSha256::new_from_slice(key)
-        .expect("HMAC can take key of any size");
+
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
     mac.update(data);
     let result = mac.finalize();
     hex::encode(result.into_bytes())
@@ -106,11 +105,11 @@ pub fn hmac_sha256(data: &[u8], key: &[u8]) -> String {
 /// Verify HMAC-SHA256
 pub fn verify_hmac(data: &[u8], key: &[u8], expected_hmac: &str) -> Result<()> {
     let actual_hmac = hmac_sha256(data, key);
-    
+
     if actual_hmac != expected_hmac {
         return Err(VaultlessError::InvalidProof);
     }
-    
+
     Ok(())
 }
 
@@ -181,7 +180,7 @@ mod tests {
         let part2 = b"World";
 
         let combined_hash = hash_combined(&[part1, part2]);
-        
+
         // Should be same as hashing concatenated data
         let mut concatenated = Vec::new();
         concatenated.extend_from_slice(part1);
@@ -197,7 +196,7 @@ mod tests {
         let key = b"secret_key_12345";
 
         let hmac = hmac_sha256(data, key);
-        
+
         // HMAC-SHA256 also produces 64 hex characters
         assert_eq!(hmac.len(), 64);
     }
@@ -230,7 +229,7 @@ mod tests {
         // Test with a known SHA-256 hash
         let data = b"";
         let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        
+
         let hash = hash_content(data);
         assert_eq!(hash, expected);
     }

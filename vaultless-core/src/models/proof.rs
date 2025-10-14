@@ -24,16 +24,16 @@ pub struct MessageProof {
 #[derive(Debug, Clone, Validate, Deserialize)]
 pub struct CreateProof {
     pub message_id: Uuid,
-    
+
     #[validate(length(equal = 64))] // SHA-256 hex = 64 chars
     pub content_hash: String,
-    
+
     #[validate(length(min = 1))]
     pub signature: String,
-    
+
     #[validate(length(min = 1))]
     pub public_key: String,
-    
+
     pub algorithm: Option<String>,
     pub hash_algorithm: Option<String>,
     pub proof_metadata: Option<serde_json::Value>,
@@ -58,7 +58,8 @@ pub struct ProofVerificationResult {
 impl MessageProof {
     /// Create a new proof
     pub async fn create(pool: &PgPool, input: CreateProof) -> Result<Self> {
-        input.validate()
+        input
+            .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         // Verify message exists
@@ -194,7 +195,10 @@ impl MessageProof {
     }
 
     /// Get verification statistics for a message
-    pub async fn get_verification_stats(pool: &PgPool, message_id: Uuid) -> Result<VerificationStats> {
+    pub async fn get_verification_stats(
+        pool: &PgPool,
+        message_id: Uuid,
+    ) -> Result<VerificationStats> {
         let stats = sqlx::query_as::<_, VerificationStats>(
             r#"
             SELECT 

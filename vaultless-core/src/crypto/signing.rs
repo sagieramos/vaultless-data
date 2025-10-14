@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ed25519::Signature;
 use ring_compat::signature::ed25519::{SigningKey, VerifyingKey};
 use ring_compat::signature::{Signer, Verifier};
@@ -45,7 +45,8 @@ pub fn sign_data(data: &[u8], private_key: &[u8; PRIVATE_KEY_SIZE]) -> Result<Si
     let signing_key = SigningKey::from_bytes(private_key);
 
     // Sign the data
-    let signature = signing_key.try_sign(data)
+    let signature = signing_key
+        .try_sign(data)
         .map_err(|e| VaultlessError::Validation(format!("Signing failed: {}", e)))?;
 
     // Get public key
@@ -101,12 +102,14 @@ pub fn verify_signature(data: &[u8], signature: &str, public_key: &str) -> Resul
     }
 
     // Create signature array
-    let sig_array: [u8; SIGNATURE_SIZE] = signature_bytes.try_into()
+    let sig_array: [u8; SIGNATURE_SIZE] = signature_bytes
+        .try_into()
         .map_err(|_| VaultlessError::Validation("Signature length mismatch".to_string()))?;
     let signature = Signature::from_bytes(&sig_array);
 
     // Create public key array
-    let pub_array: [u8; PUBLIC_KEY_SIZE] = public_key_bytes.try_into()
+    let pub_array: [u8; PUBLIC_KEY_SIZE] = public_key_bytes
+        .try_into()
         .map_err(|_| VaultlessError::Validation("Public key length mismatch".to_string()))?;
 
     // Create verifying key
@@ -219,7 +222,7 @@ mod tests {
         let data = b"Data";
         let short_sig = BASE64.encode([0u8; 32]); // Too short
         let valid_key = BASE64.encode([0u8; PUBLIC_KEY_SIZE]);
-        
+
         let result = verify_signature(data, &short_sig, &valid_key);
         assert!(result.is_err());
     }

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc, Duration, Datelike, Timelike};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
@@ -41,7 +41,11 @@ impl UsageMetric {
         size_bytes: i64,
     ) -> Result<()> {
         let now = Utc::now();
-        let period_start = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap().and_utc();
+        let period_start = now
+            .date_naive()
+            .and_hms_opt(now.hour(), 0, 0)
+            .unwrap()
+            .and_utc();
         let period_end = period_start + Duration::hours(1);
 
         sqlx::query(
@@ -68,12 +72,13 @@ impl UsageMetric {
     }
 
     /// Record message received
-    pub async fn record_message_received(
-        pool: &PgPool,
-        api_key_id: Uuid,
-    ) -> Result<()> {
+    pub async fn record_message_received(pool: &PgPool, api_key_id: Uuid) -> Result<()> {
         let now = Utc::now();
-        let period_start = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap().and_utc();
+        let period_start = now
+            .date_naive()
+            .and_hms_opt(now.hour(), 0, 0)
+            .unwrap()
+            .and_utc();
         let period_end = period_start + Duration::hours(1);
 
         sqlx::query(
@@ -97,12 +102,13 @@ impl UsageMetric {
     }
 
     /// Record proof verification
-    pub async fn record_proof_verified(
-        pool: &PgPool,
-        api_key_id: Uuid,
-    ) -> Result<()> {
+    pub async fn record_proof_verified(pool: &PgPool, api_key_id: Uuid) -> Result<()> {
         let now = Utc::now();
-        let period_start = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap().and_utc();
+        let period_start = now
+            .date_naive()
+            .and_hms_opt(now.hour(), 0, 0)
+            .unwrap()
+            .and_utc();
         let period_end = period_start + Duration::hours(1);
 
         sqlx::query(
@@ -126,12 +132,13 @@ impl UsageMetric {
     }
 
     /// Record rate limit hit
-    pub async fn record_rate_limit_hit(
-        pool: &PgPool,
-        api_key_id: Uuid,
-    ) -> Result<()> {
+    pub async fn record_rate_limit_hit(pool: &PgPool, api_key_id: Uuid) -> Result<()> {
         let now = Utc::now();
-        let period_start = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap().and_utc();
+        let period_start = now
+            .date_naive()
+            .and_hms_opt(now.hour(), 0, 0)
+            .unwrap()
+            .and_utc();
         let period_end = period_start + Duration::hours(1);
 
         sqlx::query(
@@ -189,18 +196,16 @@ impl UsageMetric {
     }
 
     /// Get current month's usage for an API key
-    pub async fn get_current_month_usage(
-        pool: &PgPool,
-        api_key_id: Uuid,
-    ) -> Result<UsageSummary> {
+    pub async fn get_current_month_usage(pool: &PgPool, api_key_id: Uuid) -> Result<UsageSummary> {
         let now = Utc::now();
-        let month_start = now.date_naive()
+        let month_start = now
+            .date_naive()
             .with_day(1)
             .unwrap()
             .and_hms_opt(0, 0, 0)
             .unwrap()
             .and_utc();
-        
+
         Self::get_summary(pool, api_key_id, month_start, now).await
     }
 
@@ -237,13 +242,14 @@ impl UsageMetric {
         cost_per_verification_cents: f64,
     ) -> Result<i32> {
         let summary = Self::get_current_month_usage(pool, api_key_id).await?;
-        
+
         let message_cost = summary.total_messages_sent as f64 * cost_per_message_cents;
-        let storage_cost = (summary.total_bytes_stored as f64 / 1_073_741_824.0) * cost_per_gb_cents;
+        let storage_cost =
+            (summary.total_bytes_stored as f64 / 1_073_741_824.0) * cost_per_gb_cents;
         let verification_cost = summary.total_proofs_verified as f64 * cost_per_verification_cents;
-        
+
         let total_cost_cents = (message_cost + storage_cost + verification_cost) as i32;
-        
+
         Ok(total_cost_cents)
     }
 }

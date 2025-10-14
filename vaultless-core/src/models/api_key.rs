@@ -30,21 +30,21 @@ pub struct ApiKey {
 pub struct CreateApiKey {
     #[validate(length(min = 64, max = 64))]
     pub key_hash: String,
-    
+
     #[validate(length(min = 1, max = 8))]
     pub key_prefix: String,
-    
+
     pub tier: SubscriptionTier,
-    
+
     #[validate(email)]
     pub owner_email: Option<String>,
-    
+
     #[validate(length(min = 1, max = 255))]
     pub owner_name: Option<String>,
-    
+
     #[validate(length(min = 1, max = 255))]
     pub organization: Option<String>,
-    
+
     pub expires_at: Option<DateTime<Utc>>,
     pub notes: Option<String>,
 }
@@ -52,7 +52,8 @@ pub struct CreateApiKey {
 impl ApiKey {
     /// Create a new API key
     pub async fn create(pool: &PgPool, input: CreateApiKey) -> Result<Self> {
-        input.validate()
+        input
+            .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         let tier = input.tier;
@@ -144,19 +145,16 @@ impl ApiKey {
         }
 
         if let Some(expires_at) = self.expires_at
-            && expires_at < Utc::now() {
-                return Err(VaultlessError::ApiKeyExpired);
-            }
+            && expires_at < Utc::now()
+        {
+            return Err(VaultlessError::ApiKeyExpired);
+        }
 
         Ok(())
     }
 
     /// Update tier and associated limits
-    pub async fn update_tier(
-        pool: &PgPool,
-        id: Uuid,
-        new_tier: SubscriptionTier,
-    ) -> Result<Self> {
+    pub async fn update_tier(pool: &PgPool, id: Uuid, new_tier: SubscriptionTier) -> Result<Self> {
         let api_key = sqlx::query_as::<_, Self>(
             r#"
             UPDATE api_keys 

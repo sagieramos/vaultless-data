@@ -29,23 +29,23 @@ pub struct Message {
 pub struct CreateMessage {
     #[validate(length(min = 1, max = 255))]
     pub recipient_id: String,
-    
+
     #[validate(length(min = 1))]
     pub ciphertext: String,
-    
+
     #[validate(length(min = 1, max = 32))]
     pub nonce: String,
-    
+
     pub content_type: Option<String>,
-    
+
     #[validate(range(min = 1))]
     pub content_size_bytes: i32,
-    
+
     pub api_key_id: Uuid,
-    
+
     /// TTL in seconds (optional, will use API key's default retention)
     pub ttl_seconds: Option<i32>,
-    
+
     pub max_access_count: Option<i32>,
     pub require_proof_verification: bool,
 }
@@ -65,7 +65,8 @@ pub struct MessageMetadata {
 impl Message {
     /// Create a new message
     pub async fn create(pool: &PgPool, input: CreateMessage) -> Result<Self> {
-        input.validate()
+        input
+            .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         // Get API key to determine retention
@@ -81,7 +82,9 @@ impl Message {
         }
 
         // Calculate expiration
-        let ttl_seconds = input.ttl_seconds.unwrap_or(api_key.message_retention_seconds);
+        let ttl_seconds = input
+            .ttl_seconds
+            .unwrap_or(api_key.message_retention_seconds);
         let expires_at = Utc::now() + Duration::seconds(ttl_seconds as i64);
 
         let message = sqlx::query_as::<_, Self>(
@@ -98,7 +101,12 @@ impl Message {
         .bind(&input.recipient_id)
         .bind(&input.ciphertext)
         .bind(&input.nonce)
-        .bind(input.content_type.as_deref().unwrap_or("application/octet-stream"))
+        .bind(
+            input
+                .content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream"),
+        )
         .bind(input.content_size_bytes)
         .bind(input.api_key_id)
         .bind(expires_at)
@@ -206,9 +214,10 @@ impl Message {
 
         // Check access count
         if let Some(max_count) = self.max_access_count
-            && self.access_count >= max_count {
-                return Err(VaultlessError::MessageAccessLimitReached);
-            }
+            && self.access_count >= max_count
+        {
+            return Err(VaultlessError::MessageAccessLimitReached);
+        }
 
         Ok(())
     }
