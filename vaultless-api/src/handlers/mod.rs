@@ -1,3 +1,3 @@
-// Message handlers will go here
-// pub mod messages;
-// pub mod proofs;
+pub mod messages;
+
+pub use messages::{get_message_metadata, receive_messages, send_message};

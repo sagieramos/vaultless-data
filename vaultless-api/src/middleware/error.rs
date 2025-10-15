@@ -1,3 +1,5 @@
+use std::fmt;
+
 use axum::{
     Json,
     http::StatusCode,
@@ -7,6 +9,7 @@ use serde_json::json;
 use vaultless_core::VaultlessError;
 
 /// API error response wrapper
+#[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
@@ -76,6 +79,15 @@ impl IntoResponse for ApiError {
         };
 
         (self.status, Json(body)).into_response()
+    }
+}
+
+// <-- ADDED: Implement Display for use with {} -->
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // This formats the error for logging/display purposes.
+        // It includes the status code and the primary message.
+        write!(f, "[HTTP {}] {}", self.status.as_u16(), self.message)
     }
 }
 

@@ -2,6 +2,7 @@ mod config;
 mod handlers;
 mod middleware;
 mod routes;
+mod services;
 mod state;
 
 use anyhow::Context;
