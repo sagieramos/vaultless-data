@@ -1,14 +1,35 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Type;
 
 /// Subscription tier enum matching the database
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[sqlx(type_name = "subscription_tier", rename_all = "lowercase")]
+#[serde(rename_all = "PascalCase")]
 pub enum SubscriptionTier {
     Free,
     Starter,
     Pro,
     Enterprise,
+}
+
+// Custom deserializer for case-insensitive parsing
+impl<'de> Deserialize<'de> for SubscriptionTier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "free" => Ok(SubscriptionTier::Free),
+            "starter" => Ok(SubscriptionTier::Starter),
+            "pro" => Ok(SubscriptionTier::Pro),
+            "enterprise" => Ok(SubscriptionTier::Enterprise),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &["free", "starter", "pro", "enterprise"],
+            )),
+        }
+    }
 }
 
 impl SubscriptionTier {

@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode};
 use deadpool_redis::{
     Pool as RedisPool,
-    redis::{AsyncCommands, cmd},
+    redis::cmd,
 };
 use serde::Serialize;
 use sqlx::PgPool;

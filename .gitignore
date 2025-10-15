@@ -31,5 +31,6 @@ logs/
 # Test coverage
 tarpaulin-report.html
 cobertura.xml
+_test*
 
 heaptrack.vaultless-api.517194*

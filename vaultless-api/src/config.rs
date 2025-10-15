@@ -7,7 +7,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
     pub rate_limit: RateLimitConfig,
-    pub cache: CacheConfig, // <-- Added cache
+    pub cache: CacheConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +40,8 @@ pub struct CacheConfig {
     pub url: String,
     /// Max pool size
     pub max_pool_size: Option<usize>,
+    /// Default TTL in seconds
+    pub default_ttl: u64,
 }
 
 impl Config {
@@ -72,11 +74,13 @@ impl Config {
                     .parse()?,
             },
             cache: CacheConfig {
-                url: env::var("DRAGONFLY_URL")
-                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
-                max_pool_size: env::var("DRAGONFLY_POOL_MAX_SIZE")
+                url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+                max_pool_size: env::var("CACHE_MAX_POOL_SIZE")
                     .ok()
-                    .map(|v| v.parse().unwrap_or(10)),
+                    .and_then(|s| s.parse().ok()),
+                default_ttl: env::var("CACHE_DEFAULT_TTL")
+                    .unwrap_or_else(|_| "3600".to_string())
+                    .parse()?,
             },
         };
 
@@ -123,6 +127,7 @@ mod tests {
             cache: CacheConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 max_pool_size: Some(10),
+                default_ttl: 3600,
             },
         };
 

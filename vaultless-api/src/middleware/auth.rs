@@ -37,6 +37,8 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
     // Hash the API key
     let key_hash = vaultless_core::hash_content(api_key.as_bytes());
 
+    tracing::debug!("Validating API key. Calculated hash: {}", key_hash);
+
     // Look up in database
     let api_key_record = ApiKey::find_by_hash(&state.db, &key_hash)
         .await

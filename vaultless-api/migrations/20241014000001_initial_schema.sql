@@ -1,5 +1,6 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "timescaledb";
 
 -- ============================================================================
 -- API KEYS TABLE
@@ -131,7 +132,7 @@ CREATE INDEX idx_proofs_verified ON message_proofs(verified_at);
 -- Track API usage for billing and analytics
 -- ============================================================================
 CREATE TABLE usage_metrics (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID DEFAULT uuid_generate_v4(),
     api_key_id UUID NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
     
     -- Time window
@@ -139,9 +140,9 @@ CREATE TABLE usage_metrics (
     period_end TIMESTAMPTZ NOT NULL,
     
     -- Usage counters
-    messages_sent INTEGER NOT NULL DEFAULT 0,
-    messages_received INTEGER NOT NULL DEFAULT 0,
-    proofs_verified INTEGER NOT NULL DEFAULT 0,
+    messages_sent BIGINT NOT NULL DEFAULT 0,
+    messages_received BIGINT NOT NULL DEFAULT 0,
+    proofs_verified BIGINT NOT NULL DEFAULT 0,
     total_bytes_stored BIGINT NOT NULL DEFAULT 0,
     
     -- Rate limiting violations
@@ -161,6 +162,11 @@ CREATE TABLE usage_metrics (
     )
 );
 
+CREATE INDEX idx_usage_metrics_id ON usage_metrics(id);
+
+-- Turn it into a hypertable (time-series)
+SELECT create_hypertable('usage_metrics', 'period_start', if_not_exists => TRUE);
+
 CREATE INDEX idx_usage_api_key ON usage_metrics(api_key_id);
 CREATE INDEX idx_usage_period ON usage_metrics(period_start, period_end);
 CREATE INDEX idx_usage_created ON usage_metrics(created_at DESC);
@@ -168,6 +174,82 @@ CREATE INDEX idx_usage_created ON usage_metrics(created_at DESC);
 -- Unique constraint: one metric record per API key per period
 -- We enforce this at application level with period_start rounded to the hour
 CREATE UNIQUE INDEX idx_usage_unique_period ON usage_metrics(api_key_id, period_start);
+
+-- ============================================================================
+-- TIMESCALE: compression + retention
+-- ============================================================================
+-- Enable compression and segment by api_key_id (reduces storage for older data)
+ALTER TABLE usage_metrics SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'api_key_id'
+);
+
+-- Automatically compress chunks older than 7 days
+SELECT add_compression_policy('usage_metrics', INTERVAL '7 days');
+
+-- Automatically drop (retention) raw hourly data older than 90 days
+SELECT add_retention_policy('usage_metrics', INTERVAL '90 days');
+
+-- ============================================================================
+-- CONTINUOUS AGGREGATE: daily summary (fast daily rollups)
+-- ============================================================================
+
+-- Create continuous aggregate (materialized view) for daily totals
+CREATE MATERIALIZED VIEW IF NOT EXISTS usage_metrics_daily
+WITH (timescaledb.continuous) AS
+SELECT
+    api_key_id,
+    time_bucket(INTERVAL '1 day', period_start) AS day,
+    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
+FROM usage_metrics
+GROUP BY api_key_id, time_bucket(INTERVAL '1 day', period_start)
+WITH NO DATA;
+
+
+-- Schedule automatic refresh policy (keeps data up-to-date; adjust offsets as desired)
+SELECT add_continuous_aggregate_policy(
+    'usage_metrics_daily',
+    start_offset => INTERVAL '2 day',
+    end_offset   => INTERVAL '0 hour',
+    schedule_interval => INTERVAL '1 hour'
+);
+
+-- 🚀 Composite index for high-performance time-series lookups per API key
+CREATE INDEX IF NOT EXISTS idx_usage_metrics_daily_api_key_day ON usage_metrics_daily (api_key_id, day DESC);
+
+-- ============================================================================
+-- CONTINUOUS AGGREGATE: weekly summary (long-term rollups)
+-- ============================================================================
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS usage_metrics_weekly
+WITH (timescaledb.continuous) AS
+SELECT
+    api_key_id,
+    time_bucket(INTERVAL '7 days', period_start) AS week_start,
+    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
+FROM usage_metrics
+GROUP BY api_key_id, time_bucket(INTERVAL '7 days', period_start)
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy(
+    'usage_metrics_weekly',
+    start_offset => INTERVAL '180 days',
+    end_offset   => INTERVAL '1 day',
+    schedule_interval => INTERVAL '1 day'
+);
+
+-- Useful indexes on the weekly aggregate
+CREATE INDEX IF NOT EXISTS idx_usage_metrics_weekly_api_key_week_start ON usage_metrics_weekly (api_key_id, week_start DESC);
 
 -- ============================================================================
 -- HELPER FUNCTIONS

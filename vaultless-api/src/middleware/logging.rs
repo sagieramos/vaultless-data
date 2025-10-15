@@ -48,21 +48,21 @@ pub async fn log_request(request: Request, next: Next) -> Response {
         tracing::Level::ERROR => {
             tracing::error!(
                 status = %status,
-                duration_micros_s = %duration.as_micros(),
+                duration_ms = %duration.as_millis(),
                 "Request completed"
             );
         }
         tracing::Level::WARN => {
             tracing::warn!(
                 status = %status,
-                duration_micros_s = %duration.as_micros(),
+                duration_ms = %duration.as_millis(),
                 "Request completed"
             );
         }
         _ => {
             tracing::info!(
                 status = %status,
-                duration_micros_s = %duration.as_micros(),
+                duration_ms = %duration.as_millis(),
                 "Request completed"
             );
         }
