@@ -9,8 +9,9 @@ pub use types::SubscriptionTier;
 
 // Re-export models
 pub use models::{
-    ApiKey, CreateApiKey, CreateMessage, CreateProof, Message, MessageMetadata, MessageProof,
-    ProofVerificationResult, UsageMetric, UsageSummary, VerifyProofRequest,
+    ApiKey, CreateApiKey, CreateMessage, CreateProof, DailyUsageSummary, Message, MessageMetadata,
+    MessageProof, MonthlyTotal, ProofVerificationResult, UsageMetric, UsageSummary, UsageTrends,
+    VerifyProofRequest, WeeklyUsageSummary,
 };
 
 // Re-export crypto functions

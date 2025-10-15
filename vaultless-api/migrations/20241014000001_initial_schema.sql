@@ -140,9 +140,9 @@ CREATE TABLE usage_metrics (
     period_end TIMESTAMPTZ NOT NULL,
     
     -- Usage counters
-    messages_sent INTEGER NOT NULL DEFAULT 0,
-    messages_received INTEGER NOT NULL DEFAULT 0,
-    proofs_verified INTEGER NOT NULL DEFAULT 0,
+    messages_sent BIGINT NOT NULL DEFAULT 0,
+    messages_received BIGINT NOT NULL DEFAULT 0,
+    proofs_verified BIGINT NOT NULL DEFAULT 0,
     total_bytes_stored BIGINT NOT NULL DEFAULT 0,
     
     -- Rate limiting violations
@@ -200,15 +200,16 @@ WITH (timescaledb.continuous) AS
 SELECT
     api_key_id,
     time_bucket(INTERVAL '1 day', period_start) AS day,
-    SUM(messages_sent)        AS total_messages_sent,
-    SUM(messages_received)    AS total_messages_received,
-    SUM(proofs_verified)      AS total_proofs_verified,
-    SUM(total_bytes_stored)   AS total_bytes_stored,
-    SUM(rate_limit_hits)      AS total_rate_limit_hits,
-    SUM(COALESCE(estimated_cost_cents, 0)) AS total_estimated_cost_cents
+    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
 FROM usage_metrics
 GROUP BY api_key_id, time_bucket(INTERVAL '1 day', period_start)
 WITH NO DATA;
+
 
 -- Schedule automatic refresh policy (keeps data up-to-date; adjust offsets as desired)
 SELECT add_continuous_aggregate_policy(
@@ -230,12 +231,12 @@ WITH (timescaledb.continuous) AS
 SELECT
     api_key_id,
     time_bucket(INTERVAL '7 days', period_start) AS week_start,
-    SUM(messages_sent)        AS total_messages_sent,
-    SUM(messages_received)    AS total_messages_received,
-    SUM(proofs_verified)      AS total_proofs_verified,
-    SUM(total_bytes_stored)   AS total_bytes_stored,
-    SUM(rate_limit_hits)      AS total_rate_limit_hits,
-    SUM(COALESCE(estimated_cost_cents, 0)) AS total_estimated_cost_cents
+    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
 FROM usage_metrics
 GROUP BY api_key_id, time_bucket(INTERVAL '7 days', period_start)
 WITH NO DATA;

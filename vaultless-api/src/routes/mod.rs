@@ -27,7 +27,8 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
         .route("/admin/keys/create", post(handlers::create_api_key))
         .route("/admin/keys", get(handlers::list_api_keys));
 
-    let message_routes = Router::new()
+    // Authenticated routes
+    let authenticated_routes = Router::new()
         // Message endpoints
         .route("/messages/send", post(handlers::send_message))
         .route("/messages/{recipient_id}", get(handlers::receive_messages))
@@ -35,9 +36,13 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
             "/messages/{message_id}/metadata",
             get(handlers::get_message_metadata),
         )
+        // Analytics endpoints (TimescaleDB powered!)
+        .route("/analytics/dashboard", get(handlers::get_dashboard))
+        .route("/analytics/daily", get(handlers::get_daily_usage))
+        .route("/analytics/weekly", get(handlers::get_weekly_usage))
         // Apply authentication middleware to all routes
         .layer(from_fn_with_state(state, require_auth));
 
     // Combine routes
-    admin_routes.merge(message_routes)
+    admin_routes.merge(authenticated_routes)
 }
