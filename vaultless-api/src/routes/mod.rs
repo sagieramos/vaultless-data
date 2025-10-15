@@ -22,7 +22,12 @@ pub fn create_router(state: AppState) -> Router {
 
 /// API v1 routes (all require authentication)
 fn api_v1_routes(state: AppState) -> Router<AppState> {
-    Router::new()
+    // Admin routes (NO AUTH - temporary for development)
+    let admin_routes = Router::new()
+        .route("/admin/keys/create", post(handlers::create_api_key))
+        .route("/admin/keys", get(handlers::list_api_keys));
+
+    let message_routes = Router::new()
         // Message endpoints
         .route("/messages/send", post(handlers::send_message))
         .route("/messages/{recipient_id}", get(handlers::receive_messages))
@@ -31,5 +36,8 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
             get(handlers::get_message_metadata),
         )
         // Apply authentication middleware to all routes
-        .layer(from_fn_with_state(state, require_auth))
+        .layer(from_fn_with_state(state, require_auth));
+
+    // Combine routes
+    admin_routes.merge(message_routes)
 }

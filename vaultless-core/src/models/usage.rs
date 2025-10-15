@@ -55,7 +55,7 @@ impl UsageMetric {
                 messages_sent, total_bytes_stored
             )
             VALUES ($1, $2, $3, 1, $4)
-            ON CONFLICT (api_key_id, date_trunc('hour', period_start))
+            ON CONFLICT (api_key_id, period_start)
             DO UPDATE SET
                 messages_sent = usage_metrics.messages_sent + 1,
                 total_bytes_stored = usage_metrics.total_bytes_stored + $4
