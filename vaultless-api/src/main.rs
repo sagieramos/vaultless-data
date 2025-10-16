@@ -52,14 +52,6 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("✅ Database connected");
 
-    // Connect to DragonflyDB (Redis-compatible)
-    tracing::info!("📦 Connecting to DragonflyDB...");
-    let redis_cfg = RedisConfig::from_url(&config.cache.url);
-    let cache_pool = redis_cfg
-        .create_pool(Some(Runtime::Tokio1))
-        .context("Failed to connect to DragonflyDB")?;
-    tracing::info!("✅ DragonflyDB connected");
-
     // Run migrations
     tracing::info!("🔄 Running database migrations...");
     sqlx::migrate!("./migrations")
@@ -69,8 +61,34 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("✅ Migrations completed");
 
+    // Connect to Dragonfly/Redis cache
+    tracing::info!("💾 Connecting to cache...");
+    let cache_config = RedisConfig::from_url(&config.cache.url);
+    let cache_pool = cache_config
+        .create_pool(Some(Runtime::Tokio1))
+        .context("Failed to create cache pool")?;
+
+    // Test cache connection
+    {
+        use deadpool_redis::redis::AsyncCommands;
+        let mut conn = cache_pool
+            .get()
+            .await
+            .context("Failed to get cache connection")?;
+        let _: () = conn
+            .set("health_check", "ok")
+            .await
+            .context("Cache health check failed")?;
+        let _: String = conn
+            .get("health_check")
+            .await
+            .context("Cache health check failed")?;
+    }
+
+    tracing::info!("✅ Cache connected");
+
     // Create application state
-    let state = AppState::new(db_pool, cache_pool, config.clone());
+    let state = AppState::new(db_pool, cache_pool.clone(), config.clone());
 
     // Build router with middleware
     let app = create_router(state)
@@ -83,9 +101,9 @@ async fn main() -> anyhow::Result<()> {
         .layer(CompressionLayer::new())
         .layer(axum_middleware::from_fn(add_request_id))
         .layer(axum_middleware::from_fn(log_request))
-        .layer(TraceLayer::new_for_http());
-
-    // Start server
+        .layer(TraceLayer::new_for_http())
+        // Add ConnectInfo for IP address extraction
+        .into_make_service_with_connect_info::<std::net::SocketAddr>();
     let bind_addr = config.bind_address();
     tracing::info!("🌐 Server listening on http://{}", bind_addr);
     tracing::info!("📍 Health check: http://{}/health", bind_addr);

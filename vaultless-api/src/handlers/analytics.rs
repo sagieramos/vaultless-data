@@ -1,5 +1,6 @@
 use axum::{Extension, Json, extract::State};
-use serde::Serialize;
+use chrono::DateTime;
+use serde::{Deserialize, Serialize};
 use vaultless_core::{ApiKey, DailyUsageSummary, MonthlyTotal, WeeklyUsageSummary};
 
 use crate::{middleware::error::ApiError, state::AppState};
@@ -20,6 +21,28 @@ pub struct QuotaUsage {
     pub percentage_used: f64,
     pub remaining: i64,
     pub will_exceed: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RealtimeUsageQuery {
+    pub since: DateTime<chrono::Utc>,
+}
+
+/// Get real-time usage statistics
+/// GET /api/v1/analytics/realtime?since=2025-01-01T00:00:00Z
+pub async fn get_realtime_usage_stats(
+    State(state): State<AppState>,
+    Extension(api_key): Extension<ApiKey>,
+    axum::extract::Query(params): axum::extract::Query<RealtimeUsageQuery>,
+) -> Result<Json<MonthlyTotal>, ApiError> {
+    let stats = vaultless_core::models::usage_timescale::get_realtime_usage(
+        &state.db,
+        api_key.id,
+        params.since,
+    )
+    .await
+    .map_err(ApiError::from)?;
+    Ok(Json(stats))
 }
 
 /// Get analytics dashboard

@@ -1,0 +1,474 @@
+{
+  "info": {
+    "name": "Vaultless Data API",
+    "description": "End-to-end encrypted message relay with zero-knowledge architecture",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "vaultless-data"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "value",
+        "value": "{{api_key}}",
+        "type": "string"
+      },
+      {
+        "key": "key",
+        "value": "Authorization",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "api_key",
+      "value": "vlt_your_api_key_here",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Status",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "Readiness Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/ready",
+              "host": ["{{base_url}}"],
+              "path": ["ready"]
+            }
+          }
+        },
+        {
+          "name": "Liveness Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/live",
+              "host": ["{{base_url}}"],
+              "path": ["live"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Create API Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('api_key', response.api_key);",
+                  "    console.log('API Key saved:', response.api_key);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner_email\": \"test@example.com\",\n  \"owner_name\": \"Test User\",\n  \"organization\": \"Test Org\",\n  \"tier\": \"pro\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/keys/create",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "keys", "create"]
+            }
+          }
+        },
+        {
+          "name": "List API Keys",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/keys",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "keys"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "item": [
+        {
+          "name": "Send Message",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('message_id', response.message_id);",
+                  "    pm.collectionVariables.set('recipient_id', response.recipient_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient_id\": \"user@example.com\",\n  \"ciphertext\": \"YmFzZTY0X2VuY3J5cHRlZF9kYXRhX2hlcmU=\",\n  \"nonce\": \"cmFuZG9tX25vbmNlXzEyMzQ1\",\n  \"content_type\": \"text/plain\",\n  \"content_size_bytes\": 1024,\n  \"ttl_seconds\": 86400\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/messages/send",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "messages", "send"]
+            }
+          }
+        },
+        {
+          "name": "Receive Messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/messages/:recipient_id",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "messages", ":recipient_id"],
+              "variable": [
+                {
+                  "key": "recipient_id",
+                  "value": "user@example.com"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Message Metadata",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/messages/:message_id/metadata",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "messages", ":message_id", "metadata"],
+              "variable": [
+                {
+                  "key": "message_id",
+                  "value": "{{message_id}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Self-Destructing Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient_id\": \"secure@example.com\",\n  \"ciphertext\": \"c2VjcmV0X2RhdGFfaGVyZQ==\",\n  \"nonce\": \"c2VjdXJlX25vbmNl\",\n  \"content_size_bytes\": 512,\n  \"max_access_count\": 3,\n  \"ttl_seconds\": 3600\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/messages/send",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "messages", "send"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Get Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/dashboard",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "dashboard"]
+            }
+          }
+        },
+        {
+          "name": "Get Daily Usage",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/daily?start=2025-09-15&end=2025-10-15",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "daily"],
+              "query": [
+                {
+                  "key": "start",
+                  "value": "2025-09-15"
+                },
+                {
+                  "key": "end",
+                  "value": "2025-10-15"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Weekly Usage",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/weekly?start=2025-09-01&end=2025-10-15",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "weekly"],
+              "query": [
+                {
+                  "key": "start",
+                  "value": "2025-09-01"
+                },
+                {
+                  "key": "end",
+                  "value": "2025-10-15"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Last 30 Days",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/daily?start={{$isoTimestamp}}&end={{$isoTimestamp}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "daily"],
+              "query": [
+                {
+                  "key": "start",
+                  "value": "{{$isoTimestamp}}",
+                  "description": "30 days ago"
+                },
+                {
+                  "key": "end",
+                  "value": "{{$isoTimestamp}}",
+                  "description": "Today"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Examples",
+      "item": [
+        {
+          "name": "Complete Flow - 1. Create Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('api_key', response.api_key);",
+                  "    pm.collectionVariables.set('key_tier', response.tier);",
+                  "    console.log('✅ Step 1: API Key created:', response.api_key);",
+                  "    console.log('Tier:', response.tier);",
+                  "    console.log('Monthly Quota:', response.monthly_quota);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"owner_email\": \"demo@example.com\",\n  \"owner_name\": \"Demo User\",\n  \"tier\": \"pro\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/keys/create",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "keys", "create"]
+            }
+          }
+        },
+        {
+          "name": "Complete Flow - 2. Send Message",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('demo_message_id', response.message_id);",
+                  "    pm.collectionVariables.set('demo_recipient', response.recipient_id);",
+                  "    console.log('✅ Step 2: Message sent successfully');",
+                  "    console.log('Message ID:', response.message_id);",
+                  "    console.log('Recipient:', response.recipient_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient_id\": \"demo@example.com\",\n  \"ciphertext\": \"SGVsbG8sIFZhdWx0bGVzcyBEYXRhIQ==\",\n  \"nonce\": \"ZGVtb19ub25jZV8xMjM=\",\n  \"content_type\": \"text/plain\",\n  \"content_size_bytes\": 21,\n  \"ttl_seconds\": 86400\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/messages/send",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "messages", "send"]
+            }
+          }
+        },
+        {
+          "name": "Complete Flow - 3. Receive Messages",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    console.log('✅ Step 3: Messages retrieved');",
+                  "    console.log('Total messages:', response.total_count);",
+                  "    if (response.messages.length > 0) {",
+                  "        console.log('First message ID:', response.messages[0].id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/messages/demo@example.com",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "messages", "demo@example.com"]
+            }
+          }
+        },
+        {
+          "name": "Complete Flow - 4. Check Analytics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    console.log('✅ Step 4: Analytics retrieved');",
+                  "    console.log('Messages sent:', response.current_month.total_messages_sent);",
+                  "    console.log('Quota used:', response.quota_usage.percentage_used + '%');",
+                  "    console.log('Trend:', response.trends.trend);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/analytics/dashboard",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "analytics", "dashboard"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

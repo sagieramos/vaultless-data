@@ -1,9 +1,14 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use validator::Validate;
 use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier};
 
-use crate::{middleware::error::ApiError, state::AppState};
+use crate::{middleware::error::ApiError, services::RateLimiter, state::AppState};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateApiKeyRequest {
@@ -111,4 +116,55 @@ pub struct ApiKeyInfo {
     pub is_active: bool,
     pub created_at: String,
     pub last_used_at: Option<String>,
+}
+
+/// Get rate limit status for an API key
+/// GET /api/v1/admin/keys/:key_id/rate-limit
+pub async fn get_rate_limit_status(
+    State(state): State<AppState>,
+    Path(key_id): Path<Uuid>,
+) -> Result<Json<RateLimitStatus>, ApiError> {
+    let api_key = ApiKey::find_by_id(&state.db, key_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    let rate_limiter = RateLimiter::new(state.cache.clone());
+
+    let usage = rate_limiter.get_current_usage(api_key.id).await?;
+    let violations = rate_limiter.get_violation_count(api_key.id).await?;
+
+    Ok(Json(RateLimitStatus {
+        api_key_id: api_key.id.to_string(),
+        rate_limit_per_minute: api_key.rate_limit_per_minute,
+        current_usage: usage.requests_in_window,
+        remaining: api_key.rate_limit_per_minute as i64 - usage.requests_in_window,
+        violations_24h: violations,
+        window_start: usage.window_start,
+        window_end: usage.window_end,
+    }))
+}
+
+/// Reset rate limit for an API key
+/// POST /api/v1/admin/keys/:key_id/rate-limit/reset
+pub async fn reset_rate_limit(
+    State(state): State<AppState>,
+    Path(key_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let rate_limiter = RateLimiter::new(state.cache.clone());
+    rate_limiter.reset_limit(key_id).await?;
+
+    tracing::info!(key_id = %key_id, "Rate limit reset");
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Serialize)]
+pub struct RateLimitStatus {
+    pub api_key_id: String,
+    pub rate_limit_per_minute: i32,
+    pub current_usage: i64,
+    pub remaining: i64,
+    pub violations_24h: i64,
+    pub window_start: u64,
+    pub window_end: u64,
 }
