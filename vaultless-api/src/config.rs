@@ -26,6 +26,7 @@ pub struct DatabaseConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     pub api_key_salt: String,
+    pub admin_api_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -33,10 +34,10 @@ pub struct RateLimitConfig {
     pub requests_per_minute: u32,
 }
 
-/// New struct for Dragonfly/Redis cache
+/// Dragonfly/Redis cache configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct CacheConfig {
-    /// Redis / Dragonfly URL
+    /// Redis/Dragonfly URL
     pub url: String,
     /// Max pool size
     pub max_pool_size: Option<usize>,
@@ -67,6 +68,7 @@ impl Config {
             security: SecurityConfig {
                 api_key_salt: env::var("API_KEY_SALT")
                     .unwrap_or_else(|_| "default-salt-change-in-production".to_string()),
+                admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
             },
             rate_limit: RateLimitConfig {
                 requests_per_minute: env::var("RATE_LIMIT_PER_MINUTE")
@@ -116,17 +118,18 @@ mod tests {
             },
             database: DatabaseConfig {
                 url: "postgres://localhost".to_string(),
-                max_connections: 5,
+                max_connections: 10,
             },
             security: SecurityConfig {
                 api_key_salt: "test-salt".to_string(),
+                admin_api_key: "test-admin".to_string(),
             },
             rate_limit: RateLimitConfig {
                 requests_per_minute: 100,
             },
             cache: CacheConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
-                max_pool_size: Some(10),
+                max_pool_size: Some(5),
                 default_ttl: 3600,
             },
         };

@@ -27,6 +27,7 @@ Thumbs.db
 # Logs
 *.log
 logs/
+*/*.log
 
 # Test coverage
 tarpaulin-report.html

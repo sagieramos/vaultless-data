@@ -1,5 +1,3 @@
--- Enable UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "timescaledb";
 
 -- ============================================================================
@@ -10,8 +8,13 @@ CREATE TYPE subscription_tier AS ENUM ('free', 'starter', 'pro', 'enterprise');
 
 CREATE TABLE api_keys (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    key_hash VARCHAR(64) NOT NULL UNIQUE, -- SHA-256 hash of the API key
-    key_prefix VARCHAR(8) NOT NULL, -- First 8 chars for identification (vlt_xxxxx...)
+    
+    -- Core link
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE, -- Owner of the API key
+    
+    -- API key data
+    key_hash VARCHAR(64) NOT NULL UNIQUE,               -- SHA-256 hash of the API key
+    key_prefix VARCHAR(8) NOT NULL,                    -- First 8 chars for identification (vlt_xxxxx...)
     
     -- Subscription & Billing
     tier subscription_tier NOT NULL DEFAULT 'free',
@@ -22,11 +25,13 @@ CREATE TABLE api_keys (
     owner_email VARCHAR(255),
     owner_name VARCHAR(255),
     organization VARCHAR(255),
+    description TEXT,                                   -- User-friendly description
+    scopes TEXT,                                        -- Space-separated OAuth scopes
     
     -- Status
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ, -- NULL = no expiration
+    expires_at TIMESTAMPTZ,                             -- NULL = no expiration
     last_used_at TIMESTAMPTZ,
     
     -- Rate limiting
@@ -35,11 +40,13 @@ CREATE TABLE api_keys (
     -- Notes
     notes TEXT,
     
-    -- Indexes
+    -- Constraints
     CONSTRAINT valid_quota CHECK (monthly_message_quota > 0),
     CONSTRAINT valid_retention CHECK (message_retention_seconds > 0)
 );
 
+-- Indexes
+CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX idx_api_keys_active ON api_keys(is_active) WHERE is_active = true;
 CREATE INDEX idx_api_keys_tier ON api_keys(tier);

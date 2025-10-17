@@ -206,6 +206,65 @@ impl ApiKey {
         Ok(())
     }
 
+    /// Update API key metadata (name, notes, etc.)
+    pub async fn update_metadata(
+        pool: &PgPool,
+        id: Uuid,
+        owner_name: Option<String>,
+        organization: Option<String>,
+        notes: Option<String>,
+    ) -> Result<Self> {
+        let api_key = sqlx::query_as::<_, Self>(
+            r#"
+            UPDATE api_keys 
+            SET 
+                owner_name = COALESCE($2, owner_name),
+                organization = COALESCE($3, organization),
+                notes = COALESCE($4, notes)
+            WHERE id = $1
+            RETURNING *
+            "#,
+        )
+        .bind(id)
+        .bind(owner_name)
+        .bind(organization)
+        .bind(notes)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(api_key)
+    }
+
+    /// Delete API key (soft delete by deactivating, or hard delete)
+    pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM api_keys WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Get API keys by owner email
+    pub async fn find_by_owner(pool: &PgPool, owner_email: &str) -> Result<Vec<Self>> {
+        let keys = sqlx::query_as::<_, Self>(
+            r#"
+            SELECT * FROM api_keys 
+            WHERE owner_email = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(owner_email)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(keys)
+    }
+
     /// Check if API key has exceeded quota
     pub async fn check_quota(pool: &PgPool, api_key_id: Uuid) -> Result<bool> {
         let count: i64 = sqlx::query_scalar(

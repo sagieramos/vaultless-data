@@ -203,7 +203,7 @@ pub async fn get_realtime_usage(
     api_key_id: Uuid,
     since: DateTime<Utc>,
 ) -> Result<MonthlyTotal> {
-    let stats = sqlx::query_as::<_, MonthlyTotal>(
+    let stats_opt = sqlx::query_as::<_, MonthlyTotal>(
         r#"
         SELECT 
             $1 as api_key_id,
@@ -221,8 +221,20 @@ pub async fn get_realtime_usage(
     )
     .bind(api_key_id)
     .bind(since)
-    .fetch_one(pool)
+    .fetch_optional(pool) // CHANGED: Fetch zero or one row
     .await?;
+
+    // If stats_opt is None (meaning no usage data was found at all),
+    // return a default MonthlyTotal object with all counts set to 0.
+    let stats = stats_opt.unwrap_or(MonthlyTotal {
+        api_key_id,
+        total_messages_sent: 0,
+        total_messages_received: 0,
+        total_proofs_verified: 0,
+        total_bytes_stored: 0,
+        total_rate_limit_hits: 0,
+        total_estimated_cost_cents: 0,
+    });
 
     Ok(stats)
 }
