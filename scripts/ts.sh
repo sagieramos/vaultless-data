@@ -2,7 +2,7 @@
 
 # Configuration
 URL="http://localhost:8080/api/v1/messages/send"
-API_KEY="vlt_bATyEhYa0PaFDop74GGeiQIH0PCp/N4Uv0AMol990Ok="
+API_KEY="vlt_e7uzLjITg9iMX5EKyKlOtmx3q8TMdYzmyft8B9yvKoE="
 DATA='{
   "recipient_id": "os@s",
   "ciphertext": "SGVsbG8sIFZhdWx0bGVzcyBEYXRhIQ==",
@@ -12,13 +12,12 @@ DATA='{
   "ttl_seconds": 86400
 }'
 
-
 # Output file
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_FILE="responses_$TIMESTAMP.log"
 > "$OUTPUT_FILE"  # clear file
 
-echo "🚀 Sending 100 requests to $URL"
+echo "🚀 Sending 2000 requests to $URL"
 echo "Logs will be saved to: $OUTPUT_FILE"
 echo "-------------------------------------"
 
@@ -38,14 +37,20 @@ for i in {1..2000}; do
   # Extract response body
   body=$(echo "$response" | sed '/HTTP_STATUS/d')
 
-  echo "Request $i → HTTP $status_code"
-  echo "HTTP $status_code" >> "$OUTPUT_FILE"
-  echo "Response body:" >> "$OUTPUT_FILE"
-  echo "$body" >> "$OUTPUT_FILE"
-  echo "" >> "$OUTPUT_FILE"
+  # Print to terminal
+  echo -n "#$i - $status_code"
+  echo "$body"
 
-  # Optional: slow down a bit to avoid rate limiting
-  sleep 0.001
+  # Write to log
+  {
+    echo "HTTP $status_code"
+    echo "Response body:"
+    echo "$body"
+    echo ""
+  } >> "$OUTPUT_FILE"
+
+  # Optional: slow down to avoid rate limiting
+  sleep 0.1
 done
 
 echo "-------------------------------------"
@@ -53,3 +58,4 @@ echo "✅ Test complete! Full responses saved in: $OUTPUT_FILE"
 echo
 echo "📊 Status code summary:"
 grep "HTTP " "$OUTPUT_FILE" | awk '{print $2}' | sort | uniq -c | sort -nr
+

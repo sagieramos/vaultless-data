@@ -31,6 +31,14 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
     let admin_routes = Router::new()
         .route("/admin/keys/create", post(handlers::create_api_key))
         .route("/admin/keys", get(handlers::list_api_keys))
+        .route(
+            "/admin/keys/{key_id}/rate-limit",
+            get(handlers::get_rate_limit_status),
+        )
+        .route(
+            "/admin/keys/{key_id}/rate-limit/reset",
+            post(handlers::reset_rate_limit),
+        )
         .layer(from_fn_with_state(state.clone(), rate_limit_by_ip));
 
     // Message routes (AUTH + RATE LIMIT)
@@ -50,16 +58,24 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
 
     // Analytics routes (AUTH + RATE LIMIT)
     let analytics_routes = Router::new()
-        .route(
-            "/analytics/realtime",
-            get(handlers::get_realtime_usage_stats),
-        )
         .route("/analytics/dashboard", get(handlers::get_dashboard))
         .route("/analytics/daily", get(handlers::get_daily_usage))
         .route("/analytics/weekly", get(handlers::get_weekly_usage))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_api_key))
         .layer(from_fn_with_state(state.clone(), require_auth));
 
+    // Rate limit monitoring routes (AUTH)
+    let rate_limit_routes = Router::new()
+        .route(
+            "/rate-limit/status",
+            get(handlers::get_my_rate_limit_status),
+        )
+        .route("/rate-limit/history", get(handlers::get_rate_limit_history))
+        .layer(from_fn_with_state(state.clone(), require_auth));
+
     // Combine routes
-    admin_routes.merge(message_routes).merge(analytics_routes)
+    admin_routes
+        .merge(message_routes)
+        .merge(analytics_routes)
+        .merge(rate_limit_routes)
 }

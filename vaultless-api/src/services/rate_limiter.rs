@@ -41,10 +41,10 @@ impl RateLimiter {
             .unwrap()
             .as_secs();
 
-        let window_start = now - window_secs;
+        let window_start = now.saturating_sub(window_secs);
         let cache_key = format!("ratelimit:{}", key);
 
-        // Use Lua script for atomic operations
+        // Improved Lua script with proper sliding window
         let lua_script = r#"
             local key = KEYS[1]
             local now = tonumber(ARGV[1])
@@ -52,22 +52,33 @@ impl RateLimiter {
             local limit = tonumber(ARGV[3])
             local window_secs = tonumber(ARGV[4])
             
-            -- Remove old entries outside the window
+            -- Remove ALL entries outside the current window
             redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
             
-            -- Count requests in current window
-            local count = redis.call('ZCARD', key)
+            -- Count current requests in the window
+            local current_count = redis.call('ZCARD', key)
             
-            if count < limit then
-                -- Add current request with timestamp as score
-                redis.call('ZADD', key, now, now)
-                -- Set expiration on the key
-                redis.call('EXPIRE', key, window_secs)
-                return {1, limit - count - 1}
+            -- Check if under limit
+            if current_count < limit then
+                -- Add current request with unique identifier (timestamp + random)
+                local unique_id = now .. ':' .. math.random(1000000)
+                redis.call('ZADD', key, now, unique_id)
+                
+                -- Set expiration to window duration + buffer
+                redis.call('EXPIRE', key, window_secs + 60)
+                
+                -- Return: allowed=1, remaining count
+                return {1, limit - current_count - 1, now + window_secs}
             else
-                -- Get the oldest request timestamp in window
+                -- Get the oldest request in window to calculate reset time
                 local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-                local reset_at = tonumber(oldest[2]) + window_secs
+                local reset_at = now + window_secs
+                
+                if #oldest > 0 then
+                    reset_at = tonumber(oldest[2]) + window_secs
+                end
+                
+                -- Return: allowed=0, remaining=0, reset_at
                 return {0, 0, reset_at}
             end
         "#;
@@ -86,22 +97,22 @@ impl RateLimiter {
             })?;
 
         let allowed = result[0] == 1;
-        let remaining = if allowed { result[1] } else { 0 };
-        let reset_at = if allowed {
-            now + window_secs
-        } else {
-            result
-                .get(2)
-                .copied()
-                .map(|v| v as u64)
-                .unwrap_or(now + window_secs)
-        };
+        let remaining = result[1];
+        let reset_at = result[2] as u64;
 
         let retry_after = if !allowed {
             Some(reset_at.saturating_sub(now))
         } else {
             None
         };
+
+        tracing::debug!(
+            key = %key,
+            allowed = allowed,
+            remaining = remaining,
+            limit = limit,
+            "Rate limit check"
+        );
 
         Ok(RateLimitResult {
             allowed,
