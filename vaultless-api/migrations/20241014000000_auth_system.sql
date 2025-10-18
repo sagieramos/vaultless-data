@@ -52,7 +52,6 @@ CREATE TABLE user_sessions (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     
     -- Session tokens
-    access_token VARCHAR(255) NOT NULL UNIQUE,
     access_token_hash VARCHAR(64) NOT NULL, -- SHA-256 for lookup
     
     -- OAuth-like fields
@@ -268,10 +267,12 @@ CREATE TRIGGER trigger_users_updated_at
 -- ============================================================================
 
 COMMENT ON TABLE users IS 'Core user identity and authentication';
-COMMENT ON TABLE user_sessions IS 'Short-lived access tokens (15-60 min)';
+COMMENT ON TABLE user_sessions IS 'Session audit trail - primary storage is Dragonfly/Redis';
+COMMENT ON COLUMN user_sessions.access_token_hash IS 'SHA-256 hash of access token for lookup';
 COMMENT ON TABLE refresh_tokens IS 'Long-lived refresh tokens (30-90 days) with rotation';
 COMMENT ON TABLE oauth_scopes IS 'OAuth 2.0 style permission scopes';
 COMMENT ON TABLE login_attempts IS 'Security audit trail for login attempts';
 
 COMMENT ON COLUMN refresh_tokens.token_family IS 'Detects token theft - if old token reused, revoke entire family';
 COMMENT ON COLUMN user_sessions.scope IS 'OAuth scopes for this session (space-separated)';
+

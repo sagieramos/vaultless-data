@@ -1,6 +1,8 @@
 pub mod admin;
 pub mod analytics;
 pub mod api_keys;
+pub mod auth;
+pub mod dto;
 pub mod messages;
 pub mod rate_limit_monitoring;
 
