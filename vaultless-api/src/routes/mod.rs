@@ -1,83 +1,97 @@
 pub mod health;
 
 use axum::{
+    routing::{delete, get, post},
     Router,
-    middleware::from_fn_with_state,
-    routing::{get, post},
 };
 
 use crate::{
-    handlers,
-    middleware::{
-        rate_limit_by_api_key, rate_limit_by_ip, rate_limit_endpoint, require_token_auth,
-    },
+    handlers::{analytics, api_keys, auth, messages, proofs},
+    middleware::{api_key_auth::require_client_api_key, token_auth::require_token_auth},
     state::AppState,
 };
 
-/// Build the main application router
-pub fn create_router(state: AppState) -> Router {
+/// Build the complete API router
+pub fn build_routes(state: AppState) -> Router {
     Router::new()
-        // Health check routes (with IP rate limiting)
+        // Health check (no auth required)
         .route("/health", get(health::health_check))
-        .route("/ready", get(health::readiness_check))
-        .route("/live", get(health::liveness_check))
-        .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
-        // API v1 routes (authenticated)
+        
+        // Auth routes (no auth required for most)
+        .nest("/auth", auth_routes(state.clone()))
+
+        // Dashboard routes (require token)
+        .nest("/dashboard", dashboard_routes(state.clone()))
+        
+        // Protected API routes (require API key OR token)
         .nest("/api/v1", api_v1_routes(state.clone()))
+        
         .with_state(state)
 }
 
-/// API v1 routes
+/// Authentication routes (public + protected)
+fn auth_routes(state: AppState) -> Router<AppState> {
+    Router::new()
+        // Public auth endpoints
+        .route("/register", post(auth::register))
+        .route("/login", post(auth::login))
+        .route("/refresh", post(auth::refresh_token))
+        .route("/verify-email", post(auth::verify_email))
+        .route("/request-password-reset", post(auth::request_password_reset))
+        .route("/reset-password", post(auth::reset_password))
+        
+        // Protected auth endpoints (require token)
+        .route("/me", get(auth::get_current_user))
+        .route("/logout", post(auth::logout))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            require_token_auth,
+        ))
+}
+
+fn dashboard_routes(state: AppState) -> Router<AppState> {
+    Router::new()
+        // API key management (for logged-in dashboard users)
+        .route("/keys", post(api_keys::create_api_key))
+        .route("/keys", get(api_keys::list_api_keys))
+        .route("/keys/{key_id}", get(api_keys::get_api_key))
+        .route("/keys/{key_id}", delete(api_keys::revoke_api_key))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            require_token_auth,
+        ))
+}
+
+
+/// API v1 routes (protected with API key)
 fn api_v1_routes(state: AppState) -> Router<AppState> {
-    // Admin routes (NO AUTH - temporary for development)
-    let admin_routes = Router::new()
-        .route("/admin/keys/create", post(handlers::create_api_key))
-        .route("/admin/keys", get(handlers::list_api_keys))
-        .route(
-            "/admin/keys/{key_id}/rate-limit",
-            get(handlers::get_rate_limit_status),
-        )
-        .route(
-            "/admin/keys/{key_id}/rate-limit/reset",
-            post(handlers::reset_rate_limit),
-        )
-        .layer(from_fn_with_state(state.clone(), rate_limit_by_ip));
-
-    // Message routes (AUTH + RATE LIMIT)
-    let message_routes = Router::new()
-        .route("/messages/send", post(handlers::send_message))
-        .route("/messages/{recipient_id}", get(handlers::receive_messages))
-        .route(
-            "/messages/{message_id}/metadata",
-            get(handlers::get_message_metadata),
-        )
-        // Apply endpoint-specific rate limiting first
-        .layer(from_fn_with_state(state.clone(), rate_limit_endpoint))
-        // Then apply global API key rate limiting
-        .layer(from_fn_with_state(state.clone(), rate_limit_by_api_key))
-        // Finally apply authentication
-        .layer(from_fn_with_state(state.clone(), require_token_auth));
-
-    // Analytics routes (AUTH + RATE LIMIT)
-    let analytics_routes = Router::new()
-        .route("/analytics/dashboard", get(handlers::get_dashboard))
-        .route("/analytics/daily", get(handlers::get_daily_usage))
-        .route("/analytics/weekly", get(handlers::get_weekly_usage))
-        .layer(from_fn_with_state(state.clone(), rate_limit_by_api_key))
-        .layer(from_fn_with_state(state.clone(), require_token_auth));
-
-    // Rate limit monitoring routes (AUTH)
-    let rate_limit_routes = Router::new()
-        .route(
-            "/rate-limit/status",
-            get(handlers::get_my_rate_limit_status),
-        )
-        .route("/rate-limit/history", get(handlers::get_rate_limit_history))
-        .layer(from_fn_with_state(state.clone(), require_token_auth));
-
-    // Combine routes
-    admin_routes
-        .merge(message_routes)
-        .merge(analytics_routes)
-        .merge(rate_limit_routes)
+    Router::new()
+        // Message operations
+        .route("/messages/send", post(messages::send_message))
+        .route("/messages/{recipient_id}", get(messages::receive_messages))
+        .route("/messages/{message_id}/metadata", get(messages::get_message_metadata))
+        
+        // Proof operations
+        .route("/messages/{message_id}/proof", post(proofs::create_proof))
+        .route("/messages/{message_id}/proof", get(proofs::get_message_proof))
+        .route("/messages/{message_id}/verify", post(proofs::verify_message_proof))
+        
+        // Public proof lookup (no auth required)
+        .route("/proofs/by-hash/{content_hash}", get(proofs::find_proofs_by_hash))
+        
+        // API key management
+        .route("/keys", post(api_keys::create_api_key))
+        .route("/keys", get(api_keys::list_api_keys))
+        .route("/keys/{key_id}", get(api_keys::get_api_key))
+        .route("/keys/{key_id}", delete(api_keys::revoke_api_key))
+        
+        // Analytics & Usage
+/*         .route("/analytics/usage", get(analytics::get_usage_stats))
+        .route("/analytics/messages", get(analytics::get_message_stats)) */
+        
+        // All v1 routes require API key authentication
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            require_client_api_key,
+        ))
 }

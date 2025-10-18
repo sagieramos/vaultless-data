@@ -1,27 +1,180 @@
 use axum::{
-    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
+    Extension, Json,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
-use vaultless_core::{ApiKey, SubscriptionTier};
+use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier, getrandom};
 
-use crate::{middleware::error::ApiError, state::AppState};
+use crate::{
+    middleware::error::ApiError,
+    services::token::SessionData,
+    state::AppState,
+};
+
+// ============================================================================
+// REQUEST/RESPONSE TYPES
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeyInfo {
+    pub id: String,
+    pub key_prefix: String,
+    pub tier: String,
+    pub owner_name: Option<String>,
+    pub organization: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub monthly_quota: i32,
+    pub rate_limit: i32,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct CreateApiKeyRequest {
+    #[validate(length(min = 1, max = 255))]
+    pub name: Option<String>,
+
+    #[validate(length(min = 1, max = 255))]
+    pub organization: Option<String>,
+
+    pub tier: Option<SubscriptionTier>,
+
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateApiKeyResponse {
+    pub api_key: String, // The actual key (only shown once!)
+    pub key_info: ApiKeyInfo,
+    pub warning: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateApiKeyRequest {
+    #[validate(length(min = 1, max = 255))]
+    pub owner_name: Option<String>,
+
+    #[validate(length(min = 1, max = 255))]
+    pub organization: Option<String>,
+
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpgradeRequest {
+    pub target_tier: SubscriptionTier,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpgradeResponse {
+    pub current_tier: String,
+    pub target_tier: String,
+    pub monthly_price: Option<i32>,
+    pub checkout_url: Option<String>,
+    pub requires_payment: bool,
+}
+
+// ============================================================================
+// HANDLERS
+// ============================================================================
+
+/// Create new API key
+/// POST /api/v1/keys
+pub async fn create_api_key(
+    State(state): State<AppState>,
+    session: SessionData,
+    Json(payload): Json<CreateApiKeyRequest>,
+) -> Result<(StatusCode, Json<CreateApiKeyResponse>), ApiError> {
+    // Validate input
+    payload
+        .validate()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    tracing::info!(
+        user_id = %session.user_id,
+        email = %session.email,
+        "Creating new API key"
+    );
+
+    // Generate API key (vlt_live_<random_bytes>)
+    let mut key_bytes = [0u8; 32];
+    
+    getrandom::fill(&mut key_bytes).map_err(|e| {
+        ApiError::internal_server_error(format!("Failed to generate API key: {}", e))
+    })?;
+
+    let key_suffix = URL_SAFE_NO_PAD.encode(key_bytes);
+    let api_key_string = format!("vlt_live_{}", key_suffix);
+
+    // Hash the key for storage
+    let key_hash = vaultless_core::crypto::hash_content(api_key_string.as_bytes());
+
+    // Key prefix for display (first 8 chars after vlt_live_)
+    let key_prefix = format!("vlt_live_{}", &key_suffix[..8]);
+
+    // Create API key in database
+    let tier = payload.tier.unwrap_or(SubscriptionTier::Free);
+
+    let api_key = ApiKey::create(
+        &state.db,
+        CreateApiKey {
+            key_hash: key_hash.clone(),
+            key_prefix: key_prefix.clone(),
+            tier,
+            owner_email: Some(session.email.clone()),
+            owner_name: payload.name.clone(),
+            organization: payload.organization.clone(),
+            expires_at: None, // No expiration by default
+            notes: payload.notes.clone(),
+        },
+    )
+    .await
+    .map_err(ApiError::from)?;
+
+    tracing::info!(
+        api_key_id = %api_key.id,
+        tier = ?tier,
+        "API key created successfully"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            api_key: api_key_string, // Show the actual key ONLY once
+            key_info: ApiKeyInfo {
+                id: api_key.id.to_string(),
+                key_prefix: api_key.key_prefix,
+                tier: api_key.tier.to_string(),
+                owner_name: api_key.owner_name,
+                organization: api_key.organization,
+                is_active: api_key.is_active,
+                created_at: api_key.created_at.to_rfc3339(),
+                last_used_at: None,
+                expires_at: api_key.expires_at.map(|d| d.to_rfc3339()),
+                monthly_quota: api_key.monthly_message_quota,
+                rate_limit: api_key.rate_limit_per_minute,
+                notes: api_key.notes,
+            },
+            warning: "⚠️ Save this API key now. You won't be able to see it again!".to_string(),
+        }),
+    ))
+}
 
 /// List all API keys for current user
 /// GET /api/v1/keys
-pub async fn list_my_keys(
+pub async fn list_api_keys(
     State(state): State<AppState>,
-    Extension(api_key): Extension<ApiKey>,
+    session: SessionData,
 ) -> Result<Json<Vec<ApiKeyInfo>>, ApiError> {
-    // Get all keys for this user's email
-    let owner_email = api_key
-        .owner_email
-        .ok_or_else(|| ApiError::bad_request("API key has no associated email"))?;
+    tracing::debug!(user_id = %session.user_id, "Listing API keys");
 
-    let keys = ApiKey::find_by_owner(&state.db, &owner_email)
+    let keys = ApiKey::find_by_owner(&state.db, &session.email)
         .await
         .map_err(ApiError::from)?;
 
@@ -48,9 +201,9 @@ pub async fn list_my_keys(
 
 /// Get specific API key details
 /// GET /api/v1/keys/:key_id
-pub async fn get_key_details(
+pub async fn get_api_key(
     State(state): State<AppState>,
-    Extension(current_key): Extension<ApiKey>,
+    session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<Json<ApiKeyInfo>, ApiError> {
     let key = ApiKey::find_by_id(&state.db, key_id)
@@ -58,7 +211,7 @@ pub async fn get_key_details(
         .map_err(ApiError::from)?;
 
     // Verify ownership
-    if key.owner_email != current_key.owner_email {
+    if key.owner_email.as_ref() != Some(&session.email) {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -80,9 +233,9 @@ pub async fn get_key_details(
 
 /// Update API key metadata
 /// PATCH /api/v1/keys/:key_id
-pub async fn update_key(
+pub async fn update_api_key(
     State(state): State<AppState>,
-    Extension(current_key): Extension<ApiKey>,
+    session: SessionData,
     Path(key_id): Path<Uuid>,
     Json(payload): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyInfo>, ApiError> {
@@ -95,7 +248,7 @@ pub async fn update_key(
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email != current_key.owner_email {
+    if key.owner_email.as_ref() != Some(&session.email) {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -109,6 +262,8 @@ pub async fn update_key(
     )
     .await
     .map_err(ApiError::from)?;
+
+    tracing::info!(key_id = %key_id, "API key metadata updated");
 
     Ok(Json(ApiKeyInfo {
         id: updated_key.id.to_string(),
@@ -126,11 +281,11 @@ pub async fn update_key(
     }))
 }
 
-/// Deactivate API key
-/// POST /api/v1/keys/:key_id/deactivate
-pub async fn deactivate_key(
+/// Revoke (delete) API key
+/// DELETE /api/v1/keys/:key_id
+pub async fn revoke_api_key(
     State(state): State<AppState>,
-    Extension(current_key): Extension<ApiKey>,
+    session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     // Verify ownership
@@ -138,15 +293,34 @@ pub async fn deactivate_key(
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email != current_key.owner_email {
+    if key.owner_email.as_ref() != Some(&session.email) {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
-    // Don't allow deactivating the current key
-    if key.id == current_key.id {
-        return Err(ApiError::bad_request(
-            "Cannot deactivate the key you're currently using",
-        ));
+    // Delete the key
+    ApiKey::delete(&state.db, key_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    tracing::warn!(key_id = %key_id, "API key revoked");
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deactivate API key (soft delete)
+/// POST /api/v1/keys/:key_id/deactivate
+pub async fn deactivate_api_key(
+    State(state): State<AppState>,
+    session: SessionData,
+    Path(key_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    // Verify ownership
+    let key = ApiKey::find_by_id(&state.db, key_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    if key.owner_email.as_ref() != Some(&session.email) {
+        return Err(ApiError::forbidden("You don't own this API key"));
     }
 
     ApiKey::deactivate(&state.db, key_id)
@@ -160,9 +334,9 @@ pub async fn deactivate_key(
 
 /// Reactivate API key
 /// POST /api/v1/keys/:key_id/reactivate
-pub async fn reactivate_key(
+pub async fn reactivate_api_key(
     State(state): State<AppState>,
-    Extension(current_key): Extension<ApiKey>,
+    session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     // Verify ownership
@@ -170,7 +344,7 @@ pub async fn reactivate_key(
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email != current_key.owner_email {
+    if key.owner_email.as_ref() != Some(&session.email) {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -183,43 +357,11 @@ pub async fn reactivate_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Delete API key
-/// DELETE /api/v1/keys/:key_id
-pub async fn delete_key(
-    State(state): State<AppState>,
-    Extension(current_key): Extension<ApiKey>,
-    Path(key_id): Path<Uuid>,
-) -> Result<StatusCode, ApiError> {
-    // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, key_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    if key.owner_email != current_key.owner_email {
-        return Err(ApiError::forbidden("You don't own this API key"));
-    }
-
-    // Don't allow deleting the current key
-    if key.id == current_key.id {
-        return Err(ApiError::bad_request(
-            "Cannot delete the key you're currently using",
-        ));
-    }
-
-    ApiKey::delete(&state.db, key_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    tracing::warn!(key_id = %key_id, "API key deleted");
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// Request tier upgrade (triggers Stripe flow)
 /// POST /api/v1/keys/:key_id/upgrade
-pub async fn request_upgrade(
+pub async fn upgrade_api_key(
     State(state): State<AppState>,
-    Extension(current_key): Extension<ApiKey>,
+    session: SessionData,
     Path(key_id): Path<Uuid>,
     Json(payload): Json<UpgradeRequest>,
 ) -> Result<Json<UpgradeResponse>, ApiError> {
@@ -228,17 +370,23 @@ pub async fn request_upgrade(
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email != current_key.owner_email {
+    if key.owner_email.as_ref() != Some(&session.email) {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
-    // Validate upgrade path (compare monthly price as a proxy for tier ordering)
+    // Validate upgrade path
     if payload.target_tier.monthly_price_cents() <= key.tier.monthly_price_cents() {
         return Err(ApiError::bad_request("Can only upgrade to higher tiers"));
     }
 
     // TODO: Create Stripe checkout session
-    // For now, return upgrade info
+    tracing::info!(
+        key_id = %key_id,
+        current_tier = ?key.tier,
+        target_tier = ?payload.target_tier,
+        "Upgrade requested"
+    );
+
     Ok(Json(UpgradeResponse {
         current_tier: key.tier.to_string(),
         target_tier: payload.target_tier.to_string(),
@@ -246,45 +394,4 @@ pub async fn request_upgrade(
         checkout_url: None, // TODO: Stripe URL
         requires_payment: payload.target_tier.monthly_price_cents().is_some(),
     }))
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiKeyInfo {
-    pub id: String,
-    pub key_prefix: String,
-    pub tier: String,
-    pub owner_name: Option<String>,
-    pub organization: Option<String>,
-    pub is_active: bool,
-    pub created_at: String,
-    pub last_used_at: Option<String>,
-    pub expires_at: Option<String>,
-    pub monthly_quota: i32,
-    pub rate_limit: i32,
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Validate)]
-pub struct UpdateApiKeyRequest {
-    #[validate(length(min = 1, max = 255))]
-    pub owner_name: Option<String>,
-
-    #[validate(length(min = 1, max = 255))]
-    pub organization: Option<String>,
-
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpgradeRequest {
-    pub target_tier: SubscriptionTier,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UpgradeResponse {
-    pub current_tier: String,
-    pub target_tier: String,
-    pub monthly_price: Option<i32>,
-    pub checkout_url: Option<String>,
-    pub requires_payment: bool,
 }

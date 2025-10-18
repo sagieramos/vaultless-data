@@ -19,7 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::{
     config::Config,
     middleware::{add_request_id, log_request},
-    routes::create_router,
+    routes::build_routes,
     state::AppState,
 };
 
@@ -91,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(db_pool, cache_pool.clone(), config.clone());
 
     // Build router with middleware
-    let app = create_router(state)
+    let app = build_routes(state)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
