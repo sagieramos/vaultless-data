@@ -6,7 +6,7 @@ use axum::{
 };
 
 use crate::{
-    handlers::{analytics, api_keys, auth, messages, proofs},
+    handlers::{api_keys, auth, messages, proofs},
     middleware::{api_key_auth::require_client_api_key, token_auth::require_token_auth},
     state::AppState,
 };
@@ -69,21 +69,21 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
         ));
 
     // API-key protected analytics.
-    let analytics_routes = Router::new()
-        .route("/usage", get(analytics::get_usage_stats))
+/*     let analytics_routes = Router::new()
+       // .route("/usage", get(analytics::get_usage_stats))
         .route("/messages", get(analytics::get_message_stats))
         .layer(axum::middleware::from_fn_with_state(
             state,
             require_client_api_key,
-        ));
+        )); */
 
     // Public proof lookup (no auth).
     let public_proof_routes =
-        Router::new().route("/by-hash/:content_hash", get(proofs::find_proofs_by_hash));
+        Router::new().route("/by-hash/{content_hash}", get(proofs::find_proofs_by_hash));
 
     Router::new()
         .nest("/messages", message_routes)
-        .nest("/analytics", analytics_routes)
+        //.nest("/analytics", analytics_routes)
         .nest("/proofs", public_proof_routes) // Nested for consistency.
 }
 

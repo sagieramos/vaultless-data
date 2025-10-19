@@ -1,3 +1,4 @@
+// vaultless-core/src/models/api_key.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
@@ -279,7 +280,7 @@ impl ApiKey {
             SELECT COUNT(*) 
             FROM messages 
             WHERE api_key_id = $1 
-                AND created_at > NOW() - "30 days"
+                "AND created_at > NOW() - INTERVAL '30 days'"
             "#,
         )
         .bind(api_key_id)

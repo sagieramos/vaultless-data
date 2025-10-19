@@ -5,6 +5,8 @@ use axum::{
     response::Response,
 };
 
+use uuid::Uuid;
+
 use crate::{
     middleware::error::ApiError,
     services::token::{SessionData, TokenService},
@@ -75,4 +77,69 @@ where
             .cloned()
             .ok_or_else(|| ApiError::unauthorized("Missing session data"))
     }
+}
+
+/// Header name for API key ID
+const API_KEY_ID_HEADER: &str = "X-Api-Key-Id";
+/*
+GET /v1/api/keys/details
+Authorization: Bearer <user_access_token>
+X-Api-Key-Id: 1f4b933a-8e1b-4c3a-bca0-0b179d0e8a61
+
+ */
+/// Middleware to ensure the authenticated user owns the API key specified in the header
+pub async fn require_api_key_ownership(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    // Extract session (must have passed through require_token_auth first)
+    let session = request
+        .extensions()
+        .get::<SessionData>()
+        .cloned()
+        .ok_or_else(|| ApiError::unauthorized("Missing session data"))?;
+
+    // Extract API key ID from header
+    let key_id = extract_key_id_from_header(request.headers())?;
+
+    // Verify ownership in DB
+    let query = r#"
+        SELECT 1
+        FROM api_keys
+        WHERE id = $1 AND user_id = $2
+        LIMIT 1
+    "#;
+
+    let owned = sqlx::query(query)
+        .bind(key_id)
+        .bind(session.user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Ownership check DB error: {}", e);
+            ApiError::internal_server_error("Database error during ownership check")
+        })?;
+
+    if owned.is_none() {
+        return Err(ApiError::forbidden("You do not own this API key"));
+    }
+
+    // Attach key_id to request extensions for downstream handlers
+    request.extensions_mut().insert(key_id);
+
+    // Continue to next handler
+    Ok(next.run(request).await)
+}
+
+/// Extract and validate `X-Api-Key-Id` header
+fn extract_key_id_from_header(headers: &HeaderMap) -> Result<Uuid, ApiError> {
+    let value = headers
+        .get(API_KEY_ID_HEADER)
+        .ok_or_else(|| ApiError::bad_request("Missing X-Api-Key-Id header"))?
+        .to_str()
+        .map_err(|_| ApiError::bad_request("Invalid X-Api-Key-Id header"))?;
+
+    Uuid::parse_str(value)
+        .map_err(|_| ApiError::bad_request("Invalid UUID format in X-Api-Key-Id header"))
 }
