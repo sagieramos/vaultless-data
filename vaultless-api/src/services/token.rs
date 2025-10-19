@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ impl TokenService {
     fn generate_token() -> Result<String, getrandom::Error> {
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed)?;
-        Ok(URL_SAFE_NO_PAD.encode(&seed))
+        Ok(URL_SAFE_NO_PAD.encode(seed))
     }
 
     /// Hash token for storage (SHA-256)
@@ -224,9 +224,7 @@ impl TokenService {
             created_at: session_db.created_at.timestamp(),
         };
 
-        let remaining_ttl = (session_db.expires_at - Utc::now())
-            .num_seconds()
-            .max(0);
+        let remaining_ttl = (session_db.expires_at - Utc::now()).num_seconds().max(0);
 
         if remaining_ttl > 0 {
             if let Err(e) = self
@@ -259,15 +257,19 @@ impl TokenService {
             tracing::debug!("Refresh token cache hit");
 
             // Parse user_id from cache
-            let user_id = Uuid::parse_str(&cache_data.user_id).map_err(|_| {
-                ApiError::internal_server_error("Invalid user ID in cached token")
-            })?;
+            let user_id = Uuid::parse_str(&cache_data.user_id)
+                .map_err(|_| ApiError::internal_server_error("Invalid user ID in cached token"))?;
 
             let token_family = Uuid::parse_str(&cache_data.token_family).map_err(|_| {
                 ApiError::internal_server_error("Invalid token family in cached token")
             })?;
 
-            (user_id, token_family, cache_data.is_used, cache_data.is_revoked)
+            (
+                user_id,
+                token_family,
+                cache_data.is_used,
+                cache_data.is_revoked,
+            )
         } else {
             // Fallback to Postgres
             tracing::debug!("Refresh token cache miss, checking Postgres");
@@ -279,7 +281,12 @@ impl TokenService {
             .await
             .map_err(|_| ApiError::unauthorized("Invalid refresh token"))?;
 
-            (token.user_id, token.token_family, token.is_used, token.is_revoked)
+            (
+                token.user_id,
+                token.token_family,
+                token.is_used,
+                token.is_revoked,
+            )
         };
 
         // Check if already used (theft detection)
@@ -327,7 +334,7 @@ impl TokenService {
         let new_refresh_hash = Self::hash_token(&new_refresh_token);
 
         // Mark old refresh token as used in cache
-        let mut updated_cache = RefreshTokenCache {
+        let updated_cache = RefreshTokenCache {
             user_id: user_id.to_string(),
             token_family: token_family.to_string(),
             is_used: true,
@@ -352,16 +359,14 @@ impl TokenService {
             // Find old token first
             if let Ok(old_token) =
                 vaultless_core::models::auth::RefreshToken::find_by_hash(&db, &old_hash).await
-            {
-                if let Err(e) = vaultless_core::models::auth::RefreshToken::rotate(
+                && let Err(e) = vaultless_core::models::auth::RefreshToken::rotate(
                     &db,
                     old_token.id,
                     new_hash_clone,
                 )
                 .await
-                {
-                    tracing::warn!("Failed to rotate refresh token in Postgres: {}", e);
-                }
+            {
+                tracing::warn!("Failed to rotate refresh token in Postgres: {}", e);
             }
         });
 
@@ -442,12 +447,10 @@ impl TokenService {
             if let Ok(session) =
                 vaultless_core::models::auth::UserSession::find_by_token_hash(&db, &token_hash)
                     .await
-            {
-                if let Err(e) =
+                && let Err(e) =
                     vaultless_core::models::auth::UserSession::revoke(&db, session.id).await
-                {
-                    tracing::warn!("Failed to revoke session in Postgres: {}", e);
-                }
+            {
+                tracing::warn!("Failed to revoke session in Postgres: {}", e);
             }
         });
 

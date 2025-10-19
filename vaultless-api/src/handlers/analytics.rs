@@ -1,19 +1,19 @@
 // vaultless-api/src/handlers/analytics.rs
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use crate::services::cache::CacheService;
+
+use crate::middleware::api_key_auth::AuthenticatedApiKey;
 
 use crate::middleware::error::ApiError;
 use crate::services::analytics::{AnalyticsService, TimeSeriesDataPoint};
 use crate::state::AppState;
-use vaultless_core::{ApiKey, SubscriptionTier};
+use vaultless_core::SubscriptionTier;
 
 // ============================================================================
 // REQUEST/RESPONSE DTOs
@@ -72,10 +72,9 @@ pub struct QuotaStatusResponse {
 /// Main analytics dashboard with overview, trends, costs
 pub async fn get_dashboard(
     State(state): State<AppState>,
-    api_key: ApiKey, // Injected by middleware
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let cache_service = CacheService::new(state.cache.clone(), 300);
-    let analytics_service = AnalyticsService::new(state.db.clone(), cache_service);
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
     // Check tier access
     if api_key.tier == SubscriptionTier::Free {
@@ -106,7 +105,7 @@ pub async fn get_dashboard(
 pub async fn get_usage_timeseries(
     State(state): State<AppState>,
     Query(query): Query<TimeSeriesQuery>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
     // Tier check
     if api_key.tier == SubscriptionTier::Free {
@@ -115,7 +114,7 @@ pub async fn get_usage_timeseries(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
     // Default to last 7 days if not specified
     let end = query.end.unwrap_or_else(Utc::now);
@@ -148,9 +147,9 @@ pub async fn get_usage_timeseries(
 /// Real-time quota status check
 pub async fn get_quota_status(
     State(state): State<AppState>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
     let quota_status = analytics_service.get_quota_status(api_key.id).await?;
 
@@ -179,7 +178,7 @@ pub async fn get_quota_status(
 /// Detailed cost breakdown by operation type
 pub async fn get_cost_breakdown(
     State(state): State<AppState>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
     // Only Pro+ can see cost breakdowns
     if matches!(
@@ -191,7 +190,7 @@ pub async fn get_cost_breakdown(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -208,7 +207,7 @@ pub async fn get_cost_breakdown(
 pub async fn export_analytics(
     State(state): State<AppState>,
     Query(query): Query<ExportQuery>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
     // Pro+ only feature
     if !matches!(
@@ -220,7 +219,7 @@ pub async fn export_analytics(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
     let end = query.end.unwrap_or_else(Utc::now);
     let start = query
@@ -264,7 +263,7 @@ pub async fn export_analytics(
 /// Week-over-week growth trends
 pub async fn get_usage_trends(
     State(state): State<AppState>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
     // Starter+ feature
     if api_key.tier == SubscriptionTier::Free {
@@ -273,7 +272,7 @@ pub async fn get_usage_trends(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -289,7 +288,7 @@ pub async fn get_usage_trends(
 /// High-level usage summary
 pub async fn get_usage_overview(
     State(state): State<AppState>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
     if api_key.tier == SubscriptionTier::Free {
         return Err(ApiError::forbidden(
@@ -297,7 +296,7 @@ pub async fn get_usage_overview(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -309,13 +308,20 @@ pub async fn get_usage_overview(
     }))
 }
 
+#[derive(Serialize)]
+struct UpgradeOption {
+    tier: String,
+    monthly_price_cents: Option<i32>,
+    benefits: Vec<String>,
+}
+
 /// GET /analytics/tier
 /// Current tier information and features
 pub async fn get_tier_info(
     State(state): State<AppState>,
-    api_key: ApiKey,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache.clone());
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -336,13 +342,6 @@ pub async fn get_tier_info(
         rate_limit_per_minute: i32,
         retention_days: i32,
         analytics_history_days: i32,
-    }
-
-    #[derive(Serialize)]
-    struct UpgradeOption {
-        tier: String,
-        monthly_price_cents: i32,
-        benefits: Vec<String>,
     }
 
     let analytics_days = match api_key.tier {
@@ -393,52 +392,50 @@ fn generate_csv(data: &[TimeSeriesDataPoint]) -> Result<String, ApiError> {
 }
 
 /// Get upgrade recommendations based on current tier
-fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<serde_json::Value> {
-    use serde_json::json;
-
+fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOption> {
     match current_tier {
         SubscriptionTier::Free => vec![
-            json!({
-                "tier": "Starter",
-                "monthly_price_cents": 2900,
-                "benefits": [
-                    "50,000 messages/month",
-                    "7-day analytics",
-                    "300 req/min rate limit",
-                    "Email support"
-                ]
-            }),
-            json!({
-                "tier": "Pro",
-                "monthly_price_cents": 14900,
-                "benefits": [
-                    "500,000 messages/month",
-                    "90-day analytics",
-                    "Real-time webhooks",
-                    "Priority support"
-                ]
-            }),
+            UpgradeOption {
+                tier: "Starter".to_string(),
+                monthly_price_cents: Some(2900),
+                benefits: vec![
+                    "50,000 messages/month".to_string(),
+                    "7-day analytics".to_string(),
+                    "300 req/min rate limit".to_string(),
+                    "Email support".to_string(),
+                ],
+            },
+            UpgradeOption {
+                tier: "Pro".to_string(),
+                monthly_price_cents: Some(14900),
+                benefits: vec![
+                    "500,000 messages/month".to_string(),
+                    "90-day analytics".to_string(),
+                    "Real-time webhooks".to_string(),
+                    "Priority support".to_string(),
+                ],
+            },
         ],
-        SubscriptionTier::Starter => vec![json!({
-            "tier": "Pro",
-            "monthly_price_cents": 14900,
-            "benefits": [
-                "10x more messages",
-                "90-day analytics (vs 7 days)",
-                "Real-time webhooks",
-                "Priority support"
-            ]
-        })],
-        SubscriptionTier::Pro => vec![json!({
-            "tier": "Enterprise",
-            "monthly_price_cents": null,
-            "benefits": [
-                "Unlimited messages",
-                "Full analytics history",
-                "Custom SLA guarantees",
-                "Dedicated support"
-            ]
-        })],
+        SubscriptionTier::Starter => vec![UpgradeOption {
+            tier: "Pro".to_string(),
+            monthly_price_cents: Some(14900),
+            benefits: vec![
+                "10x more messages".to_string(),
+                "90-day analytics (vs 7 days)".to_string(),
+                "Real-time webhooks".to_string(),
+                "Priority support".to_string(),
+            ],
+        }],
+        SubscriptionTier::Pro => vec![UpgradeOption {
+            tier: "Enterprise".to_string(),
+            monthly_price_cents: None,
+            benefits: vec![
+                "Unlimited messages".to_string(),
+                "Full analytics history".to_string(),
+                "Custom SLA guarantees".to_string(),
+                "Dedicated support".to_string(),
+            ],
+        }],
         SubscriptionTier::Enterprise => vec![],
     }
 }

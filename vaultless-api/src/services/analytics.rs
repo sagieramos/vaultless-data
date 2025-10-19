@@ -1,16 +1,13 @@
 // vaultless-api/src/services/analytics.rs
-use chrono::{DateTime, Duration, Utc};
+use chrono::Datelike;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::collections::HashMap;
 use uuid::Uuid;
-use chrono::Datelike;
 
 use crate::middleware::error::ApiError;
 use crate::services::cache::CacheService;
-use vaultless_core::{
-    ApiKey, DailyUsageSummary, MonthlyTotal, SubscriptionTier, UsageTrends, WeeklyUsageSummary,
-};
+use vaultless_core::{ApiKey, DailyUsageSummary, SubscriptionTier, UsageTrends};
 /// Main analytics service with intelligent caching
 pub struct AnalyticsService {
     db: PgPool,
@@ -137,7 +134,7 @@ impl AnalyticsService {
             month_start,
         )
         .await
-        .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch usage: {}", e)))?;
+        .map_err(|e| ApiError::internal_server_error(format!("Failed to fetch usage: {}", e)))?;
 
         Ok(UsageOverview {
             total_messages_sent: usage.total_messages_sent,
@@ -154,7 +151,7 @@ impl AnalyticsService {
     async fn get_usage_trends(&self, api_key_id: Uuid) -> Result<UsageTrends, ApiError> {
         vaultless_core::models::usage_timescale::get_usage_trends(&self.db, api_key_id)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch trends: {}", e)))
+            .map_err(|e| ApiError::internal_server_error(format!("Failed to fetch trends: {}", e)))
     }
 
     /// Calculate cost breakdown with tier-specific pricing
@@ -165,7 +162,9 @@ impl AnalyticsService {
     ) -> Result<CostBreakdown, ApiError> {
         let usage = DailyUsageSummary::get_current_month_total(&self.db, api_key_id)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch usage: {}", e)))?;
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch usage: {}", e))
+            })?;
 
         // Pricing model (cents per unit)
         let (msg_cost, storage_cost, verify_cost) = match tier {
@@ -176,7 +175,8 @@ impl AnalyticsService {
         };
 
         let messages_cost = (usage.total_messages_sent as f64 * msg_cost) as i64;
-        let storage_cost_val = ((usage.total_bytes_stored as f64 / 1_073_741_824.0) * storage_cost) as i64;
+        let storage_cost_val =
+            ((usage.total_bytes_stored as f64 / 1_073_741_824.0) * storage_cost) as i64;
         let verification_cost = (usage.total_proofs_verified as f64 * verify_cost) as i64;
 
         let total_cost = messages_cost + storage_cost_val + verification_cost;
@@ -184,7 +184,9 @@ impl AnalyticsService {
         // Calculate overage cost
         let api_key = ApiKey::find_by_id(&self.db, api_key_id)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch API key: {}", e)))?;
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
+            })?;
 
         let overage = usage.total_messages_sent - api_key.monthly_message_quota as i64;
         let overage_cost = if overage > 0 {
@@ -206,7 +208,9 @@ impl AnalyticsService {
     async fn get_tier_info(&self, api_key_id: Uuid) -> Result<TierInfo, ApiError> {
         let api_key = ApiKey::find_by_id(&self.db, api_key_id)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch API key: {}", e)))?;
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
+            })?;
 
         let features = self.get_tier_features(&api_key.tier);
         let retention_days = api_key.message_retention_seconds / 86400;
@@ -221,14 +225,18 @@ impl AnalyticsService {
     }
 
     /// Get quota status with percentage calculation
-    async fn get_quota_status(&self, api_key_id: Uuid) -> Result<QuotaStatus, ApiError> {
+    pub async fn get_quota_status(&self, api_key_id: Uuid) -> Result<QuotaStatus, ApiError> {
         let api_key = ApiKey::find_by_id(&self.db, api_key_id)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch API key: {}", e)))?;
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
+            })?;
 
         let usage = DailyUsageSummary::get_current_month_total(&self.db, api_key_id)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch usage: {}", e)))?;
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch usage: {}", e))
+            })?;
 
         let messages_used = usage.total_messages_sent;
         let messages_limit = api_key.monthly_message_quota as i64;
@@ -276,9 +284,9 @@ impl AnalyticsService {
     ) -> Result<Vec<DailyUsageSummary>, ApiError> {
         // Tier-based historical data access
         let days = match tier {
-            SubscriptionTier::Free => 0,        // No historical data
-            SubscriptionTier::Starter => 7,     // Last 7 days
-            SubscriptionTier::Pro => 90,        // Last 90 days
+            SubscriptionTier::Free => 0,         // No historical data
+            SubscriptionTier::Starter => 7,      // Last 7 days
+            SubscriptionTier::Pro => 90,         // Last 90 days
             SubscriptionTier::Enterprise => 365, // Last year
         };
 
@@ -288,7 +296,9 @@ impl AnalyticsService {
 
         DailyUsageSummary::get_last_n_days(&self.db, api_key_id, days)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch daily usage: {}", e)))
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch daily usage: {}", e))
+            })
     }
 
     /// Get time series data for charts (tier-limited)
@@ -301,7 +311,9 @@ impl AnalyticsService {
     ) -> Result<Vec<TimeSeriesDataPoint>, ApiError> {
         // Enforce tier limits on historical data
         let max_days = match tier {
-            SubscriptionTier::Free => return Err(ApiError::forbidden("Upgrade to access historical data")),
+            SubscriptionTier::Free => {
+                return Err(ApiError::forbidden("Upgrade to access historical data"));
+            }
             SubscriptionTier::Starter => 7,
             SubscriptionTier::Pro => 90,
             SubscriptionTier::Enterprise => 365,
@@ -309,7 +321,7 @@ impl AnalyticsService {
 
         let requested_duration = end.signed_duration_since(start).num_days();
         if requested_duration > max_days {
-            return Err(ApiError::forbidden(&format!(
+            return Err(ApiError::forbidden(format!(
                 "Your tier allows {} days of historical data. Upgrade for more.",
                 max_days
             )));
@@ -317,7 +329,9 @@ impl AnalyticsService {
 
         let daily_summaries = DailyUsageSummary::get_range(&self.db, api_key_id, start, end)
             .await
-            .map_err(|e| ApiError::internal_server_error(&format!("Failed to fetch time series: {}", e)))?;
+            .map_err(|e| {
+                ApiError::internal_server_error(format!("Failed to fetch time series: {}", e))
+            })?;
 
         let data_points = daily_summaries
             .into_iter()

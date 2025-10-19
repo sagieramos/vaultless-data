@@ -1,12 +1,12 @@
 use axum::{
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
-    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
-use vaultless_core::{ApiKey, CreateProof, Message, MessageProof, ProofVerificationResult};
+use vaultless_core::{ApiKey, CreateProof, Message, MessageProof};
 
 use crate::{middleware::error::ApiError, state::AppState};
 
@@ -173,11 +173,9 @@ pub async fn verify_message_proof(
     // Perform cryptographic verification
     // If plaintext_data provided, verify hash
     if let Some(plaintext_b64) = &payload.plaintext_data {
-        let plaintext_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            plaintext_b64,
-        )
-        .map_err(|_| ApiError::bad_request("Invalid base64 plaintext data"))?;
+        let plaintext_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, plaintext_b64)
+                .map_err(|_| ApiError::bad_request("Invalid base64 plaintext data"))?;
 
         // Verify content hash
         let computed_hash = vaultless_core::crypto::hash_content(&plaintext_bytes);

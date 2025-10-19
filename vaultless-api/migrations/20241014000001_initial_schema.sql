@@ -406,36 +406,6 @@ CREATE INDEX idx_proofs_message ON message_proofs(message_id);
 CREATE INDEX idx_proofs_content_hash ON message_proofs(content_hash);
 CREATE INDEX idx_proofs_verified ON message_proofs(verified_at);
 
-CREATE TABLE notifications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    is_read BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-);
-
-CREATE INDEX idx_notifications_user_id ON notifications(user_id);
-CREATE INDEX idx_notifications_user_id_is_read ON notifications(user_id, is_read);
-CREATE INDEX idx_notifications_created_at ON notifications(created_at);
-
-
-CREATE TABLE bills (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    amount NUMERIC(12,2) NOT NULL,
-    due_date DATE NOT NULL,
-    paid BOOLEAN DEFAULT FALSE,
-    description TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-);
-
-CREATE INDEX idx_bills_user_id ON bills(user_id);
-CREATE INDEX idx_bills_user_id_paid ON bills(user_id, paid);
-CREATE INDEX idx_bills_due_date ON bills(due_date);
-
 -- ============================================================================
 -- USAGE METRICS TABLE
 -- Track API usage for billing and analytics

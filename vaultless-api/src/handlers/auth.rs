@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::{ConnectInfo, State},
     http::StatusCode,
-    Json,
 };
 use std::net::SocketAddr;
 use validator::Validate;
@@ -45,7 +45,8 @@ pub async fn register(
         Json(RegisterResponse {
             user_id: user.id.to_string(),
             email: user.email.clone(),
-            message: "Registration successful. Please check your email to verify your account.".to_string(),
+            message: "Registration successful. Please check your email to verify your account."
+                .to_string(),
         }),
     ))
 }
@@ -68,8 +69,12 @@ pub async fn login(
 
     // Check rate limiting in Dragonfly (fast!)
     let token_service = TokenService::new(state.db.clone(), state.cache.clone());
-    
-    if token_service.is_rate_limited(&ip_str).await.unwrap_or(false) {
+
+    if token_service
+        .is_rate_limited(&ip_str)
+        .await
+        .unwrap_or(false)
+    {
         return Err(ApiError::too_many_requests(
             "Too many failed login attempts. Please try again later.",
         ));
@@ -83,7 +88,7 @@ pub async fn login(
         Err(_) => {
             // Track failure
             let _ = token_service.track_login_failure(&ip_str).await;
-            
+
             // Log failed attempt in Postgres (async)
             let db = state.db.clone();
             let email = req.email.clone();
@@ -103,12 +108,14 @@ pub async fn login(
     };
 
     // Verify password
-    let password_valid = user.verify_password(&req.password).map_err(ApiError::from)?;
+    let password_valid = user
+        .verify_password(&req.password)
+        .map_err(ApiError::from)?;
 
     if !password_valid {
         // Track failure
         let _ = token_service.track_login_failure(&ip_str).await;
-        
+
         // Log failed attempt (async)
         let db = state.db.clone();
         let email = req.email.clone();
@@ -179,7 +186,7 @@ pub async fn refresh_token(
     Json(req): Json<RefreshTokenRequest>,
 ) -> Result<Json<RefreshTokenResponse>, ApiError> {
     let token_service = TokenService::new(state.db.clone(), state.cache.clone());
-    
+
     let token_pair = token_service.refresh_token(&req.refresh_token).await?;
 
     Ok(Json(RefreshTokenResponse {
@@ -199,11 +206,12 @@ pub async fn logout(
     session: SessionData,
 ) -> Result<Json<LogoutResponse>, ApiError> {
     let token_service = TokenService::new(state.db.clone(), state.cache.clone());
-    
+
     // Revoke all tokens for this user
-    let user_id = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     token_service.revoke_all_user_tokens(user_id).await?;
 
@@ -295,9 +303,10 @@ pub async fn get_current_user(
     State(state): State<AppState>,
     session: SessionData,
 ) -> Result<Json<CurrentUserResponse>, ApiError> {
-    let user_id = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     let user = User::find_by_id(&state.db, user_id)
         .await

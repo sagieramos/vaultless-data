@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod health;
 
 use axum::{
@@ -7,7 +8,7 @@ use axum::{
 
 use crate::{
     handlers::{api_keys, auth, messages, proofs},
-    middleware::{api_key_auth::require_client_api_key, token_auth::require_token_auth},
+    middleware::{api_key_auth::require_client_api_key, token_auth::require_user_auth},
     state::AppState,
 };
 
@@ -32,7 +33,7 @@ fn auth_routes(state: AppState) -> Router<AppState> {
         .route("/logout", post(auth::logout))
         .layer(axum::middleware::from_fn_with_state(
             state,
-            require_token_auth,
+            require_user_auth,
         ));
 
     let public = Router::new()
@@ -68,15 +69,6 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
             require_client_api_key,
         ));
 
-    // API-key protected analytics.
-/*     let analytics_routes = Router::new()
-       // .route("/usage", get(analytics::get_usage_stats))
-        .route("/messages", get(analytics::get_message_stats))
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            require_client_api_key,
-        )); */
-
     // Public proof lookup (no auth).
     let public_proof_routes =
         Router::new().route("/by-hash/{content_hash}", get(proofs::find_proofs_by_hash));
@@ -100,7 +92,7 @@ fn dashboard_routes(state: AppState) -> Router<AppState> {
         .route("/{key_id}/upgrade", post(api_keys::upgrade_api_key))
         .layer(axum::middleware::from_fn_with_state(
             state,
-            require_token_auth,
+            require_user_auth,
         ));
 
     Router::new().nest("/apikeys", key_routes)

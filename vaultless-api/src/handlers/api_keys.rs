@@ -1,21 +1,17 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 
-use vaultless_core::getrandom;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
+use vaultless_core::getrandom;
 use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier};
 
-use crate::{
-    middleware::error::ApiError,
-    services::token::SessionData,
-    state::AppState,
-};
+use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
 
 // ============================================================================
 // REQUEST/RESPONSE TYPES
@@ -89,9 +85,10 @@ pub async fn create_api_key(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     tracing::info!(
         user_id = %user_id,
@@ -166,9 +163,10 @@ pub async fn list_api_keys(
     State(state): State<AppState>,
     session: SessionData,
 ) -> Result<Json<Vec<ApiKeyInfo>>, ApiError> {
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     tracing::debug!(user_id = %user_id, "Listing API keys");
 
@@ -203,9 +201,10 @@ pub async fn get_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<Json<ApiKeyInfo>, ApiError> {
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
@@ -243,9 +242,10 @@ pub async fn update_api_key(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
@@ -285,9 +285,10 @@ pub async fn revoke_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
@@ -315,9 +316,10 @@ pub async fn deactivate_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
@@ -344,9 +346,10 @@ pub async fn reactivate_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
@@ -374,9 +377,10 @@ pub async fn upgrade_api_key(
     Path(key_id): Path<Uuid>,
     Json(payload): Json<UpgradeRequest>,
 ) -> Result<Json<UpgradeResponse>, ApiError> {
-    let user_id: Uuid = session.user_id.parse().map_err(|_| {
-        ApiError::internal_server_error("Invalid user ID in session")
-    })?;
+    let user_id: Uuid = session
+        .user_id
+        .parse()
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)

@@ -1,3 +1,4 @@
+//vaultless-api/src/middleware/api_key_auth.rs
 use axum::{
     extract::{Request, State},
     http::HeaderMap,
@@ -51,7 +52,7 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
     // Check cache
     if let Ok(Some(cached_key)) = cache.get::<ApiKey>(&cache_key).await {
         tracing::debug!("API key cache hit");
-        
+
         // Validate cached key
         cached_key.validate().map_err(|e| match e {
             vaultless_core::VaultlessError::ApiKeyInactive => {
@@ -91,7 +92,10 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
 
     // Cache the API key (cache for 5 minutes)
     let cache_ttl = std::time::Duration::from_secs(300);
-    if let Err(e) = cache.set_with_ttl(&cache_key, &api_key_record, cache_ttl).await {
+    if let Err(e) = cache
+        .set_with_ttl(&cache_key, &api_key_record, cache_ttl)
+        .await
+    {
         tracing::warn!("Failed to cache API key: {}", e);
         // Don't fail the request
     } else {
@@ -180,7 +184,10 @@ mod tests {
     #[tokio::test]
     async fn test_extract_api_key_raw() {
         let mut headers = HeaderMap::new();
-        headers.insert("Authorization", HeaderValue::from_static("vlt_test_key_456"));
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_static("vlt_test_key_456"),
+        );
 
         let result = extract_api_key(&headers).await;
         assert!(result.is_ok());

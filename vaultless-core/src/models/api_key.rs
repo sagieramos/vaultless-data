@@ -1,9 +1,9 @@
 // vaultless-core/src/models/api_key.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::PgPool;
 use uuid::Uuid;
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
 use crate::error::{Result, VaultlessError};
 use crate::types::SubscriptionTier;
@@ -85,7 +85,7 @@ impl ApiKey {
         RETURNING *
         "#,
         )
-        .bind(&input.user_id)
+        .bind(input.user_id)
         .bind(&input.key_hash)
         .bind(&input.key_prefix)
         .bind(tier)

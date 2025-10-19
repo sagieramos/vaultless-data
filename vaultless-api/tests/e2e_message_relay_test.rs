@@ -1,18 +1,15 @@
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use chrono::{DateTime, Utc};
+use sqlx::PgPool;
 use vaultless_core::getrandom;
 use vaultless_core::{
-    crypto::{encrypt, sign_data, verify_signature, hash_content},
+    SubscriptionTier,
+    crypto::{encrypt, hash_content, sign_data, verify_signature},
     models::{
         api_key::{ApiKey, CreateApiKey},
         auth::User,
         message::{CreateMessage, Message},
         proof::{CreateProof, MessageProof},
     },
-    SubscriptionTier,
 };
-use sqlx::PgPool;
-use uuid::Uuid;
 
 // ============================================================================
 // TEST SETUP
@@ -56,21 +53,21 @@ async fn cleanup_user(pool: &PgPool, email: &str) {
     .await;
 
     let _ = sqlx::query(
-        "DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE email = $1)"
+        "DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE email = $1)",
     )
     .bind(email)
     .execute(pool)
     .await;
 
     let _ = sqlx::query(
-        "DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email = $1)"
+        "DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE email = $1)",
     )
     .bind(email)
     .execute(pool)
     .await;
 
     let _ = sqlx::query(
-        "DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM users WHERE email = $1)"
+        "DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM users WHERE email = $1)",
     )
     .bind(email)
     .execute(pool)
@@ -136,7 +133,10 @@ async fn test_complete_message_relay_workflow() {
 
     println!("   ✅ API key created: {}", api_key.id);
     println!("   🔑 Tier: {:?}", api_key.tier);
-    println!("   📊 Quota: {} messages/month", api_key.monthly_message_quota);
+    println!(
+        "   📊 Quota: {} messages/month",
+        api_key.monthly_message_quota
+    );
 
     // STEP 3: ENCRYPT MESSAGE
     println!("\n3️⃣ Encrypting message...");
@@ -145,11 +145,14 @@ async fn test_complete_message_relay_workflow() {
     let mut encryption_key = [0u8; 32];
     getrandom::fill(&mut encryption_key).expect("Failed to generate key");
 
-    let mut decryption_key = encryption_key.clone();
+    let mut decryption_key = encryption_key;
     let encrypted = encrypt(plaintext, &mut encryption_key).expect("Encryption failed");
 
     println!("   ✅ Message encrypted");
-    println!("   📦 Ciphertext length: {} bytes", encrypted.ciphertext.len());
+    println!(
+        "   📦 Ciphertext length: {} bytes",
+        encrypted.ciphertext.len()
+    );
     println!("   🔒 Nonce length: {} bytes", encrypted.nonce.len());
 
     // STEP 4: CREATE CRYPTOGRAPHIC PROOF
@@ -164,8 +167,14 @@ async fn test_complete_message_relay_workflow() {
     let signed_data = sign_data(plaintext, &signing_key).expect("Signing failed");
 
     println!("   ✅ Message signed with Ed25519");
-    println!("   📝 Signature length: {} bytes", signed_data.signature.len());
-    println!("   🔑 Public key length: {} bytes", signed_data.public_key.len());
+    println!(
+        "   📝 Signature length: {} bytes",
+        signed_data.signature.len()
+    );
+    println!(
+        "   🔑 Public key length: {} bytes",
+        signed_data.public_key.len()
+    );
 
     // STEP 5: SEND MESSAGE
     println!("\n5️⃣ Sending message...");
@@ -236,9 +245,8 @@ async fn test_complete_message_relay_workflow() {
         nonce: received_msg.nonce.clone(),
     };
 
-    let decrypted_plaintext =
-        vaultless_core::crypto::decrypt(&encrypted_data, &mut decryption_key)
-            .expect("Decryption failed");
+    let decrypted_plaintext = vaultless_core::crypto::decrypt(&encrypted_data, &mut decryption_key)
+        .expect("Decryption failed");
 
     println!(
         "   ✅ Message decrypted successfully\n   📝 Plaintext: {:?}",
@@ -258,7 +266,10 @@ async fn test_complete_message_relay_workflow() {
         .expect("Failed to find proof");
 
     let computed_hash = hash_content(&decrypted_plaintext);
-    assert_eq!(computed_hash, stored_proof.content_hash, "Content hash mismatch");
+    assert_eq!(
+        computed_hash, stored_proof.content_hash,
+        "Content hash mismatch"
+    );
 
     println!("   ✅ Content hash verified");
 
@@ -271,12 +282,14 @@ async fn test_complete_message_relay_workflow() {
 
     println!("   ✅ Ed25519 signature verified\n   🎉 Cryptographic proof is VALID!");
 
-    let verified_proof =
-        MessageProof::mark_verified(&pool, stored_proof.id)
-            .await
-            .expect("Failed to mark proof as verified");
+    let verified_proof = MessageProof::mark_verified(&pool, stored_proof.id)
+        .await
+        .expect("Failed to mark proof as verified");
 
-    println!("   📊 Verification count: {}", verified_proof.verification_count);
+    println!(
+        "   📊 Verification count: {}",
+        verified_proof.verification_count
+    );
 
     // STEP 10: CHECK USAGE METRICS
     println!("\n🔟 Checking usage metrics...");

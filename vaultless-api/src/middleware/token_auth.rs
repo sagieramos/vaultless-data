@@ -1,3 +1,4 @@
+// vaultless-api/src/middleware/token_auth.rs
 use axum::{
     extract::{Request, State},
     http::HeaderMap,
@@ -40,7 +41,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
 }
 
 /// Middleware to require token-based authentication (for user endpoints)
-pub async fn require_token_auth(
+pub async fn require_user_auth(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -93,22 +94,19 @@ pub async fn require_api_key_ownership(
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    // Extract session (must have passed through require_token_auth first)
+    // Require session first (user must be authenticated)
     let session = request
         .extensions()
         .get::<SessionData>()
         .cloned()
-        .ok_or_else(|| ApiError::unauthorized("Missing session data"))?;
+        .ok_or_else(|| ApiError::unauthorized("You must be logged in to access this resource"))?;
 
     // Extract API key ID from header
     let key_id = extract_key_id_from_header(request.headers())?;
 
-    // Verify ownership in DB
+    // Check ownership
     let query = r#"
-        SELECT 1
-        FROM api_keys
-        WHERE id = $1 AND user_id = $2
-        LIMIT 1
+        SELECT 1 FROM api_keys WHERE id = $1 AND user_id = $2 LIMIT 1
     "#;
 
     let owned = sqlx::query(query)
@@ -117,18 +115,17 @@ pub async fn require_api_key_ownership(
         .fetch_optional(&state.db)
         .await
         .map_err(|e| {
-            tracing::error!("Ownership check DB error: {}", e);
-            ApiError::internal_server_error("Database error during ownership check")
+            tracing::error!("DB error during ownership check: {}", e);
+            ApiError::internal_server_error("Database error")
         })?;
 
     if owned.is_none() {
         return Err(ApiError::forbidden("You do not own this API key"));
     }
 
-    // Attach key_id to request extensions for downstream handlers
+    // Store key_id for downstream use
     request.extensions_mut().insert(key_id);
 
-    // Continue to next handler
     Ok(next.run(request).await)
 }
 
