@@ -1,0 +1,1 @@
+cargo test --test e2e_message_relay_test -- --test-threads=1 --nocapture

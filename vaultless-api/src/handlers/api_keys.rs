@@ -1,13 +1,15 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    Extension, Json,
+    Json,
 };
+
+use vaultless_core::getrandom;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
-use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier, getrandom};
+use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier};
 
 use crate::{
     middleware::error::ApiError,
@@ -24,28 +26,24 @@ pub struct ApiKeyInfo {
     pub id: String,
     pub key_prefix: String,
     pub tier: String,
-    pub owner_name: Option<String>,
-    pub organization: Option<String>,
+    pub description: Option<String>,
+    pub scopes: Option<String>,
     pub is_active: bool,
     pub created_at: String,
     pub last_used_at: Option<String>,
     pub expires_at: Option<String>,
     pub monthly_quota: i32,
     pub rate_limit: i32,
-    pub notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateApiKeyRequest {
     #[validate(length(min = 1, max = 255))]
-    pub name: Option<String>,
+    pub description: Option<String>,
 
-    #[validate(length(min = 1, max = 255))]
-    pub organization: Option<String>,
+    pub scopes: Option<String>,
 
     pub tier: Option<SubscriptionTier>,
-
-    pub notes: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,12 +56,7 @@ pub struct CreateApiKeyResponse {
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateApiKeyRequest {
     #[validate(length(min = 1, max = 255))]
-    pub owner_name: Option<String>,
-
-    #[validate(length(min = 1, max = 255))]
-    pub organization: Option<String>,
-
-    pub notes: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,15 +89,18 @@ pub async fn create_api_key(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     tracing::info!(
-        user_id = %session.user_id,
+        user_id = %user_id,
         email = %session.email,
         "Creating new API key"
     );
 
     // Generate API key (vlt_live_<random_bytes>)
     let mut key_bytes = [0u8; 32];
-    
     getrandom::fill(&mut key_bytes).map_err(|e| {
         ApiError::internal_server_error(format!("Failed to generate API key: {}", e))
     })?;
@@ -124,14 +120,13 @@ pub async fn create_api_key(
     let api_key = ApiKey::create(
         &state.db,
         CreateApiKey {
+            user_id,
             key_hash: key_hash.clone(),
             key_prefix: key_prefix.clone(),
             tier,
-            owner_email: Some(session.email.clone()),
-            owner_name: payload.name.clone(),
-            organization: payload.organization.clone(),
+            description: payload.description.clone(),
+            scopes: payload.scopes.clone(),
             expires_at: None, // No expiration by default
-            notes: payload.notes.clone(),
         },
     )
     .await
@@ -151,15 +146,14 @@ pub async fn create_api_key(
                 id: api_key.id.to_string(),
                 key_prefix: api_key.key_prefix,
                 tier: api_key.tier.to_string(),
-                owner_name: api_key.owner_name,
-                organization: api_key.organization,
+                description: api_key.description,
+                scopes: api_key.scopes,
                 is_active: api_key.is_active,
                 created_at: api_key.created_at.to_rfc3339(),
                 last_used_at: None,
                 expires_at: api_key.expires_at.map(|d| d.to_rfc3339()),
                 monthly_quota: api_key.monthly_message_quota,
                 rate_limit: api_key.rate_limit_per_minute,
-                notes: api_key.notes,
             },
             warning: "⚠️ Save this API key now. You won't be able to see it again!".to_string(),
         }),
@@ -172,9 +166,13 @@ pub async fn list_api_keys(
     State(state): State<AppState>,
     session: SessionData,
 ) -> Result<Json<Vec<ApiKeyInfo>>, ApiError> {
-    tracing::debug!(user_id = %session.user_id, "Listing API keys");
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
 
-    let keys = ApiKey::find_by_owner(&state.db, &session.email)
+    tracing::debug!(user_id = %user_id, "Listing API keys");
+
+    let keys = ApiKey::find_by_owner(&state.db, user_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -184,15 +182,14 @@ pub async fn list_api_keys(
             id: k.id.to_string(),
             key_prefix: k.key_prefix,
             tier: k.tier.to_string(),
-            owner_name: k.owner_name,
-            organization: k.organization,
+            description: k.description,
+            scopes: k.scopes,
             is_active: k.is_active,
             created_at: k.created_at.to_rfc3339(),
             last_used_at: k.last_used_at.map(|d| d.to_rfc3339()),
             expires_at: k.expires_at.map(|d| d.to_rfc3339()),
             monthly_quota: k.monthly_message_quota,
             rate_limit: k.rate_limit_per_minute,
-            notes: k.notes,
         })
         .collect();
 
@@ -206,12 +203,16 @@ pub async fn get_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<Json<ApiKeyInfo>, ApiError> {
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
         .map_err(ApiError::from)?;
 
     // Verify ownership
-    if key.owner_email.as_ref() != Some(&session.email) {
+    if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -219,15 +220,14 @@ pub async fn get_api_key(
         id: key.id.to_string(),
         key_prefix: key.key_prefix,
         tier: key.tier.to_string(),
-        owner_name: key.owner_name,
-        organization: key.organization,
+        description: key.description,
+        scopes: key.scopes,
         is_active: key.is_active,
         created_at: key.created_at.to_rfc3339(),
         last_used_at: key.last_used_at.map(|d| d.to_rfc3339()),
         expires_at: key.expires_at.map(|d| d.to_rfc3339()),
         monthly_quota: key.monthly_message_quota,
         rate_limit: key.rate_limit_per_minute,
-        notes: key.notes,
     }))
 }
 
@@ -243,25 +243,23 @@ pub async fn update_api_key(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email.as_ref() != Some(&session.email) {
+    if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
     // Update metadata
-    let updated_key = ApiKey::update_metadata(
-        &state.db,
-        key_id,
-        payload.owner_name,
-        payload.organization,
-        payload.notes,
-    )
-    .await
-    .map_err(ApiError::from)?;
+    let updated_key = ApiKey::update_metadata(&state.db, key_id, payload.description)
+        .await
+        .map_err(ApiError::from)?;
 
     tracing::info!(key_id = %key_id, "API key metadata updated");
 
@@ -269,15 +267,14 @@ pub async fn update_api_key(
         id: updated_key.id.to_string(),
         key_prefix: updated_key.key_prefix,
         tier: updated_key.tier.to_string(),
-        owner_name: updated_key.owner_name,
-        organization: updated_key.organization,
+        description: updated_key.description,
+        scopes: updated_key.scopes,
         is_active: updated_key.is_active,
         created_at: updated_key.created_at.to_rfc3339(),
         last_used_at: updated_key.last_used_at.map(|d| d.to_rfc3339()),
         expires_at: updated_key.expires_at.map(|d| d.to_rfc3339()),
         monthly_quota: updated_key.monthly_message_quota,
         rate_limit: updated_key.rate_limit_per_minute,
-        notes: updated_key.notes,
     }))
 }
 
@@ -288,12 +285,16 @@ pub async fn revoke_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email.as_ref() != Some(&session.email) {
+    if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -314,12 +315,16 @@ pub async fn deactivate_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email.as_ref() != Some(&session.email) {
+    if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -339,12 +344,16 @@ pub async fn reactivate_api_key(
     session: SessionData,
     Path(key_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email.as_ref() != Some(&session.email) {
+    if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 
@@ -365,12 +374,16 @@ pub async fn upgrade_api_key(
     Path(key_id): Path<Uuid>,
     Json(payload): Json<UpgradeRequest>,
 ) -> Result<Json<UpgradeResponse>, ApiError> {
+    let user_id: Uuid = session.user_id.parse().map_err(|_| {
+        ApiError::internal_server_error("Invalid user ID in session")
+    })?;
+
     // Verify ownership
     let key = ApiKey::find_by_id(&state.db, key_id)
         .await
         .map_err(ApiError::from)?;
 
-    if key.owner_email.as_ref() != Some(&session.email) {
+    if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
 

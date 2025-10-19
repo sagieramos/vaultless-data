@@ -7,6 +7,12 @@ use uuid::Uuid;
 
 use crate::VaultlessError;
 
+struct UserRegistration {
+    email: String,
+    password: String,
+    name: Option<String>,
+}
+
 // ============================================================================
 // USER MODEL
 // ============================================================================
@@ -41,8 +47,13 @@ impl User {
         password: String,
         name: Option<String>,
     ) -> Result<Self, VaultlessError> {
+        let user = UserRegistration {
+            email,
+            password,
+            name,
+        };
         // Hash password (bcrypt with cost 12)
-        let password_hash = bcrypt::hash(password, 12)
+        let password_hash = bcrypt::hash(user.password, 12)
             .map_err(|e| VaultlessError::Internal(format!("Password hashing failed: {}", e)))?;
 
         // Generate email verification token
@@ -58,9 +69,9 @@ impl User {
             RETURNING *
             "#,
         )
-        .bind(&email)
+        .bind(&user.email)
         .bind(&password_hash)
-        .bind(name)
+        .bind(user.name)
         .bind(&verification_token)
         .bind(verification_expires)
         .fetch_one(pool)

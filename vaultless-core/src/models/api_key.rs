@@ -2,32 +2,42 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 use crate::error::{Result, VaultlessError};
 use crate::types::SubscriptionTier;
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ApiKey {
     pub id: Uuid,
-    pub key_hash: String,
-    pub key_prefix: String,
-    pub tier: SubscriptionTier,
+    pub user_id: Uuid,          // REFERENCES users(id)
+    pub key_hash: String,       // SHA-256 hash of the API key
+    pub key_prefix: String,     // first 8 chars of key
+    pub tier: SubscriptionTier, // enum type
     pub monthly_message_quota: i32,
     pub message_retention_seconds: i32,
-    pub owner_email: Option<String>,
-    pub owner_name: Option<String>,
-    pub organization: Option<String>,
+    pub description: Option<String>,
+    pub scopes: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub rate_limit_per_minute: i32,
-    pub notes: Option<String>,
 }
-
+/* fn validate_future_date(date: &Option<DateTime<Utc>>) -> std::result::Result<(), ValidationError> {
+    if let Some(d) = date {
+        if *d < Utc::now() {
+            // Construct and return the validator::ValidationError
+            return Err(ValidationError::new("must_be_in_the_future"));
+        }
+    }
+    Ok(())
+}
+ */
 #[derive(Debug, Clone, Validate, Deserialize)]
 pub struct CreateApiKey {
+    pub user_id: Uuid,
+
     #[validate(length(min = 64, max = 64))]
     pub key_hash: String,
 
@@ -36,17 +46,14 @@ pub struct CreateApiKey {
 
     pub tier: SubscriptionTier,
 
-    #[validate(email)]
-    pub owner_email: Option<String>,
+    #[validate(length(max = 255))]
+    pub description: Option<String>,
 
-    #[validate(length(min = 1, max = 255))]
-    pub owner_name: Option<String>,
+    #[validate(length(min = 1))]
+    pub scopes: Option<String>,
 
-    #[validate(length(min = 1, max = 255))]
-    pub organization: Option<String>,
-
+    /* #[validate(custom(function = "validate_future_date"))] */
     pub expires_at: Option<DateTime<Utc>>,
-    pub notes: Option<String>,
 }
 
 impl ApiKey {
@@ -57,28 +64,36 @@ impl ApiKey {
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         let tier = input.tier;
+
         let api_key = sqlx::query_as::<_, Self>(
             r#"
-            INSERT INTO api_keys (
-                key_hash, key_prefix, tier, monthly_message_quota, 
-                message_retention_seconds, owner_email, owner_name, 
-                organization, rate_limit_per_minute, expires_at, notes
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING *
-            "#,
+        INSERT INTO api_keys (
+            user_id,
+            key_hash,
+            key_prefix,
+            tier,
+            monthly_message_quota,
+            message_retention_seconds,
+            description,
+            scopes,
+            rate_limit_per_minute,
+            expires_at,
+            is_active
         )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+        RETURNING *
+        "#,
+        )
+        .bind(&input.user_id)
         .bind(&input.key_hash)
         .bind(&input.key_prefix)
         .bind(tier)
         .bind(tier.default_monthly_quota())
         .bind(tier.default_retention_seconds())
-        .bind(&input.owner_email)
-        .bind(&input.owner_name)
-        .bind(&input.organization)
+        .bind(&input.description)
+        .bind(&input.scopes)
         .bind(tier.default_rate_limit())
         .bind(input.expires_at)
-        .bind(&input.notes)
         .fetch_one(pool)
         .await
         .map_err(|e| match e {
@@ -119,6 +134,21 @@ impl ApiKey {
         .ok_or_else(|| VaultlessError::NotFound("API key not found".to_string()))?;
 
         Ok(api_key)
+    }
+
+    pub async fn find_by_owner(pool: &PgPool, user_id: Uuid) -> Result<Vec<Self>> {
+        let keys = sqlx::query_as::<_, Self>(
+            r#"
+            SELECT * FROM api_keys 
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(keys)
     }
 
     /// List all API keys (with pagination)
@@ -210,25 +240,18 @@ impl ApiKey {
     pub async fn update_metadata(
         pool: &PgPool,
         id: Uuid,
-        owner_name: Option<String>,
-        organization: Option<String>,
-        notes: Option<String>,
+        description: Option<String>,
     ) -> Result<Self> {
         let api_key = sqlx::query_as::<_, Self>(
             r#"
             UPDATE api_keys 
-            SET 
-                owner_name = COALESCE($2, owner_name),
-                organization = COALESCE($3, organization),
-                notes = COALESCE($4, notes)
+            SET description = COALESCE($2, description)
             WHERE id = $1
             RETURNING *
             "#,
         )
         .bind(id)
-        .bind(owner_name)
-        .bind(organization)
-        .bind(notes)
+        .bind(description)
         .fetch_one(pool)
         .await?;
 
@@ -249,22 +272,6 @@ impl ApiKey {
         Ok(())
     }
 
-    /// Get API keys by owner email
-    pub async fn find_by_owner(pool: &PgPool, owner_email: &str) -> Result<Vec<Self>> {
-        let keys = sqlx::query_as::<_, Self>(
-            r#"
-            SELECT * FROM api_keys 
-            WHERE owner_email = $1
-            ORDER BY created_at DESC
-            "#,
-        )
-        .bind(owner_email)
-        .fetch_all(pool)
-        .await?;
-
-        Ok(keys)
-    }
-
     /// Check if API key has exceeded quota
     pub async fn check_quota(pool: &PgPool, api_key_id: Uuid) -> Result<bool> {
         let count: i64 = sqlx::query_scalar(
@@ -272,7 +279,7 @@ impl ApiKey {
             SELECT COUNT(*) 
             FROM messages 
             WHERE api_key_id = $1 
-                AND created_at > NOW() - INTERVAL '30 days'
+                AND created_at > NOW() - "30 days"
             "#,
         )
         .bind(api_key_id)

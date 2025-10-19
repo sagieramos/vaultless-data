@@ -22,9 +22,6 @@ CREATE TABLE api_keys (
     message_retention_seconds INTEGER NOT NULL DEFAULT 604800, -- 7 days
     
     -- Metadata
-    owner_email VARCHAR(255),
-    owner_name VARCHAR(255),
-    organization VARCHAR(255),
     description TEXT,                                   -- User-friendly description
     scopes TEXT,                                        -- Space-separated OAuth scopes
     
@@ -36,9 +33,6 @@ CREATE TABLE api_keys (
     
     -- Rate limiting
     rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
-    
-    -- Notes
-    notes TEXT,
     
     -- Constraints
     CONSTRAINT valid_quota CHECK (monthly_message_quota > 0),

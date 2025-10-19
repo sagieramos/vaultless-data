@@ -1,4 +1,3 @@
-pub mod admin_auth;
 pub mod error;
 pub mod logging;
 pub mod rate_limit;
