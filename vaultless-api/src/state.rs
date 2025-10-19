@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::services::cache::CacheService;
 
 /// Shared application state
 #[derive(Clone)]
@@ -19,5 +20,9 @@ impl AppState {
             cache,
             config: Arc::new(config),
         }
+    }
+
+    pub fn cache_service(&self) -> CacheService {
+        CacheService::new(self.cache.clone(), 3600)
     }
 }

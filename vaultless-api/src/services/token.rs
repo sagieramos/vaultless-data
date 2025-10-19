@@ -1,11 +1,13 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
+use chrono::Utc;
+use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 use vaultless_core::getrandom;
 
 use crate::middleware::error::ApiError;
+use crate::services::cache::CacheService;
 
 /// Token pair (access + refresh)
 #[derive(Debug)]
@@ -26,14 +28,25 @@ pub struct SessionData {
     pub created_at: i64,
 }
 
+/// Refresh token data stored in Dragonfly
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RefreshTokenCache {
+    user_id: String,
+    token_family: String,
+    is_used: bool,
+    is_revoked: bool,
+    expires_at: i64,
+}
+
 /// Token service for OAuth-like authentication
 pub struct TokenService {
     db: PgPool,
-    cache: RedisPool,
+    cache: CacheService,
 }
 
 impl TokenService {
-    pub fn new(db: PgPool, cache: RedisPool) -> Self {
+    pub fn new(db: PgPool, cache_pool: RedisPool) -> Self {
+        let cache = CacheService::new(cache_pool, 3600); // 1 hour default TTL
         Self { db, cache }
     }
 
@@ -49,6 +62,21 @@ impl TokenService {
         vaultless_core::crypto::hash_content(token.as_bytes())
     }
 
+    /// Generate session cache key
+    fn session_key(token_hash: &str) -> String {
+        format!("session:{}", token_hash)
+    }
+
+    /// Generate refresh token cache key
+    fn refresh_key(token_hash: &str) -> String {
+        format!("refresh:{}", token_hash)
+    }
+
+    /// Generate login failure cache key
+    fn login_fail_key(ip: &str) -> String {
+        format!("login_fail:{}", ip)
+    }
+
     /// Create access + refresh token pair
     pub async fn create_token_pair(
         &self,
@@ -57,7 +85,7 @@ impl TokenService {
         scope: Option<String>,
         is_admin: bool,
     ) -> Result<TokenPair, ApiError> {
-        // Generate access token, propagating any error
+        // Generate access token
         let access_token = Self::generate_token().map_err(|e| {
             tracing::error!("Failed to generate access token: {}", e);
             ApiError::internal_server_error(format!("Failed to generate access token: {}", e))
@@ -75,7 +103,8 @@ impl TokenService {
         let refresh_token_hash = Self::hash_token(&refresh_token);
 
         let access_ttl: i64 = 3600; // 1 hour
-        let now = chrono::Utc::now().timestamp();
+        let refresh_ttl_days: i64 = 30; // 30 days
+        let now = Utc::now().timestamp();
 
         // 1. Store session in Dragonfly (hot path)
         let session_data = SessionData {
@@ -86,10 +115,36 @@ impl TokenService {
             created_at: now,
         };
 
-        self.store_session_in_cache(&access_token_hash, &session_data, access_ttl)
+        self.cache
+            .set_with_ttl(
+                &Self::session_key(&access_token_hash),
+                &session_data,
+                std::time::Duration::from_secs(access_ttl as u64),
+            )
             .await?;
 
-        // 2. Log session in Postgres (audit trail) - async, non-blocking
+        tracing::debug!("Session cached in Dragonfly: {}", access_token_hash);
+
+        // 2. Store refresh token in Dragonfly
+        let refresh_cache = RefreshTokenCache {
+            user_id: user_id.to_string(),
+            token_family: token_family.to_string(),
+            is_used: false,
+            is_revoked: false,
+            expires_at: now + (refresh_ttl_days * 86400),
+        };
+
+        self.cache
+            .set_with_ttl(
+                &Self::refresh_key(&refresh_token_hash),
+                &refresh_cache,
+                std::time::Duration::from_secs((refresh_ttl_days * 86400) as u64), // 30 days
+            )
+            .await?;
+
+        tracing::debug!("Refresh token cached in Dragonfly: {}", refresh_token_hash);
+
+        // 3. Log session in Postgres (audit trail) - async, non-blocking
         let db = self.db.clone();
         let scope_clone = scope.clone();
         tokio::spawn(async move {
@@ -106,16 +161,21 @@ impl TokenService {
             }
         });
 
-        // 3. Store refresh token in Postgres (not in cache - security)
-        vaultless_core::models::auth::RefreshToken::create(
-            &self.db,
-            user_id,
-            refresh_token_hash,
-            token_family,
-            30, // 30 days
-        )
-        .await
-        .map_err(ApiError::from)?;
+        // 4. Store refresh token in Postgres (audit + fallback)
+        let db_clone = self.db.clone();
+        tokio::spawn(async move {
+            if let Err(e) = vaultless_core::models::auth::RefreshToken::create(
+                &db_clone,
+                user_id,
+                refresh_token_hash,
+                token_family,
+                refresh_ttl_days,
+            )
+            .await
+            {
+                tracing::warn!("Failed to store refresh token in Postgres: {}", e);
+            }
+        });
 
         Ok(TokenPair {
             access_token,
@@ -125,73 +185,20 @@ impl TokenService {
         })
     }
 
-    /// Store session in Dragonfly
-    async fn store_session_in_cache(
-        &self,
-        token_hash: &str,
-        session: &SessionData,
-        ttl_secs: i64,
-    ) -> Result<(), ApiError> {
-        let mut conn = self.cache.get().await.map_err(|e| {
-            tracing::error!("Cache connection error: {}", e);
-            ApiError::internal_server_error("Cache unavailable")
-        })?;
-
-        let key = format!("session:{}", token_hash);
-        let value = serde_json::to_string(session).map_err(|e| {
-            tracing::error!("Session serialization error: {}", e);
-            ApiError::internal_server_error("Session serialization failed")
-        })?;
-
-        conn.set_ex::<_, _, ()>(key, value, ttl_secs as u64)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to store session in cache: {}", e);
-                ApiError::internal_server_error("Failed to store session")
-            })?;
-
-        Ok(())
-    }
-
-    /// Get session from Dragonfly (fast path)
-    async fn get_session_from_cache(&self, token_hash: &str) -> Result<SessionData, ApiError> {
-        let mut conn = self.cache.get().await.map_err(|e| {
-            tracing::error!("Cache connection error: {}", e);
-            ApiError::internal_server_error("Cache unavailable")
-        })?;
-
-        let key = format!("session:{}", token_hash);
-        let value: Option<String> = conn.get(&key).await.map_err(|e| {
-            tracing::error!("Failed to get session from cache: {}", e);
-            ApiError::internal_server_error("Failed to retrieve session")
-        })?;
-
-        let session_json =
-            value.ok_or_else(|| ApiError::unauthorized("Session not found or expired"))?;
-
-        let session: SessionData = serde_json::from_str(&session_json).map_err(|e| {
-            tracing::error!("Session deserialization error: {}", e);
-            ApiError::internal_server_error("Session data corrupted")
-        })?;
-
-        Ok(session)
-    }
-
     /// Verify and get user from access token (Dragonfly first)
     pub async fn verify_access_token(&self, token: &str) -> Result<SessionData, ApiError> {
         let token_hash = Self::hash_token(token);
+        let cache_key = Self::session_key(&token_hash);
 
         // Fast path: Check Dragonfly
-        match self.get_session_from_cache(&token_hash).await {
-            Ok(session) => {
-                tracing::debug!("Session cache hit");
+        match self.cache.get::<SessionData>(&cache_key).await? {
+            Some(session) => {
+                tracing::debug!("Session cache hit for {}", token_hash);
                 return Ok(session);
             }
-            Err(e) if e.status == 401 => {
-                // Session not in cache, check Postgres (fallback)
-                tracing::debug!("Session cache miss, checking Postgres");
+            None => {
+                tracing::debug!("Session cache miss for {}", token_hash);
             }
-            Err(e) => return Err(e),
         }
 
         // Fallback: Check Postgres and repopulate cache
@@ -217,15 +224,22 @@ impl TokenService {
             created_at: session_db.created_at.timestamp(),
         };
 
-        let remaining_ttl = (session_db.expires_at - chrono::Utc::now())
-            .num_seconds()
-            .max(0);
-        if remaining_ttl > 0
-            && let Err(e) = self
-                .store_session_in_cache(&token_hash, &session_data, remaining_ttl)
+        let remaining_ttl = (session_db.expires_at - Utc::now()).num_seconds().max(0);
+
+        if remaining_ttl > 0 {
+            if let Err(e) = self
+                .cache
+                .set_with_ttl(
+                    &cache_key,
+                    &session_data,
+                    std::time::Duration::from_secs(remaining_ttl as u64),
+                )
                 .await
-        {
-            tracing::warn!("Failed to repopulate cache: {}", e);
+            {
+                tracing::warn!("Failed to repopulate session cache: {}", e);
+            } else {
+                tracing::debug!("Session cache repopulated from Postgres");
+            }
         }
 
         Ok(session_data)
@@ -234,65 +248,149 @@ impl TokenService {
     /// Refresh access token using refresh token
     pub async fn refresh_token(&self, refresh_token: &str) -> Result<TokenPair, ApiError> {
         let refresh_token_hash = Self::hash_token(refresh_token);
+        let cache_key = Self::refresh_key(&refresh_token_hash);
 
-        // Find refresh token (only in Postgres)
-        let token =
-            vaultless_core::models::auth::RefreshToken::find_by_hash(&self.db, &refresh_token_hash)
-                .await
-                .map_err(|_| ApiError::unauthorized("Invalid refresh token"))?;
+        // Check Dragonfly first
+        let cached_token = self.cache.get::<RefreshTokenCache>(&cache_key).await?;
+
+        let (user_id, token_family, is_used, is_revoked) = if let Some(cache_data) = cached_token {
+            tracing::debug!("Refresh token cache hit");
+
+            // Parse user_id from cache
+            let user_id = Uuid::parse_str(&cache_data.user_id)
+                .map_err(|_| ApiError::internal_server_error("Invalid user ID in cached token"))?;
+
+            let token_family = Uuid::parse_str(&cache_data.token_family).map_err(|_| {
+                ApiError::internal_server_error("Invalid token family in cached token")
+            })?;
+
+            (
+                user_id,
+                token_family,
+                cache_data.is_used,
+                cache_data.is_revoked,
+            )
+        } else {
+            // Fallback to Postgres
+            tracing::debug!("Refresh token cache miss, checking Postgres");
+
+            let token = vaultless_core::models::auth::RefreshToken::find_by_hash(
+                &self.db,
+                &refresh_token_hash,
+            )
+            .await
+            .map_err(|_| ApiError::unauthorized("Invalid refresh token"))?;
+
+            (
+                token.user_id,
+                token.token_family,
+                token.is_used,
+                token.is_revoked,
+            )
+        };
 
         // Check if already used (theft detection)
-        if token.is_used {
+        if is_used {
             tracing::warn!(
-                user_id = %token.user_id,
-                token_family = %token.token_family,
+                user_id = %user_id,
+                token_family = %token_family,
                 "Refresh token reuse detected - revoking family"
             );
 
-            vaultless_core::models::auth::RefreshToken::revoke_family(&self.db, token.token_family)
+            // Revoke entire family
+            vaultless_core::models::auth::RefreshToken::revoke_family(&self.db, token_family)
                 .await
                 .map_err(ApiError::from)?;
+
+            // Remove from cache
+            self.cache.delete(&cache_key).await?;
 
             return Err(ApiError::forbidden(
                 "Token reuse detected - all tokens revoked",
             ));
         }
 
-        if token.is_revoked {
+        if is_revoked {
             return Err(ApiError::unauthorized("Refresh token has been revoked"));
         }
 
-        if token.expires_at < chrono::Utc::now() {
-            return Err(ApiError::unauthorized("Refresh token expired"));
-        }
-
         // Get user info
-        let user = vaultless_core::models::auth::User::find_by_id(&self.db, token.user_id)
+        let user = vaultless_core::models::auth::User::find_by_id(&self.db, user_id)
             .await
             .map_err(ApiError::from)?;
 
+        // Generate new tokens
         let new_access_token = Self::generate_token().map_err(|e| {
             tracing::error!("Failed to generate new access token: {}", e);
             ApiError::internal_server_error(format!("Failed to generate access token: {}", e))
         })?;
 
         let new_refresh_token = Self::generate_token().map_err(|e| {
-            tracing::error!("Failed to generate access token: {}", e);
+            tracing::error!("Failed to generate new refresh token: {}", e);
             ApiError::internal_server_error(format!("Failed to generate refresh token: {}", e))
         })?;
 
         let new_access_hash = Self::hash_token(&new_access_token);
         let new_refresh_hash = Self::hash_token(&new_refresh_token);
 
-        // Rotate refresh token in Postgres
-        vaultless_core::models::auth::RefreshToken::rotate(&self.db, token.id, new_refresh_hash)
-            .await
-            .map_err(ApiError::from)?;
+        // Mark old refresh token as used in cache
+        let updated_cache = RefreshTokenCache {
+            user_id: user_id.to_string(),
+            token_family: token_family.to_string(),
+            is_used: true,
+            is_revoked: false,
+            expires_at: Utc::now().timestamp() + (30 * 86400),
+        };
 
+        // Update in cache (mark as used)
+        self.cache
+            .set_with_ttl(
+                &cache_key,
+                &updated_cache,
+                std::time::Duration::from_secs(60), // Short TTL for used tokens
+            )
+            .await?;
+
+        // Rotate in Postgres (async)
+        let db = self.db.clone();
+        let old_hash = refresh_token_hash.clone();
+        let new_hash_clone = new_refresh_hash.clone();
+        tokio::spawn(async move {
+            // Find old token first
+            if let Ok(old_token) =
+                vaultless_core::models::auth::RefreshToken::find_by_hash(&db, &old_hash).await
+                && let Err(e) = vaultless_core::models::auth::RefreshToken::rotate(
+                    &db,
+                    old_token.id,
+                    new_hash_clone,
+                )
+                .await
+            {
+                tracing::warn!("Failed to rotate refresh token in Postgres: {}", e);
+            }
+        });
+
+        // Store new refresh token in cache
+        let new_refresh_cache = RefreshTokenCache {
+            user_id: user_id.to_string(),
+            token_family: token_family.to_string(),
+            is_used: false,
+            is_revoked: false,
+            expires_at: Utc::now().timestamp() + (30 * 86400),
+        };
+
+        self.cache
+            .set_with_ttl(
+                &Self::refresh_key(&new_refresh_hash),
+                &new_refresh_cache,
+                std::time::Duration::from_secs(30 * 86400),
+            )
+            .await?;
+
+        // Store new access token session in cache
         let access_ttl = 3600;
-        let now = chrono::Utc::now().timestamp();
+        let now = Utc::now().timestamp();
 
-        // Store new session in Dragonfly
         let session_data = SessionData {
             user_id: user.id.to_string(),
             email: user.email.clone(),
@@ -301,7 +399,12 @@ impl TokenService {
             created_at: now,
         };
 
-        self.store_session_in_cache(&new_access_hash, &session_data, access_ttl)
+        self.cache
+            .set_with_ttl(
+                &Self::session_key(&new_access_hash),
+                &session_data,
+                std::time::Duration::from_secs(access_ttl as u64),
+            )
             .await?;
 
         // Log in Postgres (async)
@@ -331,18 +434,12 @@ impl TokenService {
     /// Revoke access token (remove from cache immediately)
     pub async fn revoke_access_token(&self, token: &str) -> Result<(), ApiError> {
         let token_hash = Self::hash_token(token);
+        let cache_key = Self::session_key(&token_hash);
 
         // Remove from cache immediately
-        let mut conn = self.cache.get().await.map_err(|e| {
-            tracing::error!("Cache connection error: {}", e);
-            ApiError::internal_server_error("Cache unavailable")
-        })?;
+        self.cache.delete(&cache_key).await?;
 
-        let key = format!("session:{}", token_hash);
-        let _: () = conn.del(&key).await.map_err(|e| {
-            tracing::error!("Failed to delete session from cache: {}", e);
-            ApiError::internal_server_error("Failed to revoke session")
-        })?;
+        tracing::info!("Access token revoked from cache: {}", token_hash);
 
         // Also mark as revoked in Postgres (audit trail)
         let db = self.db.clone();
@@ -362,34 +459,55 @@ impl TokenService {
 
     /// Revoke all user sessions (logout everywhere)
     pub async fn revoke_all_user_tokens(&self, user_id: Uuid) -> Result<(), ApiError> {
-        // Remove all sessions from cache
-        let mut conn = self.cache.get().await.map_err(|e| {
-            tracing::error!("Cache connection error: {}", e);
-            ApiError::internal_server_error("Cache unavailable")
-        })?;
+        // Note: We can't efficiently scan all session keys in Redis
+        // So we rely on PostgreSQL to list sessions, then delete from cache
 
-        // Find all session keys for this user
-        let pattern = "session:*".to_string();
-        let keys: Vec<String> = conn.keys(&pattern).await.map_err(|e| {
-            tracing::error!("Failed to get session keys: {}", e);
-            ApiError::internal_server_error("Failed to list sessions")
-        })?;
-
-        // Delete matching sessions (need to check user_id)
-        for key in keys {
-            if let Ok(Some(data)) = conn.get::<_, Option<String>>(&key).await
-                && let Ok(session) = serde_json::from_str::<SessionData>(&data)
-                && session.user_id == user_id.to_string()
-            {
-                let _: () = conn.del(&key).await.unwrap_or(());
-            }
-        }
-
-        // Also revoke in Postgres
+        // Revoke in Postgres first
         vaultless_core::models::auth::UserSession::revoke_all_for_user(&self.db, user_id)
             .await
             .map_err(ApiError::from)?;
 
+        tracing::info!("All sessions revoked for user: {}", user_id);
+
+        // Note: Sessions will naturally expire from cache (max 1 hour)
+        // For immediate effect, we'd need to track user -> session mappings in Redis
+
+        Ok(())
+    }
+
+    /// Track login failure for rate limiting
+    pub async fn track_login_failure(&self, ip: &str) -> Result<i64, ApiError> {
+        let key = Self::login_fail_key(ip);
+
+        // Increment counter
+        let count = self.cache.incr(&key).await?;
+
+        // Set TTL on first failure
+        if count == 1 {
+            self.cache
+                .expire(&key, std::time::Duration::from_secs(15 * 60)) // 15 minutes
+                .await?;
+        }
+
+        tracing::debug!("Login failures for {}: {}", ip, count);
+
+        Ok(count)
+    }
+
+    /// Check if IP is rate limited (5 failures in 15 min)
+    pub async fn is_rate_limited(&self, ip: &str) -> Result<bool, ApiError> {
+        let key = Self::login_fail_key(ip);
+
+        match self.cache.get::<i64>(&key).await? {
+            Some(count) => Ok(count >= 5),
+            None => Ok(false),
+        }
+    }
+
+    /// Clear login failures (after successful login)
+    pub async fn clear_login_failures(&self, ip: &str) -> Result<(), ApiError> {
+        let key = Self::login_fail_key(ip);
+        self.cache.delete(&key).await?;
         Ok(())
     }
 }

@@ -1,0 +1,1 @@
+cargo test --test auth_integration_test -- --test-threads=1 --nocapture

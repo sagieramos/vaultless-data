@@ -1,3 +1,4 @@
+//vaultless-core/src/models/usage_timescale.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
@@ -240,7 +241,7 @@ pub async fn get_realtime_usage(
 }
 
 /// Get usage trends (percentage change)
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageTrends {
     pub current_week: i64,
     pub previous_week: i64,

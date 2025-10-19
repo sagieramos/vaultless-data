@@ -1,150 +1,441 @@
-use axum::{Extension, Json, extract::State};
-use chrono::DateTime;
+// vaultless-api/src/handlers/analytics.rs
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use vaultless_core::{ApiKey, DailyUsageSummary, MonthlyTotal, WeeklyUsageSummary};
 
-use crate::{middleware::error::ApiError, state::AppState};
+use crate::middleware::api_key_auth::AuthenticatedApiKey;
 
-#[derive(Debug, Serialize)]
-pub struct AnalyticsDashboard {
-    pub current_month: MonthlyTotal,
-    pub last_7_days: Vec<DailyUsageSummary>,
-    pub last_4_weeks: Vec<WeeklyUsageSummary>,
-    pub quota_usage: QuotaUsage,
-    pub trends: vaultless_core::UsageTrends,
+use crate::middleware::error::ApiError;
+use crate::services::analytics::{AnalyticsService, TimeSeriesDataPoint};
+use crate::state::AppState;
+use vaultless_core::SubscriptionTier;
+
+// ============================================================================
+// REQUEST/RESPONSE DTOs
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TimeSeriesQuery {
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
+    #[serde(default = "default_interval")]
+    pub interval: String, // "day", "week", "hour"
+}
+
+fn default_interval() -> String {
+    "day".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    pub format: ExportFormat,
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Json,
+    Csv,
 }
 
 #[derive(Debug, Serialize)]
-pub struct QuotaUsage {
-    pub monthly_quota: i32,
+pub struct AnalyticsResponse<T> {
+    pub success: bool,
+    pub data: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuotaStatusResponse {
     pub messages_used: i64,
-    pub percentage_used: f64,
-    pub remaining: i64,
-    pub will_exceed: bool,
+    pub messages_limit: i64,
+    pub usage_percentage: f64,
+    pub is_over_quota: bool,
+    pub overage_count: i64,
+    pub resets_at: DateTime<Utc>,
+    pub alert_level: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RealtimeUsageQuery {
-    pub since: DateTime<chrono::Utc>,
-}
+// ============================================================================
+// HANDLERS
+// ============================================================================
 
-/// Get real-time usage statistics
-/// GET /api/v1/analytics/realtime?since=2025-01-01T00:00:00Z
-pub async fn get_realtime_usage_stats(
-    State(state): State<AppState>,
-    Extension(api_key): Extension<ApiKey>,
-    axum::extract::Query(params): axum::extract::Query<RealtimeUsageQuery>,
-) -> Result<Json<MonthlyTotal>, ApiError> {
-    let stats = vaultless_core::models::usage_timescale::get_realtime_usage(
-        &state.db,
-        api_key.id,
-        params.since,
-    )
-    .await
-    .map_err(ApiError::from)?;
-    Ok(Json(stats))
-}
-
-/// Get analytics dashboard
-/// GET /api/v1/analytics/dashboard
+/// GET /analytics/dashboard
+/// Main analytics dashboard with overview, trends, costs
 pub async fn get_dashboard(
     State(state): State<AppState>,
-    Extension(api_key): Extension<ApiKey>,
-) -> Result<Json<AnalyticsDashboard>, ApiError> {
-    tracing::info!(api_key_id = %api_key.id, "Fetching analytics dashboard");
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
-    // Get current month total
-    let current_month = DailyUsageSummary::get_current_month_total(&state.db, api_key.id)
-        .await
-        .map_err(ApiError::from)?;
+    // Check tier access
+    if api_key.tier == SubscriptionTier::Free {
+        return Err(ApiError::forbidden(
+            "Analytics dashboard requires Starter tier or higher. Upgrade at https://vaultless.com/pricing",
+        ));
+    }
 
-    // Get last 7 days
-    let last_7_days = DailyUsageSummary::get_last_n_days(&state.db, api_key.id, 7)
-        .await
-        .map_err(ApiError::from)?;
+    let dashboard = analytics_service
+        .get_dashboard(api_key.id, api_key.tier)
+        .await?;
 
-    // Get last 4 weeks
-    let last_4_weeks = WeeklyUsageSummary::get_last_n_weeks(&state.db, api_key.id, 4)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Calculate quota usage
-    let messages_used = current_month.total_messages_sent;
-    let monthly_quota = api_key.monthly_message_quota as i64;
-    let percentage_used = (messages_used as f64 / monthly_quota as f64) * 100.0;
-    let remaining = monthly_quota - messages_used;
-    let will_exceed = remaining < (monthly_quota / 10); // Less than 10% remaining
-
-    let quota_usage = QuotaUsage {
-        monthly_quota: api_key.monthly_message_quota,
-        messages_used,
-        percentage_used,
-        remaining,
-        will_exceed,
+    let upgrade_msg = if api_key.tier == SubscriptionTier::Starter {
+        Some("Upgrade to Pro for 90-day analytics and real-time webhooks".to_string())
+    } else {
+        None
     };
 
-    // Get usage trends
-    let trends = vaultless_core::models::usage_timescale::get_usage_trends(&state.db, api_key.id)
-        .await
-        .map_err(ApiError::from)?;
-
-    Ok(Json(AnalyticsDashboard {
-        current_month,
-        last_7_days,
-        last_4_weeks,
-        quota_usage,
-        trends,
+    Ok(Json(AnalyticsResponse {
+        success: true,
+        data: dashboard,
+        upgrade_message: upgrade_msg,
     }))
 }
 
-/// Get daily usage for date range
-/// GET /api/v1/analytics/daily?start=2025-01-01&end=2025-01-31
-pub async fn get_daily_usage(
+/// GET /analytics/usage/timeseries
+/// Time-series data for charts (tier-limited historical access)
+pub async fn get_usage_timeseries(
     State(state): State<AppState>,
-    Extension(api_key): Extension<ApiKey>,
-    axum::extract::Query(params): axum::extract::Query<DateRangeQuery>,
-) -> Result<Json<Vec<DailyUsageSummary>>, ApiError> {
-    let start = params.start.parse().map_err(|_| {
-        ApiError::bad_request("Invalid start date format. Use ISO 8601 (YYYY-MM-DD)")
-    })?;
+    Query(query): Query<TimeSeriesQuery>,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    // Tier check
+    if api_key.tier == SubscriptionTier::Free {
+        return Err(ApiError::forbidden(
+            "Time-series analytics requires Starter tier or higher",
+        ));
+    }
 
-    let end = params
-        .end
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid end date format. Use ISO 8601 (YYYY-MM-DD)"))?;
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
-    let summaries = DailyUsageSummary::get_range(&state.db, api_key.id, start, end)
-        .await
-        .map_err(ApiError::from)?;
+    // Default to last 7 days if not specified
+    let end = query.end.unwrap_or_else(Utc::now);
+    let start = query
+        .start
+        .unwrap_or_else(|| end - chrono::Duration::days(7));
 
-    Ok(Json(summaries))
+    let timeseries = analytics_service
+        .get_time_series(api_key.id, api_key.tier, start, end)
+        .await?;
+
+    let upgrade_msg = match api_key.tier {
+        SubscriptionTier::Starter => {
+            Some("Viewing last 7 days. Upgrade to Pro for 90-day history".to_string())
+        }
+        SubscriptionTier::Pro => {
+            Some("Viewing last 90 days. Upgrade to Enterprise for unlimited history".to_string())
+        }
+        _ => None,
+    };
+
+    Ok(Json(AnalyticsResponse {
+        success: true,
+        data: timeseries,
+        upgrade_message: upgrade_msg,
+    }))
 }
 
-/// Get weekly usage for date range
-/// GET /api/v1/analytics/weekly?start=2025-01-01&end=2025-03-31
-pub async fn get_weekly_usage(
+/// GET /analytics/quota/status
+/// Real-time quota status check
+pub async fn get_quota_status(
     State(state): State<AppState>,
-    Extension(api_key): Extension<ApiKey>,
-    axum::extract::Query(params): axum::extract::Query<DateRangeQuery>,
-) -> Result<Json<Vec<WeeklyUsageSummary>>, ApiError> {
-    let start = params.start.parse().map_err(|_| {
-        ApiError::bad_request("Invalid start date format. Use ISO 8601 (YYYY-MM-DD)")
-    })?;
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
 
-    let end = params
-        .end
-        .parse()
-        .map_err(|_| ApiError::bad_request("Invalid end date format. Use ISO 8601 (YYYY-MM-DD)"))?;
+    let quota_status = analytics_service.get_quota_status(api_key.id).await?;
 
-    let summaries = WeeklyUsageSummary::get_range(&state.db, api_key.id, start, end)
-        .await
-        .map_err(ApiError::from)?;
+    let alert_level = if quota_status.is_over_quota {
+        Some("critical".to_string())
+    } else if quota_status.usage_percentage >= 90.0 {
+        Some("warning".to_string())
+    } else if quota_status.usage_percentage >= 80.0 {
+        Some("info".to_string())
+    } else {
+        None
+    };
 
-    Ok(Json(summaries))
+    Ok(Json(QuotaStatusResponse {
+        messages_used: quota_status.messages_used,
+        messages_limit: quota_status.messages_limit,
+        usage_percentage: quota_status.usage_percentage,
+        is_over_quota: quota_status.is_over_quota,
+        overage_count: quota_status.overage_count,
+        resets_at: quota_status.resets_at,
+        alert_level,
+    }))
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct DateRangeQuery {
-    pub start: String,
-    pub end: String,
+/// GET /analytics/costs
+/// Detailed cost breakdown by operation type
+pub async fn get_cost_breakdown(
+    State(state): State<AppState>,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    // Only Pro+ can see cost breakdowns
+    if matches!(
+        api_key.tier,
+        SubscriptionTier::Free | SubscriptionTier::Starter
+    ) {
+        return Err(ApiError::forbidden(
+            "Cost analytics requires Pro tier or higher",
+        ));
+    }
+
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let dashboard = analytics_service
+        .get_dashboard(api_key.id, api_key.tier)
+        .await?;
+
+    Ok(Json(AnalyticsResponse {
+        success: true,
+        data: dashboard.cost_breakdown,
+        upgrade_message: None,
+    }))
+}
+
+/// POST /analytics/export
+/// Export usage data as CSV or JSON (Pro+ only)
+pub async fn export_analytics(
+    State(state): State<AppState>,
+    Query(query): Query<ExportQuery>,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    // Pro+ only feature
+    if !matches!(
+        api_key.tier,
+        SubscriptionTier::Pro | SubscriptionTier::Enterprise
+    ) {
+        return Err(ApiError::forbidden(
+            "Data export requires Pro tier or higher. Upgrade at https://vaultless.com/pricing",
+        ));
+    }
+
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+
+    let end = query.end.unwrap_or_else(Utc::now);
+    let start = query
+        .start
+        .unwrap_or_else(|| end - chrono::Duration::days(30));
+
+    let timeseries = analytics_service
+        .get_time_series(api_key.id, api_key.tier, start, end)
+        .await?;
+
+    match query.format {
+        ExportFormat::Json => Ok((
+            StatusCode::OK,
+            [("Content-Type", "application/json")],
+            Json(AnalyticsResponse {
+                success: true,
+                data: timeseries,
+                upgrade_message: None,
+            }),
+        )
+            .into_response()),
+        ExportFormat::Csv => {
+            let csv_data = generate_csv(&timeseries)?;
+            Ok((
+                StatusCode::OK,
+                [
+                    ("Content-Type", "text/csv"),
+                    (
+                        "Content-Disposition",
+                        "attachment; filename=\"analytics.csv\"",
+                    ),
+                ],
+                csv_data,
+            )
+                .into_response())
+        }
+    }
+}
+
+/// GET /analytics/trends
+/// Week-over-week growth trends
+pub async fn get_usage_trends(
+    State(state): State<AppState>,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    // Starter+ feature
+    if api_key.tier == SubscriptionTier::Free {
+        return Err(ApiError::forbidden(
+            "Usage trends require Starter tier or higher",
+        ));
+    }
+
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let dashboard = analytics_service
+        .get_dashboard(api_key.id, api_key.tier)
+        .await?;
+
+    Ok(Json(AnalyticsResponse {
+        success: true,
+        data: dashboard.trends,
+        upgrade_message: None,
+    }))
+}
+
+/// GET /analytics/overview
+/// High-level usage summary
+pub async fn get_usage_overview(
+    State(state): State<AppState>,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    if api_key.tier == SubscriptionTier::Free {
+        return Err(ApiError::forbidden(
+            "Usage overview requires Starter tier or higher",
+        ));
+    }
+
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let dashboard = analytics_service
+        .get_dashboard(api_key.id, api_key.tier)
+        .await?;
+
+    Ok(Json(AnalyticsResponse {
+        success: true,
+        data: dashboard.overview,
+        upgrade_message: None,
+    }))
+}
+
+#[derive(Serialize)]
+struct UpgradeOption {
+    tier: String,
+    monthly_price_cents: Option<i32>,
+    benefits: Vec<String>,
+}
+
+/// GET /analytics/tier
+/// Current tier information and features
+pub async fn get_tier_info(
+    State(state): State<AppState>,
+    AuthenticatedApiKey(api_key): AuthenticatedApiKey,
+) -> Result<impl IntoResponse, ApiError> {
+    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let dashboard = analytics_service
+        .get_dashboard(api_key.id, api_key.tier)
+        .await?;
+
+    let upgrade_options = get_upgrade_recommendations(&api_key.tier);
+
+    #[derive(Serialize)]
+    struct TierInfoResponse {
+        current_tier: vaultless_core::types::SubscriptionTier,
+        features: Vec<String>,
+        limits: TierLimits,
+        upgrade_options: Vec<UpgradeOption>,
+    }
+
+    #[derive(Serialize)]
+    struct TierLimits {
+        monthly_quota: i32,
+        rate_limit_per_minute: i32,
+        retention_days: i32,
+        analytics_history_days: i32,
+    }
+
+    let analytics_days = match api_key.tier {
+        SubscriptionTier::Free => 0,
+        SubscriptionTier::Starter => 7,
+        SubscriptionTier::Pro => 90,
+        SubscriptionTier::Enterprise => 365,
+    };
+
+    Ok(Json(AnalyticsResponse {
+        success: true,
+        data: TierInfoResponse {
+            current_tier: dashboard.tier_info.current_tier,
+            features: dashboard.tier_info.features,
+            limits: TierLimits {
+                monthly_quota: dashboard.tier_info.monthly_quota,
+                rate_limit_per_minute: dashboard.tier_info.rate_limit_per_minute,
+                retention_days: dashboard.tier_info.retention_days,
+                analytics_history_days: analytics_days,
+            },
+            upgrade_options,
+        },
+        upgrade_message: None,
+    }))
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/// Generate CSV from time-series data
+fn generate_csv(data: &[TimeSeriesDataPoint]) -> Result<String, ApiError> {
+    let mut csv =
+        String::from("timestamp,messages_sent,messages_received,proofs_verified,bytes_stored\n");
+
+    for point in data {
+        csv.push_str(&format!(
+            "{},{},{},{},{}\n",
+            point.timestamp.to_rfc3339(),
+            point.messages_sent,
+            point.messages_received,
+            point.proofs_verified,
+            point.bytes_stored
+        ));
+    }
+
+    Ok(csv)
+}
+
+/// Get upgrade recommendations based on current tier
+fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOption> {
+    match current_tier {
+        SubscriptionTier::Free => vec![
+            UpgradeOption {
+                tier: "Starter".to_string(),
+                monthly_price_cents: Some(2900),
+                benefits: vec![
+                    "50,000 messages/month".to_string(),
+                    "7-day analytics".to_string(),
+                    "300 req/min rate limit".to_string(),
+                    "Email support".to_string(),
+                ],
+            },
+            UpgradeOption {
+                tier: "Pro".to_string(),
+                monthly_price_cents: Some(14900),
+                benefits: vec![
+                    "500,000 messages/month".to_string(),
+                    "90-day analytics".to_string(),
+                    "Real-time webhooks".to_string(),
+                    "Priority support".to_string(),
+                ],
+            },
+        ],
+        SubscriptionTier::Starter => vec![UpgradeOption {
+            tier: "Pro".to_string(),
+            monthly_price_cents: Some(14900),
+            benefits: vec![
+                "10x more messages".to_string(),
+                "90-day analytics (vs 7 days)".to_string(),
+                "Real-time webhooks".to_string(),
+                "Priority support".to_string(),
+            ],
+        }],
+        SubscriptionTier::Pro => vec![UpgradeOption {
+            tier: "Enterprise".to_string(),
+            monthly_price_cents: None,
+            benefits: vec![
+                "Unlimited messages".to_string(),
+                "Full analytics history".to_string(),
+                "Custom SLA guarantees".to_string(),
+                "Dedicated support".to_string(),
+            ],
+        }],
+        SubscriptionTier::Enterprise => vec![],
+    }
 }

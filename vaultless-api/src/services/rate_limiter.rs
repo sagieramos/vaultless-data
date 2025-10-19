@@ -235,7 +235,7 @@ impl RateLimiter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CurrentUsage {
     pub requests_in_window: i64,
     pub window_start: u64,
