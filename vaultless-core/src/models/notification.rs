@@ -27,18 +27,20 @@ pub struct Notification {
 #[sqlx(type_name = "notification_type", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationType {
-    QuotaWarning,      // 80% quota usage
-    QuotaExceeded,     // Over quota
-    BillingAlert,      // Payment issues
-    SecurityAlert,     // Suspicious activity
-    SystemUpdate,      // Maintenance or new features
-    MarketingOffer,    // Promotional offers
-    ApiKeyExpiring,    // API key expiring soon
-    UsageReport,       // Monthly usage summary
+    QuotaWarning,   // 80% quota usage
+    QuotaExceeded,  // Over quota
+    BillingAlert,   // Payment issues
+    SecurityAlert,  // Suspicious activity
+    SystemUpdate,   // Maintenance or new features
+    MarketingOffer, // Promotional offers
+    ApiKeyExpiring, // API key expiring soon
+    UsageReport,    // Monthly usage summary
 }
 
 /// Severity levels for UI prioritization
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[sqlx(type_name = "notification_severity", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum NotificationSeverity {
@@ -159,7 +161,11 @@ impl Notification {
         }
 
         query.push_str(" ORDER BY created_at DESC");
-        query.push_str(&format!(" LIMIT ${} OFFSET ${}", param_count + 1, param_count + 2));
+        query.push_str(&format!(
+            " LIMIT ${} OFFSET ${}",
+            param_count + 1,
+            param_count + 2
+        ));
 
         let mut query_builder = sqlx::query_as::<_, Self>(&query).bind(user_id);
 
