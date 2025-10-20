@@ -1,4 +1,5 @@
 use std::fmt;
+use thiserror::Error;
 
 use axum::{
     Json,
@@ -9,7 +10,7 @@ use serde_json::json;
 use vaultless_core::VaultlessError;
 
 /// API error response wrapper
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
@@ -131,3 +132,4 @@ impl From<sqlx::Error> for ApiError {
         }
     }
 }
+

@@ -8,6 +8,7 @@ mod state;
 use anyhow::Context;
 use axum::middleware as axum_middleware;
 use deadpool_redis::{Config as RedisConfig, Runtime};
+use services::{cache::CacheService, notification_job::{monthly_report_worker, notification_worker}};
 use sqlx::postgres::PgPoolOptions;
 use tower_http::{
     compression::CompressionLayer,
@@ -17,10 +18,7 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
-    config::Config,
-    middleware::{add_request_id, log_request},
-    routes::build_routes,
-    state::AppState,
+    config::Config, middleware::{add_request_id, log_request}, routes::build_routes, services::cache::DEFAULT_CACHE_TTL_SECONDS, state::AppState
 };
 
 #[tokio::main]
@@ -87,8 +85,10 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("✅ Cache connected");
 
+     let cache_service = CacheService::new(cache_pool.clone(), DEFAULT_CACHE_TTL_SECONDS);
+
     // Create application state
-    let state = AppState::new(db_pool, cache_pool.clone(), config.clone());
+    let state = AppState::new(db_pool.clone(), cache_pool.clone(), config.clone());
 
     // Build router with middleware
     let app = build_routes(state)
@@ -107,6 +107,13 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = config.bind_address();
     tracing::info!("🌐 Server listening on http://{}", bind_addr);
     tracing::info!("📍 Health check: http://{}/health", bind_addr);
+
+    tokio::spawn(notification_worker(db_pool.clone(), cache_service.clone()));
+
+    tokio::spawn(monthly_report_worker(
+        db_pool.clone(),
+        cache_service.clone(),
+    ));
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
