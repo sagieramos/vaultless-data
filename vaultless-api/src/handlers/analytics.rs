@@ -70,6 +70,7 @@ pub struct QuotaStatusResponse {
 
 /// GET /analytics/dashboard
 /// Main analytics dashboard with overview, trends, costs
+#[axum::debug_handler]
 pub async fn get_dashboard(
     State(state): State<AppState>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,

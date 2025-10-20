@@ -1,5 +1,6 @@
 pub mod analytics;
 pub mod health;
+pub mod notifications;
 
 use axum::{
     Router,

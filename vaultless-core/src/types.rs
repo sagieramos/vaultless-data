@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Type;
+use std::str::FromStr;
 
 /// Subscription tier enum matching the database
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -28,6 +29,20 @@ impl<'de> Deserialize<'de> for SubscriptionTier {
                 &s,
                 &["free", "starter", "pro", "enterprise"],
             )),
+        }
+    }
+}
+
+impl FromStr for SubscriptionTier {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "free" => Ok(SubscriptionTier::Free),
+            "starter" => Ok(SubscriptionTier::Starter),
+            "pro" => Ok(SubscriptionTier::Pro),
+            "enterprise" => Ok(SubscriptionTier::Enterprise),
+            _ => Err(()),
         }
     }
 }
