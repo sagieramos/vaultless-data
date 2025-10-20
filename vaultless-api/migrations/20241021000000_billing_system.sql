@@ -1,4 +1,3 @@
--- migrations/20241021000000_billing_system.sql
 -- Comprehensive billing system with invoices, payments, subscriptions, and credits
 
 -- ============================================================================
@@ -63,6 +62,11 @@ CREATE TYPE credit_transaction_type AS ENUM (
     'expired',
     'adjustment'
 );
+
+-- NOTE: You will need to ensure 'subscription_tier' TYPE is defined 
+-- in an earlier migration, as it is used here but not defined.
+-- Assuming 'subscription_tier' TYPE exists for now.
+-- IF it doesn't exist, this migration will fail on 'subscriptions' table creation.
 
 -- ============================================================================
 -- INVOICES TABLE
@@ -423,12 +427,12 @@ CREATE INDEX idx_promo_redemptions_invoice ON promo_code_redemptions(invoice_id)
 
 -- Auto-update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_billing_updated_at()
-RETURNS TRIGGER AS $
+RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = NOW();
     RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_invoices_updated_at
     BEFORE UPDATE ON invoices
@@ -462,14 +466,14 @@ CREATE TRIGGER trigger_promo_codes_updated_at
 
 -- Auto-set processed_at when payment succeeds
 CREATE OR REPLACE FUNCTION set_payment_processed_at()
-RETURNS TRIGGER AS $
+RETURNS TRIGGER AS $$
 BEGIN
     IF NEW.status = 'succeeded' AND OLD.status != 'succeeded' THEN
         NEW.processed_at = NOW();
     END IF;
     RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_set_payment_processed_at
     BEFORE UPDATE ON payments
@@ -478,7 +482,7 @@ CREATE TRIGGER trigger_set_payment_processed_at
 
 -- Enforce only one default payment method per user
 CREATE OR REPLACE FUNCTION ensure_single_default_payment_method()
-RETURNS TRIGGER AS $
+RETURNS TRIGGER AS $$
 BEGIN
     IF NEW.is_default = TRUE THEN
         UPDATE payment_methods 
@@ -489,7 +493,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_ensure_single_default_payment
     AFTER INSERT OR UPDATE ON payment_methods
@@ -506,7 +510,7 @@ CREATE OR REPLACE FUNCTION get_total_revenue(
     start_date TIMESTAMPTZ,
     end_date TIMESTAMPTZ
 )
-RETURNS BIGINT AS $
+RETURNS BIGINT AS $$
 DECLARE
     total BIGINT;
 BEGIN
@@ -519,11 +523,11 @@ BEGIN
     
     RETURN total;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 -- Get user's total outstanding balance
 CREATE OR REPLACE FUNCTION get_user_outstanding_balance(p_user_id UUID)
-RETURNS BIGINT AS $
+RETURNS BIGINT AS $$
 DECLARE
     outstanding BIGINT;
 BEGIN
@@ -536,14 +540,14 @@ BEGIN
     
     RETURN outstanding;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 -- Apply credit to invoice
 CREATE OR REPLACE FUNCTION apply_credit_to_invoice(
     p_invoice_id UUID,
     p_user_id UUID
 )
-RETURNS VOID AS $
+RETURNS VOID AS $$
 DECLARE
     v_amount_due BIGINT;
     v_available_credit BIGINT;
@@ -597,11 +601,11 @@ BEGIN
         );
     END IF;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 -- Generate monthly invoice for user
 CREATE OR REPLACE FUNCTION generate_monthly_invoice(p_user_id UUID)
-RETURNS UUID AS $
+RETURNS UUID AS $$
 DECLARE
     v_invoice_id UUID;
     v_api_key RECORD;
@@ -681,7 +685,7 @@ BEGIN
     
     RETURN v_invoice_id;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- VIEWS FOR REPORTING
