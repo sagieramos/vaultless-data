@@ -57,6 +57,7 @@ pub struct NotificationFilters {
     pub is_read: Option<bool>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub since: Option<DateTime<Utc>>,
 }
 
 impl Default for NotificationFilters {
@@ -67,6 +68,7 @@ impl Default for NotificationFilters {
             is_read: None,
             limit: Some(20),
             offset: Some(0),
+            since: None,
         }
     }
 }

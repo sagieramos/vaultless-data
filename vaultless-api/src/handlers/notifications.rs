@@ -1,16 +1,17 @@
 // vaultless-api/src/handlers/notifications.rs
+use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
+use axum::extract::Extension;
 use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use futures::StreamExt;
+use chrono::Utc;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::middleware::error::ApiError;
-use crate::state::AppState;
 use vaultless_core::{
     Notification, NotificationFilters, NotificationSeverity, NotificationStats, NotificationType,
 };
@@ -68,10 +69,11 @@ pub struct BulkActionResponse {
 
 /// GET /notifications
 /// List notifications with optional filters
+#[axum::debug_handler]
 pub async fn list_notifications(
     State(state): State<AppState>,
     Query(query): Query<ListNotificationsQuery>,
-    user_id: Uuid, // Extracted from JWT token via middleware
+    Extension(user_id): Extension<Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
     let filters = NotificationFilters {
         notification_type: query.notification_type,
@@ -79,6 +81,7 @@ pub async fn list_notifications(
         is_read: query.is_read,
         limit: query.limit,
         offset: query.offset,
+        since: None,
     };
 
     let notifications = Notification::list(&state.db, user_id, filters.clone())
@@ -107,11 +110,15 @@ pub async fn list_notifications(
 
 /// GET /notifications/:id
 /// Get a specific notification by ID
+#[axum::debug_handler]
 pub async fn get_notification(
     State(state): State<AppState>,
     Path(notification_id): Path<Uuid>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
+
     let notification = Notification::find_by_id(&state.db, notification_id, user_id)
         .await
         .map_err(|e| match e {
@@ -129,11 +136,15 @@ pub async fn get_notification(
 
 /// PATCH /notifications/:id/read
 /// Mark a notification as read
+#[axum::debug_handler]
 pub async fn mark_notification_read(
     State(state): State<AppState>,
     Path(notification_id): Path<Uuid>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
+
     let notification = Notification::mark_as_read(&state.db, notification_id, user_id)
         .await
         .map_err(|e| match e {
@@ -151,10 +162,14 @@ pub async fn mark_notification_read(
 
 /// POST /notifications/mark-all-read
 /// Mark all notifications as read for the current user
+#[axum::debug_handler]
 pub async fn mark_all_notifications_read(
     State(state): State<AppState>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
+
     let affected_count = Notification::mark_all_as_read(&state.db, user_id)
         .await
         .map_err(|e| {
@@ -170,11 +185,15 @@ pub async fn mark_all_notifications_read(
 
 /// DELETE /notifications/:id
 /// Delete a specific notification
+#[axum::debug_handler]
 pub async fn delete_notification(
     State(state): State<AppState>,
     Path(notification_id): Path<Uuid>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
+
     Notification::delete(&state.db, notification_id, user_id)
         .await
         .map_err(|e| match e {
@@ -195,10 +214,14 @@ pub async fn delete_notification(
 
 /// DELETE /notifications/read
 /// Delete all read notifications for the current user
+#[axum::debug_handler]
 pub async fn delete_read_notifications(
     State(state): State<AppState>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
+
     let affected_count = Notification::delete_all_read(&state.db, user_id)
         .await
         .map_err(|e| {
@@ -216,8 +239,11 @@ pub async fn delete_read_notifications(
 /// Get count of unread notifications
 pub async fn get_unread_count(
     State(state): State<AppState>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
+
     let count = Notification::get_unread_count(&state.db, user_id)
         .await
         .map_err(|e| {
@@ -232,10 +258,13 @@ pub async fn get_unread_count(
 
 /// GET /notifications/stats
 /// Get notification statistics for the current user
+#[axum::debug_handler]
 pub async fn get_notification_stats(
     State(state): State<AppState>,
-    user_id: Uuid,
+    Extension(session): Extension<SessionData>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     let stats = Notification::get_stats(&state.db, user_id)
         .await
         .map_err(|e| ApiError::internal_server_error(format!("Failed to fetch stats: {}", e)))?;
@@ -250,63 +279,83 @@ pub async fn get_notification_stats(
 // REAL-TIME NOTIFICATION STREAM (WebSocket or SSE)
 // ============================================================================
 
-/// GET /notifications/stream
-/// Server-Sent Events stream for real-time notifications (Pro+ feature)
+/// GET /notification/stream
+/// Server-Sent Events for real-time notifications (Pro+ feature)
 pub async fn notification_stream(
     State(state): State<AppState>,
-    user_id: Uuid,
-    user_tier: vaultless_core::SubscriptionTier,
+    Extension(session): Extension<SessionData>, // Extracted by Vaultless middleware
 ) -> Result<impl IntoResponse, ApiError> {
     use axum::response::sse::{Event, KeepAlive, Sse};
-    use futures::stream::{self, StreamExt}; // ✅ include StreamExt for `.then`
+    use futures::stream;
     use std::convert::Infallible;
     use std::time::Duration;
+    use vaultless_core::SubscriptionTier;
 
-    // ✅ Only Pro or Enterprise users can use the real-time stream
-    if !matches!(
-        user_tier,
-        vaultless_core::SubscriptionTier::Pro | vaultless_core::SubscriptionTier::Enterprise
-    ) {
+    // Only Pro or Enterprise users allowed
+    if let Some(tier_str) = &session.scope {
+        let tier: SubscriptionTier = tier_str
+            .parse()
+            .map_err(|_| ApiError::forbidden("Invalid subscription tier"))?;
+
+        if !matches!(tier, SubscriptionTier::Pro | SubscriptionTier::Enterprise)
+            && !session.is_admin
+        {
+            return Err(ApiError::forbidden(
+                "Real-time notifications require Pro tier or higher",
+            ));
+        }
+    } else if !session.is_admin {
         return Err(ApiError::forbidden(
             "Real-time notifications require Pro tier or higher",
         ));
     }
 
-    // ✅ Clone the database pool (cheap because PgPool uses Arc internally)
     let db = state.db.clone();
+    let user_id = Uuid::parse_str(&session.user_id)
+        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
 
-    // ✅ Create an async stream that polls for unread notifications
-    let stream = stream::repeat_with(move || {
-        let db = db.clone(); // Clone per iteration to satisfy async ownership
-        let user_id = user_id; // capture user_id by copy (Uuid implements Copy)
+    // Keep track of last seen notification timestamp
+    let mut last_checked = Utc::now();
+
+    // Configurable poll interval
+    let poll_interval = Duration::from_secs(5);
+
+    let stream = stream::unfold((), move |_| {
+        let db = db.clone();
+        let user_id = user_id;
         async move {
-            // Poll every 5 seconds
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            tokio::time::sleep(poll_interval).await;
 
-            // Fetch unread notifications
-            let notifications = Notification::list(
-                &db,
-                user_id,
-                NotificationFilters {
-                    is_read: Some(false),
-                    limit: Some(10),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_or_default();
+            let filters = NotificationFilters {
+                is_read: Some(false),
+                limit: Some(10),
+                since: Some(last_checked),
+                ..Default::default()
+            };
 
-            if !notifications.is_empty() {
-                let json = serde_json::to_string(&notifications).unwrap_or_default();
-                Ok::<_, Infallible>(Event::default().data(json))
-            } else {
-                // Heartbeat event (keeps SSE alive)
-                Ok::<_, Infallible>(Event::default().comment("heartbeat"))
+            let notifications = match Notification::list(&db, user_id, filters).await {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::error!("Failed to fetch notifications: {}", e);
+                    vec![]
+                }
+            };
+
+            // Update last_checked if we have new notifications
+            if let Some(last) = notifications.last() {
+                last_checked = last.created_at; // assumes Notification has a `created_at: DateTime<Utc>` field
             }
-        }
-    })
-    .then(|f| f); // `.then()` requires StreamExt
 
-    // ✅ Return SSE response
+            let event = if !notifications.is_empty() {
+                let json = serde_json::to_string(&notifications).unwrap_or_default();
+                Event::default().data(json)
+            } else {
+                Event::default().comment("heartbeat")
+            };
+
+            Some((Ok::<_, Infallible>(event), ()))
+        }
+    });
+
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
