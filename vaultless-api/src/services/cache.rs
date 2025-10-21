@@ -3,7 +3,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
 use crate::middleware::error::ApiError;
-pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600; 
+pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600;
 
 /// Cache service for Dragonfly/Redis operations
 #[derive(Debug, Clone)]
