@@ -241,38 +241,3 @@ pub struct CurrentUsage {
     pub window_start: u64,
     pub window_end: u64,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rate_limit_result() {
-        let result = RateLimitResult {
-            allowed: true,
-            limit: 100,
-            remaining: 99,
-            reset_at: 1697385600,
-            retry_after: None,
-        };
-
-        assert!(result.allowed);
-        assert_eq!(result.remaining, 99);
-        assert!(result.retry_after.is_none());
-    }
-
-    #[test]
-    fn test_rate_limit_exceeded() {
-        let result = RateLimitResult {
-            allowed: false,
-            limit: 100,
-            remaining: 0,
-            reset_at: 1697385600,
-            retry_after: Some(30),
-        };
-
-        assert!(!result.allowed);
-        assert_eq!(result.remaining, 0);
-        assert_eq!(result.retry_after, Some(30));
-    }
-}

@@ -64,7 +64,7 @@ CREATE INDEX idx_notifications_expires_at ON notifications(expires_at)
 
 -- Composite index for common queries
 CREATE INDEX idx_notifications_user_unread ON notifications(user_id, created_at DESC) 
-    WHERE is_read = FALSE AND (expires_at IS NULL OR expires_at > NOW());
+    WHERE is_read = FALSE;
 
 -- ============================================================================
 -- TRIGGERS

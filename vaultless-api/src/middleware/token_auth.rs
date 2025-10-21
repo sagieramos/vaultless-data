@@ -116,7 +116,7 @@ pub async fn require_api_key_ownership(
         .await
         .map_err(|e| {
             tracing::error!("DB error during ownership check: {}", e);
-            ApiError::internal_server_error("Database error")
+            ApiError::forbidden("You do not own this API key")
         })?;
 
     if owned.is_none() {

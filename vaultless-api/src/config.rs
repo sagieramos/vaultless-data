@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::env;
+use vaultless_core::PaymentGateway;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -8,6 +9,7 @@ pub struct Config {
     pub security: SecurityConfig,
     pub rate_limit: RateLimitConfig,
     pub cache: CacheConfig,
+    pub default_gateway: PaymentGateway,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,8 +68,7 @@ impl Config {
                     .parse()?,
             },
             security: SecurityConfig {
-                api_key_salt: env::var("API_KEY_SALT")
-                    .unwrap_or_else(|_| "default-salt-change-in-production".to_string()),
+                api_key_salt: env::var("API_KEY_SALT").expect("API_KEY_SALT must be set"),
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
             },
             rate_limit: RateLimitConfig {
@@ -84,6 +85,16 @@ impl Config {
                     .unwrap_or_else(|_| "3600".to_string())
                     .parse()?,
             },
+            // ✅ FIX: add this
+            default_gateway: match env::var("DEFAULT_GATEWAY")
+                .unwrap_or_else(|_| "stripe".to_string())
+                .to_lowercase()
+                .as_str()
+            {
+                "paystack" => PaymentGateway::Paystack,
+                "razorpay" => PaymentGateway::Razorpay,
+                _ => PaymentGateway::Stripe,
+            },
         };
 
         // Validate critical config
@@ -96,6 +107,15 @@ impl Config {
         }
 
         Ok(config)
+    }
+
+    /// Select payment gateway based on country
+    pub fn gateway_for_country(&self, country_code: &str) -> PaymentGateway {
+        match country_code {
+            "NG" | "GH" | "KE" | "ZA" => PaymentGateway::Paystack,
+            "IN" => PaymentGateway::Razorpay,
+            _ => self.default_gateway,
+        }
     }
 
     /// Get server bind address
@@ -132,6 +152,7 @@ mod tests {
                 max_pool_size: Some(5),
                 default_ttl: 3600,
             },
+            default_gateway: PaymentGateway::Stripe,
         };
 
         assert_eq!(config.bind_address(), "127.0.0.1:3000");
