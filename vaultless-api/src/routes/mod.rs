@@ -1,6 +1,9 @@
 pub mod analytics;
+pub mod auth_router;
 pub mod health;
+pub mod message;
 pub mod notifications;
+pub mod proof;
 
 use axum::{
     Router,
