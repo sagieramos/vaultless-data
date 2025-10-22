@@ -6,6 +6,7 @@ pub mod notification;
 pub mod proof;
 pub mod usage;
 pub mod usage_timescale;
+pub mod client;
 
 pub use api_key::{ApiKey, CreateApiKey};
 pub use auth::{RefreshToken, User, UserSession};

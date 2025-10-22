@@ -14,6 +14,7 @@ pub struct Message {
     pub nonce: String,
     pub content_type: String,
     pub content_size_bytes: i32,
+    #[serde(skip_serializing)]
     pub api_key_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -23,6 +24,8 @@ pub struct Message {
     pub delivered_at: Option<DateTime<Utc>>,
     pub max_access_count: Option<i32>,
     pub require_proof_verification: bool,
+    pub sender_client_id: Option<Uuid>,     // New field
+    pub recipient_client_id: Option<Uuid>,  // New field
 }
 
 #[derive(Debug, Clone, Validate, Deserialize)]
@@ -48,6 +51,9 @@ pub struct CreateMessage {
 
     pub max_access_count: Option<i32>,
     pub require_proof_verification: bool,
+
+    pub sender_client_id: Option<Uuid>,     // Optional sender
+    pub recipient_client_id: Option<Uuid>,  // Optional recipient
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,9 +98,10 @@ impl Message {
             INSERT INTO messages (
                 recipient_id, ciphertext, nonce, content_type, 
                 content_size_bytes, api_key_id, expires_at, 
-                max_access_count, require_proof_verification
+                max_access_count, require_proof_verification,
+                sender_client_id, recipient_client_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             "#,
         )
@@ -112,6 +119,8 @@ impl Message {
         .bind(expires_at)
         .bind(input.max_access_count)
         .bind(input.require_proof_verification)
+        .bind(input.sender_client_id)
+        .bind(input.recipient_client_id)
         .fetch_one(pool)
         .await?;
 
@@ -207,12 +216,10 @@ impl Message {
 
     /// Check if message is accessible
     pub fn validate_access(&self) -> Result<()> {
-        // Check expiration
         if self.expires_at < Utc::now() {
             return Err(VaultlessError::MessageExpired);
         }
 
-        // Check access count
         if let Some(max_count) = self.max_access_count
             && self.access_count >= max_count
         {
@@ -236,7 +243,7 @@ impl Message {
         }
     }
 
-    /// Delete expired messages (cleanup job)
+    /// Delete expired messages
     pub async fn cleanup_expired(pool: &PgPool) -> Result<u64> {
         let result = sqlx::query(
             r#"
