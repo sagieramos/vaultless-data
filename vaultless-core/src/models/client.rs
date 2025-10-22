@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
-use sha2::{Sha256, Digest};
 
 use crate::error::{Result, VaultlessError};
 
@@ -10,7 +9,7 @@ use crate::error::{Result, VaultlessError};
 pub struct Client {
     pub id: Uuid,
     pub user_id: Uuid,
-    
+
     // ONLY hash stored - NEVER plaintext
     #[serde(skip_serializing)]
     pub client_identifier_hash: String,
@@ -40,7 +39,7 @@ impl Client {
         if let Some(client) = Self::find_by_hash(pool, user_id, &identifier_hash).await? {
             return Ok(client);
         }
-        
+
         // Create new
         let client = sqlx::query_as::<_, Self>(
             r#"
@@ -54,12 +53,12 @@ impl Client {
         .bind(public_key)
         .fetch_one(pool)
         .await?;
-        
+
         Ok(client)
     }
-    
+
     /// Find by hash
-    pub async fn find_by_hash (
+    pub async fn find_by_hash(
         pool: &PgPool,
         user_id: Uuid,
         identifier_hash: &str,
@@ -80,17 +79,15 @@ impl Client {
 
     /// Find by ID
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Self> {
-        let client = sqlx::query_as::<_, Self>(
-            "SELECT * FROM clients WHERE id = $1"
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| VaultlessError::NotFound("Client not found".to_string()))?;
-        
+        let client = sqlx::query_as::<_, Self>("SELECT * FROM clients WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| VaultlessError::NotFound("Client not found".to_string()))?;
+
         Ok(client)
     }
-    
+
     /// List user's clients (only returns hashes)
     pub async fn list_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Self>> {
         let clients = sqlx::query_as::<_, Self>(
@@ -103,7 +100,7 @@ impl Client {
         .bind(user_id)
         .fetch_all(pool)
         .await?;
-        
+
         Ok(clients)
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    handlers::auth::*,
+    handlers::user_auth::*,
     middleware::{
         rate_limit::{rate_limit_by_api_key, rate_limit_by_ip},
         token_auth::require_user_auth,

@@ -14,6 +14,8 @@ use crate::{
     state::AppState,
 };
 
+use crate::config::AuthHeader;
+
 /// Extract Bearer token from Authorization header
 fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     let auth_header = headers
@@ -25,13 +27,13 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
         .map_err(|_| ApiError::unauthorized("Invalid Authorization header"))?;
 
     // Must be "Bearer <token>"
-    if !auth_str.starts_with("Bearer ") {
+    if !auth_str.starts_with(AuthHeader::BEARER) {
         return Err(ApiError::unauthorized(
             "Invalid Authorization format. Expected: Bearer <token>",
         ));
     }
 
-    let token = auth_str.trim_start_matches("Bearer ").trim();
+    let token = auth_str.trim_start_matches(AuthHeader::BEARER).trim();
 
     if token.is_empty() {
         return Err(ApiError::unauthorized("Empty bearer token"));
@@ -80,8 +82,6 @@ where
     }
 }
 
-/// Header name for API key ID
-const API_KEY_ID_HEADER: &str = "X-Api-Key-Id";
 /*
 GET /v1/api/keys/details
 Authorization: Bearer <user_access_token>
@@ -132,7 +132,7 @@ pub async fn require_api_key_ownership(
 /// Extract and validate `X-Api-Key-Id` header
 fn extract_key_id_from_header(headers: &HeaderMap) -> Result<Uuid, ApiError> {
     let value = headers
-        .get(API_KEY_ID_HEADER)
+        .get(AuthHeader::API_KEY)
         .ok_or_else(|| ApiError::bad_request("Missing X-Api-Key-Id header"))?
         .to_str()
         .map_err(|_| ApiError::bad_request("Invalid X-Api-Key-Id header"))?;

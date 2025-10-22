@@ -4,7 +4,7 @@ use axum::{
 };
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 
-use crate::{handlers::auth::*, middleware::token_auth::require_user_auth, state::AppState};
+use crate::{handlers::user_auth::*, middleware::token_auth::require_user_auth, state::AppState};
 
 /// Build `/auth` routes
 pub fn auth_routes(state: AppState) -> Router {

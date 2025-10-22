@@ -5,7 +5,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use validator::Validate;
-use vaultless_core::models::auth::{LoginAttempt, User};
+use vaultless_core::models::user::{LoginAttempt, User};
 
 use crate::{
     middleware::error::ApiError,

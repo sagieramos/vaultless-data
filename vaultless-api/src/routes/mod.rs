@@ -11,7 +11,7 @@ use axum::{
 };
 
 use crate::{
-    handlers::{api_keys, auth, messages, proofs},
+    handlers::{api_keys, proofs, user_auth},
     middleware::{api_key_auth::require_client_api_key, token_auth::require_user_auth},
     state::AppState,
 };
@@ -33,23 +33,23 @@ pub fn build_routes(state: AppState) -> Router {
 /// Public and token-protected authentication routes.
 fn auth_routes(state: AppState) -> Router<AppState> {
     let protected = Router::new()
-        .route("/me", get(auth::get_current_user))
-        .route("/logout", post(auth::logout))
+        .route("/me", get(user_auth::get_current_user))
+        .route("/logout", post(user_auth::logout))
         .layer(axum::middleware::from_fn_with_state(
             state,
             require_user_auth,
         ));
 
     let public = Router::new()
-        .route("/register", post(auth::register))
-        .route("/login", post(auth::login))
-        .route("/refresh", post(auth::refresh_token))
-        .route("/verify-email", post(auth::verify_email))
+        .route("/register", post(user_auth::register))
+        .route("/login", post(user_auth::login))
+        .route("/refresh", post(user_auth::refresh_token))
+        .route("/verify-email", post(user_auth::verify_email))
         .route(
             "/request-password-reset",
-            post(auth::request_password_reset),
+            post(user_auth::request_password_reset),
         )
-        .route("/reset-password", post(auth::reset_password));
+        .route("/reset-password", post(user_auth::reset_password));
 
     public.merge(protected)
 }
@@ -59,15 +59,15 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
     // API-key protected message operations.
     let message_routes = Router::new()
         // More specific routes first to avoid shadowing.
-        .route(
+        /*         .route(
             "/{message_id}/metadata",
             get(messages::get_message_metadata),
-        )
+        )*/
         .route("/{message_id}/proof", post(proofs::create_proof))
         .route("/{message_id}/proof", get(proofs::get_message_proof))
         .route("/{message_id}/verify", post(proofs::verify_message_proof))
-        .route("/{recipient_id}", get(messages::receive_messages)) // Less specific, last.
-        .route("/send", post(messages::send_message))
+        /*         .route("/{recipient_id}", get(messages::receive_messages)) // Less specific, last.
+        .route("/send", post(messages::send_message)) */
         .layer(axum::middleware::from_fn_with_state(
             state,
             require_client_api_key,

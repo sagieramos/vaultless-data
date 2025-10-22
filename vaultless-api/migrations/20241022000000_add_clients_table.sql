@@ -1,4 +1,4 @@
--- migrations/20241022000000_add_clients_table_zero_knowledge.sql
+-- migrations/20241022000000_add_clients_table.sql
 
 -- ============================================================================
 -- CLIENTS TABLE (Zero-Knowledge)
@@ -7,7 +7,6 @@
 
 CREATE TABLE clients (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     
     -- ONLY store hash for lookup (NEVER raw identifier)
     client_identifier_hash VARCHAR(64) NOT NULL UNIQUE, -- SHA-256 hash
@@ -28,13 +27,9 @@ CREATE TABLE clients (
     last_message_at TIMESTAMPTZ,
     
     -- Minimal metadata (NO personal info)
-    metadata JSONB,
-    
-    -- Unique per user
-    UNIQUE(user_id, client_identifier_hash)
+    metadata JSONB
 );
 
-CREATE INDEX idx_clients_user_id ON clients(user_id);
 CREATE INDEX idx_clients_hash ON clients(client_identifier_hash);
 CREATE INDEX idx_clients_last_message ON clients(last_message_at DESC NULLS LAST);
 
@@ -77,7 +72,6 @@ CREATE TRIGGER trigger_update_client_last_message
 
 -- Get or create client by hash (client computes hash on their side)
 CREATE OR REPLACE FUNCTION get_or_create_client_by_hash(
-    p_user_id UUID,
     p_identifier_hash VARCHAR(64),
     p_client_type VARCHAR DEFAULT 'email',
     p_public_key TEXT DEFAULT NULL
@@ -89,13 +83,12 @@ BEGIN
     -- Try to find existing
     SELECT id INTO v_client_id
     FROM clients
-    WHERE user_id = p_user_id 
-        AND client_identifier_hash = p_identifier_hash;
+    WHERE client_identifier_hash = p_identifier_hash;
     
     -- Create if doesn't exist
     IF v_client_id IS NULL THEN
-        INSERT INTO clients (user_id, client_identifier_hash, client_type, public_key)
-        VALUES (p_user_id, p_identifier_hash, p_client_type, p_public_key)
+        INSERT INTO clients (client_identifier_hash, client_type, public_key)
+        VALUES (p_identifier_hash, p_client_type, p_public_key)
         RETURNING id INTO v_client_id;
     END IF;
     

@@ -7,6 +7,8 @@ use axum::{
 };
 use vaultless_core::ApiKey;
 
+use crate::config::AuthHeader;
+
 use crate::{
     middleware::error::ApiError,
     services::cache::{CacheService, api_key_cache_key},
@@ -14,7 +16,7 @@ use crate::{
 };
 
 /// Extract API key from request headers
-/// Supports both "Authorization: Bearer <key>" and "Authorization: <key>"
+/// Supports both "Authorization: X-api-key-id <key>" and "Authorization: <key>"
 pub async fn extract_api_key(headers: &HeaderMap) -> Result<String, ApiError> {
     let auth_header = headers
         .get("Authorization")
@@ -24,9 +26,9 @@ pub async fn extract_api_key(headers: &HeaderMap) -> Result<String, ApiError> {
         .to_str()
         .map_err(|_| ApiError::unauthorized("Invalid Authorization header"))?;
 
-    // Support both "Bearer token" and raw token
-    let api_key = if auth_str.starts_with("Bearer ") {
-        auth_str.trim_start_matches("Bearer ")
+    // Support both "X-api-key-id token" and raw token
+    let api_key = if auth_str.starts_with(AuthHeader::API_KEY) {
+        auth_str.trim_start_matches(AuthHeader::API_KEY).trim()
     } else {
         auth_str
     };
@@ -173,7 +175,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "Authorization",
-            HeaderValue::from_static("Bearer vlt_test_key_123"),
+            HeaderValue::from_static("X-Api-Key-Id vlt_test_key_123"),
         );
 
         let result = extract_api_key(&headers).await;
