@@ -21,6 +21,11 @@ pub fn auth_routes(state: AppState) -> Router<AppState> {
         .burst_size(2)
         .finish()
         .unwrap();
+    let send_verification_email_layer = GovernorConfigBuilder::default()
+        .per_second(60)
+        .burst_size(1)
+        .finish()
+        .unwrap();
 
     // Auth-protected routes (require_user_auth)
     let protected = Router::new()
@@ -35,10 +40,12 @@ pub fn auth_routes(state: AppState) -> Router<AppState> {
 
     // Public routes
     let public = Router::new()
+        .route("/send_verification_email", post(resend_verification_email))
+        .layer(GovernorLayer::new(send_verification_email_layer))
         .route("/register", post(register))
         .route("/login", post(login))
         .layer(GovernorLayer::new(strict_limit_layer)) // strict rate limit for login/register
-        .route("/verify-email", post(verify_email))
+        .route("/verify-email", get(verify_email_get))
         .route("/password/request-reset", post(request_password_reset))
         .route("/password/reset", post(reset_password));
 

@@ -99,6 +99,12 @@ pub struct RequestPasswordResetRequest {
     pub email: String,
 }
 
+#[derive(Debug, Deserialize, Validate)]
+pub struct ResendVerificationRequest {
+    #[validate(email(message = "Invalid email address"))]
+    pub email: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RequestPasswordResetResponse {
     pub message: String,

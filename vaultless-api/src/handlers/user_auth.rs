@@ -6,13 +6,20 @@ use axum::{
 };
 use std::net::SocketAddr;
 use validator::Validate;
-use vaultless_core::models::user::{LoginAttempt, User};
+use vaultless_core::models::user::User;
 
 use crate::{
     middleware::error::ApiError,
     services::token::{SessionData, TokenService},
     state::AppState,
 };
+
+use axum::{
+    extract::Query,
+    response::{Html, IntoResponse},
+};
+use std::collections::HashMap;
+use vaultless_core::VaultlessError;
 
 use super::dto::*;
 
@@ -35,12 +42,13 @@ pub async fn register(
         .map_err(ApiError::from)?;
 
     // TODO: Send verification email with user.email_verification_token
+
     tracing::info!(
         user_id = %user.id,
         email = %user.email,
-        // secure: do not log tokens in production logs
-        email_verification_token = %user.email_verification_token.clone().unwrap_or_default(),
-        "New user registered"
+        // secure: do not log url in production logs
+        verification_url = "GET /verify-email?token=[redacted]",
+        "User registered successfully"
     );
 
     Ok((
@@ -56,7 +64,6 @@ pub async fn register(
 // ============================================================================
 // LOGIN
 // ============================================================================
-
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -66,12 +73,12 @@ pub async fn login(
     req.validate()
         .map_err(|e| ApiError::bad_request(format!("Validation error: {}", e)))?;
 
-    let ip_address = addr.ip();
-    let ip_str = ip_address.to_string();
+    let ip = addr.ip();
+    let ip_str = ip.to_string();
 
-    // Check rate limiting in Dragonfly (fast!)
     let token_service = TokenService::new(state.db.clone(), state.cache.clone());
 
+    // ✅ Fast rate limit check from Dragonfly
     if token_service
         .is_rate_limited(&ip_str)
         .await
@@ -82,81 +89,51 @@ pub async fn login(
         ));
     }
 
-    // Find user
-    let user = User::find_by_email(&state.db, &req.email).await;
+    // ✅ Perform transactional login
+    let user_result = User::login_with_transaction(&state.db, &req.email, &req.password, ip).await;
 
-    let user = match user {
-        Ok(u) => u,
-        Err(_) => {
-            // Track failure
+    // ✅ Handle errors and rate-limit failures
+    let user = match user_result {
+        Ok(u) => {
+            let _ = token_service.clear_login_failures(&ip_str).await;
+            u
+        }
+        Err(VaultlessError::EmailNotVerified(token)) => {
+            // Resend verification email
+            let verification_url = token
+                .as_ref()
+                .map(|t| format!("http://localhost:8080/auth/verify-email?token={}", t))
+                .unwrap_or_else(|| "Verification link unavailable (token is None)".to_string());
+
+            // TODO. Send email
+            tracing::info!(
+                verification_url = %verification_url,
+                "User email not verified."
+            );
+
+            // TODO: Send verification email using email service
+            return Err(ApiError::unauthorized(
+                "Email not verified. Verification email has been resent.".to_string(),
+            ));
+        }
+        Err(e) => {
             let _ = token_service.track_login_failure(&ip_str).await;
-
-            // Log failed attempt in Postgres (async)
-            let db = state.db.clone();
-            let email = req.email.clone();
-            tokio::spawn(async move {
-                let _ = LoginAttempt::log(
-                    &db,
-                    email,
-                    ip_address,
-                    false,
-                    Some("User not found".to_string()),
-                )
-                .await;
-            });
-
-            return Err(ApiError::unauthorized("Invalid email or password"));
+            return Err(ApiError::from(e));
         }
     };
-
-    // Verify password
-    let password_valid = user
-        .verify_password(&req.password)
-        .map_err(ApiError::from)?;
-
-    if !password_valid {
-        // Track failure
-        let _ = token_service.track_login_failure(&ip_str).await;
-
-        // Log failed attempt (async)
-        let db = state.db.clone();
-        let email = req.email.clone();
-        tokio::spawn(async move {
-            let _ = LoginAttempt::log(
-                &db,
-                email,
-                ip_address,
-                false,
-                Some("Invalid password".to_string()),
-            )
-            .await;
-        });
-
-        return Err(ApiError::unauthorized("Invalid email or password"));
-    }
-
-    // Check if user is active
-    if !user.is_active {
-        return Err(ApiError::forbidden("Account is deactivated"));
-    }
-
-    // Clear login failures on success
-    let _ = token_service.clear_login_failures(&ip_str).await;
-
-    // Log successful attempt (async)
-    let db = state.db.clone();
-    let email = req.email.clone();
-    tokio::spawn(async move {
-        let _ = LoginAttempt::log(&db, email, ip_address, true, None).await;
-    });
-
-    // Update last login
-    let _ = User::update_last_login(&state.db, user.id).await;
-
-    // Create token pair (stored in Dragonfly!)
+    // ✅ Create access + refresh token pair (Dragonfly)
     let token_pair = token_service
         .create_token_pair(user.id, user.email.clone(), None, user.is_admin)
-        .await?;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                user_id = %user.id,
+                email = %user.email,
+                error = %e,
+                "Failed to create token pair after successful login"
+            );
+            ApiError::internal_server_error("Failed to generate tokens".to_string())
+        })?;
 
     tracing::info!(
         user_id = %user.id,
@@ -176,6 +153,32 @@ pub async fn login(
             is_admin: user.is_admin,
         },
     }))
+}
+
+/// ============================================================================
+/// RESEND VERIFICATION EMAIL
+/// ============================================================================
+/// Example: POST /resend-verification-email { "email": "<youremail@gmail.com>"}
+pub async fn resend_verification_email(
+    State(state): State<AppState>,
+    Json(req): Json<ResendVerificationRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = User::resend_verification_token(&state.db, &req.email)
+        .await
+        .map_err(ApiError::from)?;
+
+    // TODO: send email notification using your email service
+    tracing::info!(
+        user_id = %user.id,
+        email = %user.email,
+        // secure: do not log url in production logs
+        verification_url = "GET /verify-email?token=[redacted]"
+    );
+
+    Ok(Json(serde_json::json!({
+        "message": "Verification email resent successfully",
+        "email": user.email,
+    })))
 }
 
 // ============================================================================
@@ -227,7 +230,50 @@ pub async fn logout(
 // EMAIL VERIFICATION
 // ============================================================================
 
-pub async fn verify_email(
+/// ============================================================================
+/// GET HANDLER (For email link click)
+/// ============================================================================
+/// Example: GET /verify-email?token=abc123
+pub async fn verify_email_get(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    match params.get("token") {
+        Some(token) => match User::verify_email(&state.db, token).await {
+            Ok(user) => {
+                tracing::info!(
+                    user_id = %user.id,
+                    email = %user.email,
+                    "Email verified successfully via GET"
+                );
+                (
+                    StatusCode::OK,
+                    Html(format!(
+                        "<h2>Email verified successfully for {}</h2>",
+                        user.email
+                    )),
+                )
+            }
+            Err(err) => {
+                tracing::warn!("Email verification failed: {:?}", err);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Html("<h2>Invalid or expired verification link.</h2>".to_string()),
+                )
+            }
+        },
+        None => (
+            StatusCode::BAD_REQUEST,
+            Html("<h2>Missing verification token.</h2>".to_string()),
+        ),
+    }
+}
+
+/// ============================================================================
+/// POST HANDLER (For API / Mobile clients)
+/// ============================================================================
+/// Example: POST /api/verify-email { "token": "abc123" }
+pub async fn verify_email_post(
     State(state): State<AppState>,
     Json(req): Json<VerifyEmailRequest>,
 ) -> Result<Json<VerifyEmailResponse>, ApiError> {
@@ -238,7 +284,7 @@ pub async fn verify_email(
     tracing::info!(
         user_id = %user.id,
         email = %user.email,
-        "Email verified successfully"
+        "Email verified successfully via POST"
     );
 
     Ok(Json(VerifyEmailResponse {

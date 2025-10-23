@@ -20,4 +20,4 @@ pub use notification::{
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use usage::{UsageMetric, UsageSummary};
 pub use usage_timescale::{DailyUsageSummary, MonthlyTotal, UsageTrends, WeeklyUsageSummary};
-pub use user::{RefreshToken, User, UserSession};
+pub use user::{LoginAttempt, RefreshToken, User, UserSession};

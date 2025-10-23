@@ -19,7 +19,7 @@ pub fn auth_routes(state: AppState) -> Router<AppState> {
         .route("/register", post(register))
         .route("/login", post(login))
         .route("/refresh", post(refresh_token))
-        .route("/verify-email", post(verify_email))
+        .route("/verify-email", get(verify_email_get))
         .route("/password/request-reset", post(request_password_reset))
         .route("/password/reset", post(reset_password))
         // Apply IP-based rate limiting for all public endpoints
