@@ -23,7 +23,6 @@ pub struct RegisterRequest {
 
 #[derive(Debug, Serialize)]
 pub struct RegisterResponse {
-    pub user_id: String,
     pub email: String,
     pub message: String,
 }
@@ -52,7 +51,6 @@ pub struct LoginResponse {
 
 #[derive(Debug, Serialize)]
 pub struct UserInfo {
-    pub id: String,
     pub email: String,
     pub name: Option<String>,
     pub email_verified: bool,
@@ -97,6 +95,12 @@ pub struct VerifyEmailResponse {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct RequestPasswordResetRequest {
+    #[validate(email(message = "Invalid email address"))]
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct ResendVerificationRequest {
     #[validate(email(message = "Invalid email address"))]
     pub email: String,
 }

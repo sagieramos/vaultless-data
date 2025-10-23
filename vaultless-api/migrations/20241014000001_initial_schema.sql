@@ -330,9 +330,6 @@ CREATE INDEX idx_api_keys_tier ON api_keys(tier);
 CREATE TABLE messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     
-    -- Routing
-    recipient_id VARCHAR(255) NOT NULL, -- User-defined recipient identifier (can be hashed)
-    
     -- Encrypted Payload
     ciphertext TEXT NOT NULL, -- Base64-encoded AES-256-GCM encrypted data
     nonce VARCHAR(32) NOT NULL, -- Base64-encoded 96-bit nonce for AES-GCM
@@ -364,15 +361,10 @@ CREATE TABLE messages (
     CONSTRAINT valid_max_access CHECK (max_access_count IS NULL OR max_access_count > 0)
 );
 
-CREATE INDEX idx_messages_recipient ON messages(recipient_id);
 CREATE INDEX idx_messages_api_key ON messages(api_key_id);
 CREATE INDEX idx_messages_expires ON messages(expires_at);
 CREATE INDEX idx_messages_created ON messages(created_at DESC);
 CREATE INDEX idx_messages_delivered ON messages(is_delivered) WHERE is_delivered = false;
-
--- Composite index for message retrieval
-CREATE INDEX idx_messages_recipient_undelivered ON messages(recipient_id, is_delivered) 
-    WHERE is_delivered = false;
 
 -- ============================================================================
 -- MESSAGE PROOFS TABLE

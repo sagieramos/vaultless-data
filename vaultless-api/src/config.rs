@@ -1,15 +1,20 @@
 use serde::Deserialize;
 use std::env;
-use vaultless_core::PaymentGateway;
+
+pub struct AuthHeader;
+
+impl AuthHeader {
+    pub const API_KEY: &'static str = "X-Api-Key-Id ";
+    pub const BEARER: &'static str = "Bearer ";
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
-    pub rate_limit: RateLimitConfig,
+    /*  pub rate_limit: RateLimitConfig, */
     pub cache: CacheConfig,
-    pub default_gateway: PaymentGateway,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -31,10 +36,10 @@ pub struct SecurityConfig {
     pub admin_api_key: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/* #[derive(Debug, Clone, Deserialize)]
 pub struct RateLimitConfig {
     pub requests_per_minute: u32,
-}
+} */
 
 /// Dragonfly/Redis cache configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -71,11 +76,6 @@ impl Config {
                 api_key_salt: env::var("API_KEY_SALT").expect("API_KEY_SALT must be set"),
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
             },
-            rate_limit: RateLimitConfig {
-                requests_per_minute: env::var("RATE_LIMIT_PER_MINUTE")
-                    .unwrap_or_else(|_| "60".to_string())
-                    .parse()?,
-            },
             cache: CacheConfig {
                 url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
                 max_pool_size: env::var("CACHE_MAX_POOL_SIZE")
@@ -84,16 +84,6 @@ impl Config {
                 default_ttl: env::var("CACHE_DEFAULT_TTL")
                     .unwrap_or_else(|_| "3600".to_string())
                     .parse()?,
-            },
-            // ✅ FIX: add this
-            default_gateway: match env::var("DEFAULT_GATEWAY")
-                .unwrap_or_else(|_| "stripe".to_string())
-                .to_lowercase()
-                .as_str()
-            {
-                "paystack" => PaymentGateway::Paystack,
-                "razorpay" => PaymentGateway::Razorpay,
-                _ => PaymentGateway::Stripe,
             },
         };
 
@@ -107,15 +97,6 @@ impl Config {
         }
 
         Ok(config)
-    }
-
-    /// Select payment gateway based on country
-    pub fn gateway_for_country(&self, country_code: &str) -> PaymentGateway {
-        match country_code {
-            "NG" | "GH" | "KE" | "ZA" => PaymentGateway::Paystack,
-            "IN" => PaymentGateway::Razorpay,
-            _ => self.default_gateway,
-        }
     }
 
     /// Get server bind address
@@ -144,15 +125,11 @@ mod tests {
                 api_key_salt: "test-salt".to_string(),
                 admin_api_key: "test-admin".to_string(),
             },
-            rate_limit: RateLimitConfig {
-                requests_per_minute: 100,
-            },
             cache: CacheConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 max_pool_size: Some(5),
                 default_ttl: 3600,
             },
-            default_gateway: PaymentGateway::Stripe,
         };
 
         assert_eq!(config.bind_address(), "127.0.0.1:3000");

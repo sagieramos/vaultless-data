@@ -1,6 +1,7 @@
 // vaultless-core/src/models/usage.rs
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::{Executor, Postgres};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
@@ -36,11 +37,14 @@ pub struct UsageSummary {
 
 impl UsageMetric {
     /// Create or update usage metrics for current hour
-    pub async fn record_message_sent(
-        pool: &PgPool,
+    pub async fn record_message_sent<'c, E>(
+        executor: E,
         api_key_id: Uuid,
         size_bytes: i64,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
         let now = Utc::now();
         let period_start = now
             .date_naive()
@@ -58,22 +62,25 @@ impl UsageMetric {
             VALUES ($1, $2, $3, 1, $4)
             ON CONFLICT (api_key_id, period_start)
             DO UPDATE SET
-                messages_sent = usage_metrics.messages_sent + 1,
-                total_bytes_stored = usage_metrics.total_bytes_stored + $4
+                messages_sent = usage_metrics.messages_sent + EXCLUDED.messages_sent,
+                total_bytes_stored = usage_metrics.total_bytes_stored + EXCLUDED.total_bytes_stored
             "#,
         )
         .bind(api_key_id)
         .bind(period_start)
         .bind(period_end)
         .bind(size_bytes)
-        .execute(pool)
+        .execute(executor)
         .await?;
 
         Ok(())
     }
 
     /// Record message received
-    pub async fn record_message_received(pool: &PgPool, api_key_id: Uuid) -> Result<()> {
+    pub async fn record_message_received<'c, E>(executor: E, api_key_id: Uuid) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
         let now = Utc::now();
         let period_start = now
             .date_naive()
@@ -88,15 +95,15 @@ impl UsageMetric {
                 api_key_id, period_start, period_end, messages_received
             )
             VALUES ($1, $2, $3, 1)
-            ON CONFLICT (api_key_id, date_trunc('hour', period_start))
+            ON CONFLICT (api_key_id, period_start)
             DO UPDATE SET
-                messages_received = usage_metrics.messages_received + 1
+                messages_received = usage_metrics.messages_received + EXCLUDED.messages_received
             "#,
         )
         .bind(api_key_id)
         .bind(period_start)
         .bind(period_end)
-        .execute(pool)
+        .execute(executor)
         .await?;
 
         Ok(())

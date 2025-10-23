@@ -148,7 +148,7 @@ impl TokenService {
         let db = self.db.clone();
         let scope_clone = scope.clone();
         tokio::spawn(async move {
-            if let Err(e) = vaultless_core::models::auth::UserSession::create(
+            if let Err(e) = vaultless_core::models::user::UserSession::create(
                 &db,
                 user_id,
                 access_token_hash,
@@ -164,7 +164,7 @@ impl TokenService {
         // 4. Store refresh token in Postgres (audit + fallback)
         let db_clone = self.db.clone();
         tokio::spawn(async move {
-            if let Err(e) = vaultless_core::models::auth::RefreshToken::create(
+            if let Err(e) = vaultless_core::models::user::RefreshToken::create(
                 &db_clone,
                 user_id,
                 refresh_token_hash,
@@ -203,11 +203,11 @@ impl TokenService {
 
         // Fallback: Check Postgres and repopulate cache
         let session_db =
-            vaultless_core::models::auth::UserSession::find_by_token_hash(&self.db, &token_hash)
+            vaultless_core::models::user::UserSession::find_by_token_hash(&self.db, &token_hash)
                 .await
                 .map_err(|_| ApiError::unauthorized("Invalid or expired token"))?;
 
-        let user = vaultless_core::models::auth::User::find_by_id(&self.db, session_db.user_id)
+        let user = vaultless_core::models::user::User::find_by_id(&self.db, session_db.user_id)
             .await
             .map_err(ApiError::from)?;
 
@@ -274,7 +274,7 @@ impl TokenService {
             // Fallback to Postgres
             tracing::debug!("Refresh token cache miss, checking Postgres");
 
-            let token = vaultless_core::models::auth::RefreshToken::find_by_hash(
+            let token = vaultless_core::models::user::RefreshToken::find_by_hash(
                 &self.db,
                 &refresh_token_hash,
             )
@@ -298,7 +298,7 @@ impl TokenService {
             );
 
             // Revoke entire family
-            vaultless_core::models::auth::RefreshToken::revoke_family(&self.db, token_family)
+            vaultless_core::models::user::RefreshToken::revoke_family(&self.db, token_family)
                 .await
                 .map_err(ApiError::from)?;
 
@@ -315,7 +315,7 @@ impl TokenService {
         }
 
         // Get user info
-        let user = vaultless_core::models::auth::User::find_by_id(&self.db, user_id)
+        let user = vaultless_core::models::user::User::find_by_id(&self.db, user_id)
             .await
             .map_err(ApiError::from)?;
 
@@ -358,8 +358,8 @@ impl TokenService {
         tokio::spawn(async move {
             // Find old token first
             if let Ok(old_token) =
-                vaultless_core::models::auth::RefreshToken::find_by_hash(&db, &old_hash).await
-                && let Err(e) = vaultless_core::models::auth::RefreshToken::rotate(
+                vaultless_core::models::user::RefreshToken::find_by_hash(&db, &old_hash).await
+                && let Err(e) = vaultless_core::models::user::RefreshToken::rotate(
                     &db,
                     old_token.id,
                     new_hash_clone,
@@ -410,7 +410,7 @@ impl TokenService {
         // Log in Postgres (async)
         let db = self.db.clone();
         tokio::spawn(async move {
-            if let Err(e) = vaultless_core::models::auth::UserSession::create(
+            if let Err(e) = vaultless_core::models::user::UserSession::create(
                 &db,
                 user.id,
                 new_access_hash,
@@ -445,10 +445,10 @@ impl TokenService {
         let db = self.db.clone();
         tokio::spawn(async move {
             if let Ok(session) =
-                vaultless_core::models::auth::UserSession::find_by_token_hash(&db, &token_hash)
+                vaultless_core::models::user::UserSession::find_by_token_hash(&db, &token_hash)
                     .await
                 && let Err(e) =
-                    vaultless_core::models::auth::UserSession::revoke(&db, session.id).await
+                    vaultless_core::models::user::UserSession::revoke(&db, session.id).await
             {
                 tracing::warn!("Failed to revoke session in Postgres: {}", e);
             }
@@ -463,7 +463,7 @@ impl TokenService {
         // So we rely on PostgreSQL to list sessions, then delete from cache
 
         // Revoke in Postgres first
-        vaultless_core::models::auth::UserSession::revoke_all_for_user(&self.db, user_id)
+        vaultless_core::models::user::UserSession::revoke_all_for_user(&self.db, user_id)
             .await
             .map_err(ApiError::from)?;
 

@@ -1,9 +1,10 @@
-// vaultless-core/src/error.rs
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum VaultlessError {
+    // =========================================================================
     // Database errors
+    // =========================================================================
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -16,13 +17,26 @@ pub enum VaultlessError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    // =========================================================================
     // Validation errors
+    // =========================================================================
     #[error("Validation error: {0}")]
     Validation(String),
 
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
+    // =========================================================================
     // Authentication / Authorization errors
-    #[error("Unauthorized")]
+    // =========================================================================
+    #[error("Unauthorized: {0}")]
     Unauthorized(String),
+
+    #[error("Email not verified")]
+    EmailNotVerified(Option<String>),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 
     #[error("Invalid API key")]
     InvalidApiKey,
@@ -33,7 +47,9 @@ pub enum VaultlessError {
     #[error("API key inactive")]
     ApiKeyInactive,
 
+    // =========================================================================
     // Business logic errors
+    // =========================================================================
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
@@ -46,7 +62,9 @@ pub enum VaultlessError {
     #[error("Message access limit reached")]
     MessageAccessLimitReached,
 
+    // =========================================================================
     // Cryptography errors
+    // =========================================================================
     #[error("Encryption error: {0}")]
     Encryption(String),
 
@@ -59,7 +77,9 @@ pub enum VaultlessError {
     #[error("Invalid proof")]
     InvalidProof,
 
+    // =========================================================================
     // Generic errors
+    // =========================================================================
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -74,7 +94,10 @@ impl VaultlessError {
         matches!(
             self,
             VaultlessError::Validation(_)
+                | VaultlessError::BadRequest(_)
                 | VaultlessError::Unauthorized(_)
+                | VaultlessError::EmailNotVerified(_)
+                | VaultlessError::Forbidden(_)
                 | VaultlessError::InvalidApiKey
                 | VaultlessError::ApiKeyExpired
                 | VaultlessError::ApiKeyInactive
@@ -92,12 +115,14 @@ impl VaultlessError {
         match self {
             VaultlessError::NotFound(_) => 404,
             VaultlessError::Unauthorized(_) => 401,
+            VaultlessError::EmailNotVerified(_) => 401,
+            VaultlessError::Forbidden(_) => 403,
             VaultlessError::InvalidApiKey => 401,
             VaultlessError::ApiKeyExpired => 401,
             VaultlessError::ApiKeyInactive => 403,
             VaultlessError::QuotaExceeded(_) => 429,
             VaultlessError::RateLimitExceeded => 429,
-            VaultlessError::Validation(_) => 400,
+            VaultlessError::Validation(_) | VaultlessError::BadRequest(_) => 400,
             VaultlessError::Duplicate(_) | VaultlessError::Conflict(_) => 409,
             VaultlessError::MessageExpired => 410,
             VaultlessError::MessageAccessLimitReached => 410,

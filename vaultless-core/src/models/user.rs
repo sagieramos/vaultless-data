@@ -1,6 +1,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::{Acquire, Postgres, Transaction};
 use sqlx::{FromRow, postgres::PgPool};
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -147,20 +148,20 @@ impl User {
     pub async fn request_password_reset(
         pool: &PgPool,
         email: &str,
-    ) -> Result<String, VaultlessError> {
+    ) -> Result<Option<String>, VaultlessError> {
         let reset_token = Self::generate_token().map_err(|e| {
             VaultlessError::Internal(format!("Failed to generate reset token: {}", e))
         })?;
         let reset_expires = Utc::now() + Duration::hours(1);
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"
-            UPDATE users 
-            SET password_reset_token = $1,
-                password_reset_expires_at = $2,
-                updated_at = NOW()
-            WHERE email = $3 AND is_active = true
-            "#,
+        UPDATE users 
+        SET password_reset_token = $1,
+            password_reset_expires_at = $2,
+            updated_at = NOW()
+        WHERE email = $3 AND is_active = true
+        "#,
         )
         .bind(&reset_token)
         .bind(reset_expires)
@@ -168,7 +169,12 @@ impl User {
         .execute(pool)
         .await?;
 
-        Ok(reset_token)
+        if result.rows_affected() == 0 {
+            // No user found or not active
+            return Ok(None);
+        }
+
+        Ok(Some(reset_token))
     }
 
     /// Reset password with token
@@ -207,6 +213,210 @@ impl User {
         getrandom::fill(&mut seed)?;
         Ok(URL_SAFE_NO_PAD.encode(seed))
     }
+
+    /// Perform secure login within a transaction
+    pub async fn login_with_transaction(
+        pool: &PgPool,
+        email: &str,
+        password: &str,
+        ip_address: IpAddr,
+    ) -> Result<User, VaultlessError> {
+        // Start transaction
+        let mut tx: Transaction<'_, Postgres> = pool.begin().await?;
+
+        // 1️⃣ Find user (FOR UPDATE to prevent race conditions)
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1 FOR UPDATE")
+            .bind(email)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+        let user = match user {
+            Some(u) => u,
+            None => {
+                LoginAttempt::log_tx(
+                    &mut tx,
+                    email,
+                    ip_address,
+                    false,
+                    Some("User not found".into()),
+                )
+                .await?;
+                tx.commit().await?;
+                return Err(VaultlessError::Unauthorized(
+                    "Invalid email or password".into(),
+                ));
+            }
+        };
+
+        // 2️⃣ Verify password
+        let password_ok = bcrypt::verify(password, &user.password_hash).map_err(|e| {
+            VaultlessError::Internal(format!("Password verification failed: {}", e))
+        })?;
+
+        if !password_ok {
+            LoginAttempt::log_tx(
+                &mut tx,
+                email,
+                ip_address,
+                false,
+                Some("Invalid password".into()),
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(VaultlessError::Unauthorized(
+                "Invalid email or password".into(),
+            ));
+        }
+
+        // 3️⃣ Check active & verified status
+        if !user.is_active {
+            tracing::warn!(
+                user_id = %user.id,
+                email = %user.email,
+                "Login attempt on deactivated account"
+            );
+            return Err(VaultlessError::Forbidden("Account is deactivated".into()));
+        }
+
+        if !user.email_verified {
+            // Auto-regenerate token if expired or missing
+            let should_regenerate = user
+                .email_verification_expires_at
+                .map(|t| t < Utc::now())
+                .unwrap_or(true);
+
+            if should_regenerate {
+                let new_token = Self::generate_token().map_err(|e| {
+                    VaultlessError::Internal(format!(
+                        "Failed to generate verification token: {}",
+                        e
+                    ))
+                })?;
+                sqlx::query(
+                    r#"
+                UPDATE users
+                SET email_verification_token = $1,
+                    email_verification_expires_at = $2,
+                    updated_at = NOW()
+                WHERE id = $3
+                "#,
+                )
+                .bind(new_token)
+                .bind(Utc::now() + Duration::hours(24))
+                .bind(user.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        user_id = %user.id,
+                        email = %user.email,
+                        error = %e,
+                        "Failed to regenerate email verification token"
+                    );
+                    VaultlessError::Database(e)
+                })?;
+                tracing::info!(
+                    user_id = %user.id,
+                    email = %user.email,
+                    "Email verification token regenerated"
+                );
+            }
+
+            tx.commit().await?;
+            return Err(VaultlessError::EmailNotVerified(
+                user.email_verification_token,
+            ));
+        }
+
+        // 4️⃣ Update last login timestamp
+        sqlx::query("UPDATE users SET last_login_at = NOW() WHERE id = $1")
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    user_id = %user.id,
+                    email = %user.email,
+                    error = %e,
+                    "Failed to update last login timestamp"
+                );
+                VaultlessError::Database(e)
+            })?;
+
+        // 5️⃣ Log successful login
+        LoginAttempt::log_tx(&mut tx, email, ip_address, true, None)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    user_id = %user.id,
+                    email = %user.email,
+                    error = %e,
+                    "Failed to log successful login"
+                );
+                e
+            })?;
+
+        // Commit transaction atomically
+        tx.commit().await.map_err(|e| {
+            tracing::error!(
+                user_id = %user.id,
+                email = %user.email,
+                error = %e,
+                "Failed to commit login transaction"
+            );
+            VaultlessError::Database(e)
+        })?;
+
+        Ok(user)
+    }
+
+    /// Resend verification email (regenerate token)
+    pub async fn resend_verification_token(
+        pool: &PgPool,
+        email: &str,
+    ) -> Result<Self, VaultlessError> {
+        // Check if user exists and not verified
+        let user = sqlx::query_as::<_, User>(
+            "SELECT * FROM users WHERE email = $1 AND email_verified = false",
+        )
+        .bind(email)
+        .fetch_optional(pool)
+        .await?;
+
+        let user = match user {
+            Some(u) => u,
+            None => {
+                return Err(VaultlessError::BadRequest(
+                    "User not found or already verified".into(),
+                ));
+            }
+        };
+
+        // Generate new token
+        let token = Self::generate_token()
+            .map_err(|e| VaultlessError::Internal(format!("Token generation failed: {}", e)))?;
+
+        let expires_at = Utc::now() + Duration::hours(24);
+
+        // Update token and expiry
+        let updated_user = sqlx::query_as::<_, User>(
+            r#"
+            UPDATE users
+            SET email_verification_token = $1,
+                email_verification_expires_at = $2,
+                updated_at = NOW()
+            WHERE id = $3
+            RETURNING *
+            "#,
+        )
+        .bind(&token)
+        .bind(expires_at)
+        .bind(user.id)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(updated_user)
+    }
 }
 
 // ============================================================================
@@ -219,7 +429,7 @@ pub struct UserSession {
     pub user_id: Uuid,
     /*
     #[serde(skip_serializing)]
-    #[sqlx(skip)]
+    #[sqlx(skip)]resend_verification_token
     pub access_token: String,
     */
     pub access_token_hash: String,
@@ -227,7 +437,7 @@ pub struct UserSession {
     pub scope: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub user_agent: Option<String>,
-    pub ip_address: Option<String>, // Changed to String
+    pub ip_address: Option<String>,
     pub device_id: Option<String>,
     pub is_active: bool,
     pub revoked_at: Option<DateTime<Utc>>,
@@ -434,10 +644,9 @@ pub struct LoginAttempt {
 }
 
 impl LoginAttempt {
-    /// Log login attempt
-    pub async fn log(
-        pool: &PgPool,
-        email: String,
+    pub async fn log_tx(
+        tx: &mut Transaction<'_, Postgres>,
+        email: &str,
         ip_address: IpAddr,
         success: bool,
         failure_reason: Option<String>,
@@ -449,12 +658,11 @@ impl LoginAttempt {
             "#,
         )
         .bind(email)
-        .bind(ip_address.to_string()) // Convert to String, cast to inet
+        .bind(ip_address.to_string())
         .bind(success)
         .bind(failure_reason)
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
-
         Ok(())
     }
 

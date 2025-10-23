@@ -95,18 +95,68 @@ impl fmt::Display for ApiError {
 /// Convert VaultlessError to ApiError
 impl From<VaultlessError> for ApiError {
     fn from(err: VaultlessError) -> Self {
-        let status =
-            StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        match err {
+            // --- Authentication / authorization errors ---
+            VaultlessError::EmailNotVerified(_) => ApiError::unauthorized(
+                "Email not verified. A new verification email has been sent.",
+            )
+            .with_code("EMAIL_NOT_VERIFIED"),
 
-        let message = if err.is_client_error() {
-            err.to_string()
-        } else {
-            // Don't expose internal errors to clients
-            tracing::error!("Internal error: {:?}", err);
-            "An internal error occurred".to_string()
-        };
+            VaultlessError::Unauthorized(msg) => {
+                ApiError::unauthorized(msg).with_code("UNAUTHORIZED")
+            }
 
-        Self::new(status, message)
+            VaultlessError::Forbidden(msg) => ApiError::forbidden(msg).with_code("FORBIDDEN"),
+
+            VaultlessError::InvalidApiKey => {
+                ApiError::unauthorized("Invalid API key").with_code("INVALID_API_KEY")
+            }
+
+            VaultlessError::ApiKeyExpired => {
+                ApiError::unauthorized("API key expired").with_code("API_KEY_EXPIRED")
+            }
+
+            VaultlessError::ApiKeyInactive => {
+                ApiError::forbidden("API key inactive").with_code("API_KEY_INACTIVE")
+            }
+
+            // --- Client-side errors ---
+            VaultlessError::NotFound(msg) => ApiError::not_found(msg).with_code("NOT_FOUND"),
+
+            VaultlessError::Validation(msg) | VaultlessError::BadRequest(msg) => {
+                ApiError::bad_request(msg).with_code("BAD_REQUEST")
+            }
+
+            VaultlessError::Duplicate(msg) | VaultlessError::Conflict(msg) => {
+                ApiError::conflict(msg).with_code("CONFLICT")
+            }
+
+            // --- Rate limit / quota errors ---
+            VaultlessError::QuotaExceeded(msg) => {
+                ApiError::too_many_requests(msg).with_code("QUOTA_EXCEEDED")
+            }
+
+            VaultlessError::RateLimitExceeded => {
+                ApiError::too_many_requests("Rate limit exceeded").with_code("RATE_LIMIT_EXCEEDED")
+            }
+
+            // --- Message lifecycle ---
+            VaultlessError::MessageExpired => {
+                ApiError::new(StatusCode::GONE, "Message expired").with_code("MESSAGE_EXPIRED")
+            }
+
+            VaultlessError::MessageAccessLimitReached => {
+                ApiError::new(StatusCode::GONE, "Message access limit reached")
+                    .with_code("MESSAGE_ACCESS_LIMIT_REACHED")
+            }
+
+            // --- Internal errors (do not expose message) ---
+            _ => {
+                tracing::error!("Internal error: {:?}", err);
+                ApiError::internal_server_error("An internal error occurred")
+                    .with_code("INTERNAL_ERROR")
+            }
+        }
     }
 }
 

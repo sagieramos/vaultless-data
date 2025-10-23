@@ -4,10 +4,10 @@ use axum::{
 };
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 
-use crate::{handlers::auth::*, middleware::token_auth::require_user_auth, state::AppState};
+use crate::{handlers::user_auth::*, middleware::token_auth::require_user_auth, state::AppState};
 
 /// Build `/auth` routes
-pub fn auth_routes(state: AppState) -> Router {
+pub fn auth_routes(state: AppState) -> Router<AppState> {
     // Global rate limiter for auth actions
     let rate_limit_layer = GovernorConfigBuilder::default()
         .per_second(3)
@@ -19,6 +19,11 @@ pub fn auth_routes(state: AppState) -> Router {
     let strict_limit_layer = GovernorConfigBuilder::default()
         .per_second(1)
         .burst_size(2)
+        .finish()
+        .unwrap();
+    let send_verification_email_layer = GovernorConfigBuilder::default()
+        .per_second(60)
+        .burst_size(1)
         .finish()
         .unwrap();
 
@@ -35,16 +40,18 @@ pub fn auth_routes(state: AppState) -> Router {
 
     // Public routes
     let public = Router::new()
+        .route("/send_verification_email", post(resend_verification_email))
+        .layer(GovernorLayer::new(send_verification_email_layer))
         .route("/register", post(register))
         .route("/login", post(login))
         .layer(GovernorLayer::new(strict_limit_layer)) // strict rate limit for login/register
-        .route("/verify-email", post(verify_email))
+        .route("/verify-email", get(verify_email_get))
         .route("/password/request-reset", post(request_password_reset))
         .route("/password/reset", post(reset_password));
 
     // Combine routers
     Router::new()
-        .nest("/auth", public)
+        .merge(public)
         .merge(protected)
         .layer(GovernorLayer::new(rate_limit_layer))
         .with_state(state)
