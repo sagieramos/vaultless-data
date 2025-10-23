@@ -7,7 +7,7 @@ use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use crate::{handlers::user_auth::*, middleware::token_auth::require_user_auth, state::AppState};
 
 /// Build `/auth` routes
-pub fn auth_routes(state: AppState) -> Router {
+pub fn auth_routes(state: AppState) -> Router<AppState> {
     // Global rate limiter for auth actions
     let rate_limit_layer = GovernorConfigBuilder::default()
         .per_second(3)
@@ -44,7 +44,7 @@ pub fn auth_routes(state: AppState) -> Router {
 
     // Combine routers
     Router::new()
-        .nest("/auth", public)
+        .merge(public)
         .merge(protected)
         .layer(GovernorLayer::new(rate_limit_layer))
         .with_state(state)

@@ -147,20 +147,20 @@ impl User {
     pub async fn request_password_reset(
         pool: &PgPool,
         email: &str,
-    ) -> Result<String, VaultlessError> {
+    ) -> Result<Option<String>, VaultlessError> {
         let reset_token = Self::generate_token().map_err(|e| {
             VaultlessError::Internal(format!("Failed to generate reset token: {}", e))
         })?;
         let reset_expires = Utc::now() + Duration::hours(1);
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"
-            UPDATE users 
-            SET password_reset_token = $1,
-                password_reset_expires_at = $2,
-                updated_at = NOW()
-            WHERE email = $3 AND is_active = true
-            "#,
+        UPDATE users 
+        SET password_reset_token = $1,
+            password_reset_expires_at = $2,
+            updated_at = NOW()
+        WHERE email = $3 AND is_active = true
+        "#,
         )
         .bind(&reset_token)
         .bind(reset_expires)
@@ -168,7 +168,12 @@ impl User {
         .execute(pool)
         .await?;
 
-        Ok(reset_token)
+        if result.rows_affected() == 0 {
+            // No user found or not active
+            return Ok(None);
+        }
+
+        Ok(Some(reset_token))
     }
 
     /// Reset password with token

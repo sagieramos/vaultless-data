@@ -1,3 +1,4 @@
+// user handlers: registration, login, logout, token refresh, email verification, password reset
 use axum::{
     Json,
     extract::{ConnectInfo, State},
@@ -21,7 +22,7 @@ use super::dto::*;
 
 pub async fn register(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    /*  ConnectInfo(addr): ConnectInfo<SocketAddr>, */
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), ApiError> {
     // Validate request
@@ -37,13 +38,14 @@ pub async fn register(
     tracing::info!(
         user_id = %user.id,
         email = %user.email,
+        // secure: do not log tokens in production logs
+        email_verification_token = %user.email_verification_token.clone().unwrap_or_default(),
         "New user registered"
     );
 
     Ok((
         StatusCode::CREATED,
         Json(RegisterResponse {
-            user_id: user.id.to_string(),
             email: user.email.clone(),
             message: "Registration successful. Please check your email to verify your account."
                 .to_string(),
@@ -168,7 +170,6 @@ pub async fn login(
         token_type: token_pair.token_type,
         expires_in: token_pair.expires_in,
         user: UserInfo {
-            id: user.id.to_string(),
             email: user.email,
             name: user.name,
             email_verified: user.email_verified,
@@ -253,20 +254,40 @@ pub async fn verify_email(
 pub async fn request_password_reset(
     State(state): State<AppState>,
     Json(req): Json<RequestPasswordResetRequest>,
-) -> Result<Json<RequestPasswordResetResponse>, ApiError> {
+) -> Result<(StatusCode, Json<RequestPasswordResetResponse>), ApiError> {
     req.validate()
         .map_err(|e| ApiError::bad_request(format!("Validation error: {}", e)))?;
 
-    // Generate reset token (don't reveal if email exists)
-    let _ = User::request_password_reset(&state.db, &req.email).await;
+    match User::request_password_reset(&state.db, &req.email).await {
+        Ok(Some(reset_token)) => {
+            tracing::info!(
+                email = %req.email,
+                password_reset_token = %reset_token,
+                "Password reset token generated"
+            );
 
-    // TODO: Send password reset email
+            // TODO: Send password reset email
 
-    tracing::info!(email = %req.email, "Password reset requested");
-
-    Ok(Json(RequestPasswordResetResponse {
-        message: "If the email exists, a password reset link has been sent.".to_string(),
-    }))
+            Ok((
+                StatusCode::OK,
+                Json(RequestPasswordResetResponse {
+                    message: "Password reset token generated successfully.".to_string(),
+                }),
+            ))
+        }
+        Ok(None) => {
+            tracing::warn!(email = %req.email, "No active account found for password reset");
+            Err(ApiError::not_found(
+                "No active account found for the provided email",
+            ))
+        }
+        Err(e) => {
+            tracing::error!(email = %req.email, error = %e, "Password reset failed");
+            Err(ApiError::internal_server_error(
+                "Failed to process password reset request",
+            ))
+        }
+    }
 }
 
 // ============================================================================
@@ -314,7 +335,6 @@ pub async fn get_current_user(
 
     Ok(Json(CurrentUserResponse {
         user: UserInfo {
-            id: user.id.to_string(),
             email: user.email,
             name: user.name,
             email_verified: user.email_verified,
