@@ -48,7 +48,7 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
     tracing::debug!("Validating API key. Hash: {}", key_hash);
 
     // Try cache first
-    let cache = CacheService::new(state.cache.clone(), state.config.cache.default_ttl);
+    let cache = CacheService::new(state.redis_pool.clone(), state.config.cache.default_ttl);
     let cache_key = api_key_cache_key(&key_hash);
 
     // Check cache

@@ -9,6 +9,7 @@ pub mod proof;
 pub mod usage;
 pub mod usage_timescale;
 pub mod user;
+pub mod email_job;
 
 pub use api_key::{ApiKey, CreateApiKey};
 pub use billing::*;

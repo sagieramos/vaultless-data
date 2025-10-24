@@ -31,6 +31,7 @@ pub fn auth_routes(state: AppState) -> Router<AppState> {
     let protected = Router::new()
         .route("/logout", post(logout))
         .route("/me", get(get_current_user))
+        .route("/logout", get(logout))
         // refresh can optionally be protected (recommended)
         .route("/refresh", post(refresh_token))
         .route_layer(axum::middleware::from_fn_with_state(

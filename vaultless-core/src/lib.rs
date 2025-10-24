@@ -12,7 +12,7 @@ pub use models::{
     ApiKey, CreateApiKey, CreateMessage, CreateProof, DailyUsageSummary, Message, MessageMetadata,
     MessageProof, MonthlyTotal, ProofVerificationResult, RefreshToken, UsageMetric, UsageSummary,
     UsageTrends, User, UserSession, VerifyProofRequest, WeeklyUsageSummary, billing::*, client::*,
-    client_token::*, message::*, notification::*,
+    client_token::*, message::*, notification::*, email_job::*
 };
 
 // Re-export crypto functions

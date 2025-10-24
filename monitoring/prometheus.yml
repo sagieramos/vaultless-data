@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s        # Default scrape interval
+  evaluation_interval: 15s    # How often Prometheus evaluates rules
+
+scrape_configs:
+  # ============================
+  # Vaultless API Metrics
+  # ============================
+  - job_name: "vaultless-api"
+    metrics_path: "/metrics"
+    scrape_interval: 10s      # Faster interval for development
+    static_configs:
+      - targets: ["host.docker.internal:3000"]  # If API runs on host
+        labels:
+          service: "vaultless-api"
+
+  # ============================
+  # Dragonfly Metrics
+  # ============================
+  - job_name: "dragonfly"
+    static_configs:
+      - targets: ["dragonfly:6379"]
+        labels:
+          service: "dragonfly"

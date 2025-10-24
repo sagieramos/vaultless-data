@@ -16,7 +16,7 @@ pub async fn rate_limit_by_api_key(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let rate_limiter = RateLimiter::new(state.cache.clone());
+    let rate_limiter = RateLimiter::new(state.redis_pool.clone());
 
     // Check rate limit
     let result = rate_limiter
@@ -57,7 +57,7 @@ pub async fn rate_limit_by_ip(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let rate_limiter = RateLimiter::new(state.cache.clone());
+    let rate_limiter = RateLimiter::new(state.redis_pool.clone());
     let ip = addr.ip().to_string();
 
     // Default IP limit: 100 requests per minute
@@ -88,7 +88,7 @@ pub async fn rate_limit_endpoint(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let rate_limiter = RateLimiter::new(state.cache.clone());
+    let rate_limiter = RateLimiter::new(state.redis_pool.clone());
     let endpoint = request.uri().path();
 
     // Endpoint-specific limits

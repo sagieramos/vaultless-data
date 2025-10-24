@@ -76,7 +76,7 @@ pub async fn login(
     let ip = addr.ip();
     let ip_str = ip.to_string();
 
-    let token_service = TokenService::new(state.db.clone(), state.cache.clone());
+    let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
     // ✅ Fast rate limit check from Dragonfly
     if token_service
@@ -189,7 +189,7 @@ pub async fn refresh_token(
     State(state): State<AppState>,
     Json(req): Json<RefreshTokenRequest>,
 ) -> Result<Json<RefreshTokenResponse>, ApiError> {
-    let token_service = TokenService::new(state.db.clone(), state.cache.clone());
+    let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
     let token_pair = token_service.refresh_token(&req.refresh_token).await?;
 
@@ -209,7 +209,7 @@ pub async fn logout(
     State(state): State<AppState>,
     session: SessionData,
 ) -> Result<Json<LogoutResponse>, ApiError> {
-    let token_service = TokenService::new(state.db.clone(), state.cache.clone());
+    let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
     // Revoke all tokens for this user
     let user_id = session
@@ -352,7 +352,7 @@ pub async fn reset_password(
         .map_err(ApiError::from)?;
 
     // Revoke all existing sessions (force re-login)
-    let token_service = TokenService::new(state.db.clone(), state.cache.clone());
+    let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
     let _ = token_service.revoke_all_user_tokens(user.id).await;
 
     tracing::info!(user_id = %user.id, "Password reset successfully");
