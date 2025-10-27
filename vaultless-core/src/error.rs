@@ -1,3 +1,6 @@
+use deadpool_redis::PoolError as DeadpoolRedisPoolError;
+use redis::RedisError;
+use serde_json::Error as SerdeJsonError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -25,6 +28,9 @@ pub enum VaultlessError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 
     // =========================================================================
     // Authentication / Authorization errors
@@ -78,6 +84,12 @@ pub enum VaultlessError {
     InvalidProof,
 
     // =========================================================================
+    // Timeout errors
+    // =========================================================================
+    #[error("Operation timed out: {0}")]
+    Timeout(String),
+
+    // =========================================================================
     // Generic errors
     // =========================================================================
     #[error("Internal error: {0}")]
@@ -95,6 +107,7 @@ impl VaultlessError {
             self,
             VaultlessError::Validation(_)
                 | VaultlessError::BadRequest(_)
+                | VaultlessError::InvalidInput(_)
                 | VaultlessError::Unauthorized(_)
                 | VaultlessError::EmailNotVerified(_)
                 | VaultlessError::Forbidden(_)
@@ -108,6 +121,7 @@ impl VaultlessError {
                 | VaultlessError::NotFound(_)
                 | VaultlessError::Duplicate(_)
                 | VaultlessError::Conflict(_)
+                | VaultlessError::Timeout(_) // Timeout can be a client error in some contexts
         )
     }
 
@@ -122,11 +136,39 @@ impl VaultlessError {
             VaultlessError::ApiKeyInactive => 403,
             VaultlessError::QuotaExceeded(_) => 429,
             VaultlessError::RateLimitExceeded => 429,
-            VaultlessError::Validation(_) | VaultlessError::BadRequest(_) => 400,
+            VaultlessError::Validation(_)
+            | VaultlessError::BadRequest(_)
+            | VaultlessError::InvalidInput(_) => 400,
             VaultlessError::Duplicate(_) | VaultlessError::Conflict(_) => 409,
             VaultlessError::MessageExpired => 410,
             VaultlessError::MessageAccessLimitReached => 410,
+            VaultlessError::Timeout(_) => 408, // 408 Request Timeout
             _ => 500,
         }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Implement From trait for Redis Pool Errors
+// -------------------------------------------------------------------------
+
+/// Converts a deadpool-redis connection pool error into VaultlessError::Internal.
+impl From<DeadpoolRedisPoolError> for VaultlessError {
+    fn from(e: DeadpoolRedisPoolError) -> Self {
+        VaultlessError::Internal(format!("Redis pool connection error: {}", e))
+    }
+}
+
+/// Converts a standard redis-rs error into VaultlessError::Internal.
+impl From<RedisError> for VaultlessError {
+    fn from(e: RedisError) -> Self {
+        VaultlessError::Internal(format!("Redis command error: {}", e))
+    }
+}
+
+// And add this implementation:
+impl From<SerdeJsonError> for VaultlessError {
+    fn from(e: SerdeJsonError) -> Self {
+        VaultlessError::Internal(format!("Serialization error: {}", e))
     }
 }

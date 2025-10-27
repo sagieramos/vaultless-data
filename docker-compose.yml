@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: timescale/timescaledb:2.15.2-pg16
+    image: timescale/timescaledb:2.15.2-pg16 # postgres:16-alpine
     container_name: vaultless-postgres
     environment:
       POSTGRES_USER: vaultless
@@ -33,42 +33,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  vaultless-api:
-    build: .
-    container_name: vaultless-api
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_URL=postgres://vaultless:vaultless_dev_pass@postgres:5432/vaultless_db
-      - CACHE_URL=redis://dragonfly:6379
-      - RUST_LOG=info
-    depends_on:
-      - postgres
-      - dragonfly
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: vaultless-prometheus
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-    ports:
-      - "9090:9090"
-    depends_on:
-      - vaultless-api
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: vaultless-grafana
-    ports:
-      - "3001:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
-    depends_on:
-      - prometheus
 
 volumes:
   postgres_data:

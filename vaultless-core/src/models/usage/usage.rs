@@ -19,7 +19,9 @@ use deadpool_redis::{Pool as RedisPool, Runtime as RedisRuntime};
 use redis::{AsyncCommands, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, PgPool, Postgres};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::HashMap, sync::Arc};
+use tokio::time::error::Elapsed;
 use tokio::{
     sync::Notify,
     time::{Duration, interval},
@@ -29,6 +31,8 @@ use uuid::Uuid;
 
 use crate::error::{Result, VaultlessError};
 use crate::models::ApiKey;
+
+// Removed unused 'metrics::CounterFn' import
 
 // =============================================================================
 // Type Aliases & Constants
@@ -40,17 +44,102 @@ pub type RedisConn = ConnectionManager;
 /// Alias for pooled Redis used by the hot request path.
 pub type RedisPoolType = RedisPool;
 
-/// Maximum number of keys to flush in a single transaction
-const MAX_BATCH_SIZE: usize = 1000;
+/// Default maximum number of keys to flush in a single transaction
+const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 
-/// Redis key TTL for metric hashes (2 hours)
-const METRIC_TTL_SECS: i64 = 7200;
+/// Default Redis key TTL for metric hashes (2 hours)
+const DEFAULT_METRIC_TTL_SECS: i64 = 7200;
+
+/// Default flush interval in seconds
+const DEFAULT_FLUSH_INTERVAL_SECS: u64 = 300; // 5 minutes
 
 /// Set name for tracking active metric keys
 const ACTIVE_KEYS_SET: &str = "metric:active_keys";
 
 /// Field name to mark a key as being processed
 const PROCESSING_FLAG: &str = "_processing";
+
+/// Redis operation timeout in seconds
+const REDIS_OPERATION_TIMEOUT_SECS: u64 = 30;
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+#[derive(Clone, Debug)]
+pub struct MetricsConfig {
+    pub max_batch_size: usize,
+    pub metric_ttl_secs: i64,
+    pub flush_interval_secs: u64,
+    pub redis_operation_timeout_secs: u64,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+            metric_ttl_secs: DEFAULT_METRIC_TTL_SECS,
+            flush_interval_secs: DEFAULT_FLUSH_INTERVAL_SECS,
+            redis_operation_timeout_secs: REDIS_OPERATION_TIMEOUT_SECS,
+        }
+    }
+}
+
+// =============================================================================
+// Metrics Collection (FIXED)
+// =============================================================================
+
+// Removed Clone/Default derive as AtomicU64 does not implement them
+#[derive(Debug)]
+pub struct FlusherMetrics {
+    // Using AtomicU64 for thread-safe increments
+    pub keys_processed: AtomicU64,
+    pub errors: AtomicU64,
+    pub batches_processed: AtomicU64,
+    pub total_flush_duration_ms: AtomicU64,
+}
+
+// Manual implementation of Default
+impl Default for FlusherMetrics {
+    fn default() -> Self {
+        Self {
+            keys_processed: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            batches_processed: AtomicU64::new(0),
+            total_flush_duration_ms: AtomicU64::new(0),
+        }
+    }
+}
+
+impl FlusherMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // Methods now use fetch_add/load on the AtomicU64 fields
+    pub fn record_flush(&self, keys_processed: usize, duration: std::time::Duration) {
+        self.keys_processed
+            .fetch_add(keys_processed as u64, Ordering::SeqCst);
+        self.batches_processed.fetch_add(1, Ordering::SeqCst);
+        self.total_flush_duration_ms
+            .fetch_add(duration.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    pub fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn average_flush_duration_ms(&self) -> f64 {
+        let batches = self.batches_processed.load(Ordering::SeqCst);
+        let duration = self.total_flush_duration_ms.load(Ordering::SeqCst);
+
+        if batches > 0 {
+            duration as f64 / batches as f64
+        } else {
+            0.0
+        }
+    }
+}
 
 // =============================================================================
 // Redis Connection Management
@@ -83,12 +172,28 @@ pub fn create_redis_pool(redis_url: &str) -> Result<RedisPoolType> {
 pub struct MetricKey(String);
 
 impl MetricKey {
-    pub fn new(api_key_id: Uuid, period: DateTime<Utc>) -> Self {
-        Self(format!(
+    pub fn new(api_key_id: Uuid, period: DateTime<Utc>) -> Result<Self> {
+        let period_start = get_period_start(&period);
+
+        // Validate period is not in the future
+        if period_start > Utc::now() {
+            return Err(VaultlessError::InvalidInput(
+                "Future periods not allowed for metric keys".into(),
+            ));
+        }
+
+        // Validate UUID is not nil
+        if api_key_id.is_nil() {
+            return Err(VaultlessError::InvalidInput(
+                "Nil UUID not allowed for metric keys".into(),
+            ));
+        }
+
+        Ok(Self(format!(
             "metric:hash:{}:{}",
             api_key_id,
-            period.format("%Y%m%d%H")
-        ))
+            period_start.format("%Y%m%d%H")
+        )))
     }
 
     pub fn as_str(&self) -> &str {
@@ -125,9 +230,25 @@ impl MetricKey {
     }
 }
 
-impl From<String> for MetricKey {
-    fn from(s: String) -> Self {
-        Self(s)
+impl TryFrom<String> for MetricKey {
+    type Error = VaultlessError;
+
+    fn try_from(s: String) -> Result<Self> {
+        // Validate the key format
+        if !s.starts_with("metric:hash:") {
+            return Err(VaultlessError::InvalidInput(
+                "Invalid metric key format".into(),
+            ));
+        }
+
+        let key = Self(s);
+        if key.parse().is_none() {
+            return Err(VaultlessError::InvalidInput(
+                "Failed to parse metric key components".into(),
+            ));
+        }
+
+        Ok(key)
     }
 }
 
@@ -160,7 +281,12 @@ fn get_period_start_with_overlap(now: &DateTime<Utc>) -> DateTime<Utc> {
 // =============================================================================
 
 /// Increments one or more Redis fields atomically with key tracking.
-async fn hincr_many<C>(conn: &mut C, key: &MetricKey, fields: &[(&str, i64)]) -> Result<()>
+async fn hincr_many<C>(
+    conn: &mut C,
+    key: &MetricKey,
+    fields: &[(&str, i64)],
+    metric_ttl_secs: i64,
+) -> Result<()>
 where
     C: AsyncCommands + Send + Unpin,
 {
@@ -177,7 +303,7 @@ where
     }
 
     // Set TTL
-    conn.expire::<_, ()>(key.as_str(), METRIC_TTL_SECS)
+    conn.expire::<_, ()>(key.as_str(), metric_ttl_secs)
         .await
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
@@ -189,83 +315,140 @@ pub async fn increment_message_sent<C>(
     conn: &mut C,
     api_key_id: Uuid,
     size_bytes: i64,
+    config: &MetricsConfig,
 ) -> Result<()>
 where
     C: AsyncCommands + Send + Unpin,
 {
     let now = Utc::now();
-    let key = MetricKey::new(api_key_id, get_period_start(&now));
-    hincr_many(
-        conn,
-        &key,
-        &[("messages_sent", 1), ("total_bytes_stored", size_bytes)],
+    let key = MetricKey::new(api_key_id, get_period_start(&now))?;
+
+    tokio::time::timeout(
+        Duration::from_secs(config.redis_operation_timeout_secs),
+        hincr_many(
+            conn,
+            &key,
+            &[("messages_sent", 1), ("total_bytes_stored", size_bytes)],
+            config.metric_ttl_secs,
+        ),
     )
     .await
+    .map_err(|_| VaultlessError::Timeout("Redis operation timed out".into()))?
 }
 
-pub async fn increment_message_received<C>(conn: &mut C, api_key_id: Uuid) -> Result<()>
+pub async fn increment_message_received<C>(
+    conn: &mut C,
+    api_key_id: Uuid,
+    size_bytes: i64,
+    config: &MetricsConfig,
+) -> Result<()>
 where
     C: AsyncCommands + Send + Unpin,
 {
-    let key = MetricKey::new(api_key_id, get_period_start(&Utc::now()));
-    hincr_many(conn, &key, &[("messages_received", 1)]).await
+    let key = MetricKey::new(api_key_id, get_period_start(&Utc::now()))?;
+
+    tokio::time::timeout(
+        Duration::from_secs(config.redis_operation_timeout_secs),
+        hincr_many(
+            conn,
+            &key,
+            &[("messages_sent", 1), ("total_bytes_stored", size_bytes)],
+            config.metric_ttl_secs,
+        ),
+    )
+    .await
+    .map_err(|_| VaultlessError::Timeout("Redis operation timed out".into()))?
 }
 
-pub async fn increment_proof_verified<C>(conn: &mut C, api_key_id: Uuid) -> Result<()>
+pub async fn increment_proof_verified<C>(
+    conn: &mut C,
+    api_key_id: Uuid,
+    config: &MetricsConfig,
+) -> Result<()>
 where
     C: AsyncCommands + Send + Unpin,
 {
-    let key = MetricKey::new(api_key_id, get_period_start(&Utc::now()));
-    hincr_many(conn, &key, &[("proofs_verified", 1)]).await
+    let key = MetricKey::new(api_key_id, get_period_start(&Utc::now()))?;
+
+    tokio::time::timeout(
+        Duration::from_secs(config.redis_operation_timeout_secs),
+        hincr_many(
+            conn,
+            &key,
+            &[("proofs_verified", 1)],
+            config.metric_ttl_secs,
+        ),
+    )
+    .await
+    .map_err(|_| VaultlessError::Timeout("Redis operation timed out".into()))?
 }
 
-pub async fn increment_rate_limit_hit<C>(conn: &mut C, api_key_id: Uuid) -> Result<()>
+pub async fn increment_rate_limit_hit<C>(
+    conn: &mut C,
+    api_key_id: Uuid,
+    config: &MetricsConfig,
+) -> Result<()>
 where
     C: AsyncCommands + Send + Unpin,
 {
-    let key = MetricKey::new(api_key_id, get_period_start(&Utc::now()));
-    hincr_many(conn, &key, &[("rate_limit_hits", 1)]).await
+    let key = MetricKey::new(api_key_id, get_period_start(&Utc::now()))?;
+
+    tokio::time::timeout(
+        Duration::from_secs(config.redis_operation_timeout_secs),
+        hincr_many(
+            conn,
+            &key,
+            &[("rate_limit_hits", 1)],
+            config.metric_ttl_secs,
+        ),
+    )
+    .await
+    .map_err(|_| VaultlessError::Timeout("Redis operation timed out".into()))?
 }
 
 // =============================================================================
 // Pool-backed Wrappers (Hot Path)
 // =============================================================================
 
-pub async fn increment_message_sent_pool(
-    pool: &RedisPoolType,
-    api_key_id: Uuid,
-    size_bytes: i64,
-) -> Result<()> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-    increment_message_sent(&mut conn, api_key_id, size_bytes).await
+// Macro to reduce code duplication for pool wrappers
+// Fixed macro with proper syntax for optional parameters
+macro_rules! create_pool_wrapper {
+    // For functions with additional parameters
+    ($name:ident, $inner:ident, $arg_name:ident: $arg_type:ty) => {
+        pub async fn $name(
+            pool: &RedisPoolType,
+            api_key_id: Uuid,
+            $arg_name: $arg_type,
+            config: &MetricsConfig,
+        ) -> Result<()> {
+            let mut conn = pool
+                .get()
+                .await
+                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+            $inner(&mut conn, api_key_id, $arg_name, config).await
+        }
+    };
+    // For functions without additional parameters
+    ($name:ident, $inner:ident) => {
+        pub async fn $name(
+            pool: &RedisPoolType,
+            api_key_id: Uuid,
+            config: &MetricsConfig,
+        ) -> Result<()> {
+            let mut conn = pool
+                .get()
+                .await
+                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+            $inner(&mut conn, api_key_id, config).await
+        }
+    };
 }
 
-pub async fn increment_message_received_pool(pool: &RedisPoolType, api_key_id: Uuid) -> Result<()> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-    increment_message_received(&mut conn, api_key_id).await
-}
-
-pub async fn increment_proof_verified_pool(pool: &RedisPoolType, api_key_id: Uuid) -> Result<()> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-    increment_proof_verified(&mut conn, api_key_id).await
-}
-
-pub async fn increment_rate_limit_hit_pool(pool: &RedisPoolType, api_key_id: Uuid) -> Result<()> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-    increment_rate_limit_hit(&mut conn, api_key_id).await
-}
+// Usage:
+create_pool_wrapper!(increment_message_sent_pool, increment_message_sent, size_bytes: i64);
+create_pool_wrapper!(increment_message_received_pool, increment_message_received, size_bytes: i64);
+create_pool_wrapper!(increment_proof_verified_pool, increment_proof_verified);
+create_pool_wrapper!(increment_rate_limit_hit_pool, increment_rate_limit_hit);
 
 // =============================================================================
 // Aggregate Lookup
@@ -290,6 +473,13 @@ pub async fn get_aggregate_by_key_hash<'c, E>(
 where
     E: Executor<'c, Database = Postgres> + Clone,
 {
+    // Validate key hash to prevent injection
+    if key_hash.is_empty() || key_hash.len() > 256 {
+        return Err(VaultlessError::InvalidInput(
+            "Invalid key hash length".into(),
+        ));
+    }
+
     let api_key = ApiKey::find_by_hash(exec.clone(), redis_pool, key_hash).await?;
 
     let aggregate = sqlx::query_as::<_, UsageAggregate>(
@@ -368,25 +558,42 @@ impl MetricCounters {
 pub fn start_redis_flusher(
     redis_manager: Arc<RedisConn>,
     pg_pool: Arc<PgPool>,
-    flush_secs: u64,
+    config: MetricsConfig,
+    metrics: Option<Arc<FlusherMetrics>>,
 ) -> (tokio::task::JoinHandle<()>, Arc<Notify>) {
     let shutdown = Arc::new(Notify::new());
     let shutdown_clone = Arc::clone(&shutdown);
 
     let handle = tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(flush_secs));
+        let mut ticker = interval(Duration::from_secs(config.flush_interval_secs));
 
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    if let Err(e) = flush_redis_to_pg(Arc::clone(&redis_manager), Arc::clone(&pg_pool), flush_secs).await {
+                    if let Err(e) = flush_redis_to_pg(
+                        Arc::clone(&redis_manager),
+                        Arc::clone(&pg_pool),
+                        &config,
+                        metrics.as_ref().map(Arc::as_ref) // Pass Option<&FlusherMetrics>
+                    ).await {
                         error!(?e, "Redis → Postgres metrics flush failed");
+                        if let Some(metrics) = &metrics {
+                            metrics.errors.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                 }
                 _ = shutdown.notified() => {
                     info!("Shutdown signal received. Performing final metrics flush...");
-                    if let Err(e) = flush_redis_to_pg(Arc::clone(&redis_manager), Arc::clone(&pg_pool), flush_secs).await {
+                    if let Err(e) = flush_redis_to_pg(
+                        Arc::clone(&redis_manager),
+                        Arc::clone(&pg_pool),
+                        &config,
+                        metrics.as_ref().map(Arc::as_ref) // Pass Option<&FlusherMetrics>
+                    ).await {
                         error!(?e, "Final flush failed");
+                        if let Some(metrics) = &metrics {
+                            metrics.errors.fetch_add(1, Ordering::SeqCst);
+                        }
                     } else {
                         info!("Final flush completed successfully");
                     }
@@ -401,28 +608,62 @@ pub fn start_redis_flusher(
 
 /// Recovers any keys that were marked as processing but not completed
 /// (e.g., due to crash during previous flush)
-async fn recover_orphaned_keys(redis: &Arc<RedisConn>) -> Result<Vec<MetricKey>> {
-    let mut conn = redis.as_ref().clone(); // Clone the ConnectionManager, not the Arc
-    let keys: Vec<String> = conn
-        .smembers(ACTIVE_KEYS_SET)
+async fn recover_orphaned_keys(
+    redis: &Arc<RedisConn>,
+    config: &MetricsConfig,
+) -> Result<Vec<MetricKey>> {
+    let mut conn = redis.as_ref().clone();
+
+    // Use SSCAN for large datasets to avoid blocking Redis
+    let mut orphaned = Vec::new();
+    let mut cursor: u64 = 0;
+
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = tokio::time::timeout(
+            Duration::from_secs(config.redis_operation_timeout_secs),
+            redis::cmd("SSCAN")
+                .arg(ACTIVE_KEYS_SET)
+                .arg(cursor)
+                .arg("COUNT")
+                .arg(1000) // Process in chunks
+                .query_async(&mut conn),
+        )
         .await
+        .map_err(|_| VaultlessError::Timeout("Redis SSCAN timed out".into()))?
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-    let mut orphaned = Vec::new();
+        for key_str in keys {
+            let key = match MetricKey::try_from(key_str) {
+                Ok(key) => key,
+                Err(e) => {
+                    warn!("Invalid metric key found in tracking set: {}", e);
+                    continue;
+                }
+            };
 
-    for key_str in keys {
-        let key = MetricKey::from(key_str);
-
-        // Check if key has processing flag
-        let has_flag: bool = conn
-            .hexists(key.as_str(), PROCESSING_FLAG)
+            // Check if key has processing flag with timeout
+            let has_flag: bool = tokio::time::timeout(
+                Duration::from_secs(config.redis_operation_timeout_secs),
+                conn.hexists(key.as_str(), PROCESSING_FLAG),
+            )
             .await
+            .map_err(|_| VaultlessError::Timeout("Redis HEXISTS timed out".into()))?
             .unwrap_or(false);
 
-        if has_flag {
-            warn!("Recovering orphaned key: {}", key.as_str());
-            let _: () = conn.hdel(key.as_str(), PROCESSING_FLAG).await.unwrap_or(());
-            orphaned.push(key);
+            if has_flag {
+                warn!("Recovering orphaned key: {}", key.as_str());
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(config.redis_operation_timeout_secs),
+                    conn.hdel::<&str, &str, ()>(key.as_str(), PROCESSING_FLAG),
+                )
+                .await;
+                orphaned.push(key);
+            }
+        }
+
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
         }
     }
 
@@ -436,48 +677,107 @@ async fn recover_orphaned_keys(redis: &Arc<RedisConn>) -> Result<Vec<MetricKey>>
 async fn flush_redis_to_pg(
     redis: Arc<RedisConn>,
     pg: Arc<PgPool>,
-    flush_interval_secs: u64,
+    config: &MetricsConfig,
+    metrics: Option<&FlusherMetrics>,
 ) -> Result<()> {
+    // Note: If you use a metrics system like Prometheus, you'd use a timer provided by that system.
+    // Since FlusherMetrics is custom, we'll use std::time::Instant.
     let start = std::time::Instant::now();
-    let mut conn = (*redis).clone();
+    let mut conn = redis.as_ref().clone();
 
     // Recover any orphaned keys first
-    let _ = recover_orphaned_keys(&redis).await;
+    let _ = recover_orphaned_keys(&redis, config).await;
 
-    // Get all active keys from tracking set (O(N) where N = active keys)
-    let keys: Vec<String> = conn
-        .smembers(ACTIVE_KEYS_SET)
+    // Get all active keys from tracking set using SSCAN
+    let mut all_keys = Vec::new();
+    let mut cursor: u64 = 0;
+
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = tokio::time::timeout(
+            Duration::from_secs(config.redis_operation_timeout_secs),
+            redis::cmd("SSCAN")
+                .arg(ACTIVE_KEYS_SET)
+                .arg(cursor)
+                .arg("COUNT")
+                .arg(1000)
+                .query_async(&mut conn),
+        )
         .await
+        .map_err(|_| VaultlessError::Timeout("Redis SSCAN timed out".into()))?
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-    if keys.is_empty() {
+        all_keys.extend(keys);
+
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    if all_keys.is_empty() {
         return Ok(());
     }
 
     let mut batch: HashMap<(Uuid, DateTime<Utc>), MetricCounters> = HashMap::new();
     let mut keys_to_delete = Vec::new();
 
-    // Process keys
-    for key_str in keys {
-        let key = MetricKey::from(key_str);
+    // Process keys with timeouts
+    for key_str in all_keys {
+        let key = match MetricKey::try_from(key_str) {
+            Ok(key) => key,
+            Err(e) => {
+                warn!("Skipping invalid metric key: {}", e);
+                continue;
+            }
+        };
 
-        // Mark as processing for idempotency
-        conn.hset::<_, _, _, ()>(key.as_str(), PROCESSING_FLAG, 1)
-            .await
-            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+        // Mark as processing for idempotency with timeout
+        let mark_result = tokio::time::timeout(
+            Duration::from_secs(config.redis_operation_timeout_secs),
+            conn.hset::<_, _, _, ()>(key.as_str(), PROCESSING_FLAG, 1),
+        )
+        .await;
+
+        if mark_result.is_err() {
+            warn!("Timeout marking key as processing: {}", key.as_str());
+            continue;
+        }
 
         if let Some((api_key_id, period)) = key.parse() {
-            let values: HashMap<String, i64> = conn
-                .hgetall(key.as_str())
-                .await
-                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+            let values_result: std::result::Result<
+                std::result::Result<HashMap<String, i64>, redis::RedisError>,
+                Elapsed,
+            > = tokio::time::timeout(
+                Duration::from_secs(config.redis_operation_timeout_secs),
+                conn.hgetall(key.as_str()),
+            )
+            .await;
 
-            let counters = batch
-                .entry((api_key_id, period))
-                .or_insert_with(MetricCounters::default);
+            match values_result {
+                // Outer Result is Ok, Inner Result is Ok (we successfully got the map)
+                Ok(Ok(values)) => {
+                    let counters = batch
+                        .entry((api_key_id, period))
+                        .or_insert_with(MetricCounters::default);
 
-            counters.merge_from_map(&values);
-            keys_to_delete.push(key);
+                    counters.merge_from_map(&values);
+                    keys_to_delete.push(key);
+                }
+                // Outer Result is Ok, Inner Result is Err (Redis operation failed)
+                Ok(Err(e)) => {
+                    error!("Failed to get values for key {}: {}", key.as_str(), e);
+                    if let Some(metrics) = metrics {
+                        metrics.errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                // Outer Result is Err (Tokio timeout occurred)
+                Err(_) => {
+                    warn!("Timeout getting values for key: {}", key.as_str());
+                    if let Some(metrics) = metrics {
+                        metrics.errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
         }
     }
 
@@ -490,7 +790,7 @@ async fn flush_redis_to_pg(
     let total_keys = batch_vec.len();
     let mut flushed_count = 0;
 
-    for chunk in batch_vec.chunks(MAX_BATCH_SIZE) {
+    for chunk in batch_vec.chunks(config.max_batch_size) {
         let mut tx = pg.begin().await?;
 
         for ((api_key_id, period_start), counters) in chunk {
@@ -535,15 +835,48 @@ async fn flush_redis_to_pg(
         }
 
         tx.commit().await?;
+
+        if let Some(metrics) = metrics {
+            metrics.batches_processed.fetch_add(1, Ordering::SeqCst); // FIXED: use fetch_add
+        }
     }
 
-    // Delete keys and remove from tracking set (fire-and-forget)
+    // Delete keys and remove from tracking set with error handling
     for key in &keys_to_delete {
-        let _ = conn.srem::<_, _, ()>(ACTIVE_KEYS_SET, key.as_str()).await;
-        let _ = conn.del::<_, ()>(key.as_str()).await;
+        if let Err(e) = tokio::time::timeout(
+            Duration::from_secs(config.redis_operation_timeout_secs),
+            conn.srem::<_, _, ()>(ACTIVE_KEYS_SET, key.as_str()),
+        )
+        .await
+        {
+            error!(
+                "Timeout removing key {} from tracking set: {}",
+                key.as_str(),
+                e
+            );
+        }
+
+        if let Err(e) = tokio::time::timeout(
+            Duration::from_secs(config.redis_operation_timeout_secs),
+            conn.del::<_, ()>(key.as_str()),
+        )
+        .await
+        {
+            error!("Timeout deleting key {}: {}", key.as_str(), e);
+        }
     }
 
     let duration = start.elapsed();
+
+    if let Some(metrics) = metrics {
+        metrics
+            .keys_processed
+            .fetch_add(flushed_count as u64, Ordering::SeqCst); // FIXED: use fetch_add
+        metrics
+            .total_flush_duration_ms
+            .fetch_add(duration.as_millis() as u64, Ordering::SeqCst);
+    }
+
     info!(
         keys_flushed = flushed_count,
         total_keys = total_keys,
@@ -552,10 +885,10 @@ async fn flush_redis_to_pg(
     );
 
     // Check if flusher is falling behind
-    if duration.as_secs() > (flush_interval_secs / 2) as u64 {
+    if duration.as_secs() > (config.flush_interval_secs / 2) as u64 {
         warn!(
             duration_secs = duration.as_secs(),
-            flush_interval = flush_interval_secs,
+            flush_interval = config.flush_interval_secs,
             "Flusher taking more than 50% of interval! Consider scaling or increasing interval"
         );
     }

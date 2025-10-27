@@ -1,14 +1,16 @@
+use crate::error::{Result, VaultlessError};
 use chrono::{DateTime, Utc};
+use deadpool_redis::Pool as RedisPool;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::{Executor, FromRow, Postgres};
 use uuid::Uuid;
 
-use crate::error::{Result, VaultlessError};
-
+/// Represents a cryptographic client credential stored in the database.
+/// Standalone record — not bound to a specific user or organization.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Client {
     pub id: Uuid,
-    pub user_id: Uuid,
 
     // ONLY hash stored - NEVER plaintext
     #[serde(skip_serializing)]
@@ -23,84 +25,184 @@ pub struct Client {
     pub metadata: Option<sqlx::types::JsonValue>,
 }
 
-/* #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
-#[sqlx(type_name = "text")]
-#[serde(rename_all = "lowercase")]
- */
 impl Client {
-    /// Create or get client BY HASH (client computes hash on their side)
-    pub async fn get_or_create_by_hash(
-        pool: &PgPool,
-        user_id: Uuid,
+    /// Create or get client BY HASH.
+    pub async fn get_or_create_by_hash<'c, E>(
+        executor: E,
         identifier_hash: String,
         public_key: Option<String>,
-    ) -> Result<Self> {
-        // Try to find existing
-        if let Some(client) = Self::find_by_hash(pool, user_id, &identifier_hash).await? {
+    ) -> Result<Self>
+    where
+        E: Executor<'c, Database = Postgres> + Copy,
+    {
+        if let Some(client) = Self::find_by_hash(executor, &identifier_hash).await? {
             return Ok(client);
         }
 
-        // Create new
         let client = sqlx::query_as::<_, Self>(
             r#"
-            INSERT INTO clients (user_id, client_identifier_hash, client_type, public_key)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO clients (client_identifier_hash, public_key)
+            VALUES ($1, $2)
             RETURNING *
             "#,
         )
-        .bind(user_id)
         .bind(&identifier_hash)
         .bind(public_key)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await?;
 
         Ok(client)
     }
 
-    /// Find by hash
-    pub async fn find_by_hash(
-        pool: &PgPool,
-        user_id: Uuid,
-        identifier_hash: &str,
-    ) -> Result<Option<Self>> {
+    /// Find client by its unique hash.
+    pub async fn find_by_hash<'c, E>(executor: E, identifier_hash: &str) -> Result<Option<Self>>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
         let client = sqlx::query_as::<_, Self>(
             r#"
             SELECT * FROM clients
-            WHERE user_id = $1 AND client_identifier_hash = $2
+            WHERE client_identifier_hash = $1
             "#,
         )
-        .bind(user_id)
         .bind(identifier_hash)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await?;
 
         Ok(client)
     }
 
-    /// Find by ID
-    pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Self> {
+    /// Find by internal ID.
+    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
         let client = sqlx::query_as::<_, Self>("SELECT * FROM clients WHERE id = $1")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await?
             .ok_or_else(|| VaultlessError::NotFound("Client not found".to_string()))?;
 
         Ok(client)
     }
 
-    /// List user's clients (only returns hashes)
-    pub async fn list_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Self>> {
+    /// List all active clients (useful for admin or global lookup).
+    pub async fn list_active<'c, E>(executor: E) -> Result<Vec<Self>>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
         let clients = sqlx::query_as::<_, Self>(
             r#"
             SELECT * FROM clients
-            WHERE user_id = $1 AND is_active = true
+            WHERE is_active = true
             ORDER BY last_message_at DESC NULLS LAST
             "#,
         )
-        .bind(user_id)
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?;
 
         Ok(clients)
+    }
+
+    /// Cache key format for verification results
+    fn cache_key(identifier_hash: &str, public_key: &str) -> String {
+        format!("client:verify:{}:{}", identifier_hash, public_key)
+    }
+
+    /// Redis index key to track all verification cache entries for a given identifier
+    fn index_key(identifier_hash: &str) -> String {
+        format!("client:verify:index:{}", identifier_hash)
+    }
+
+    /// Cached credential verification (safe for concurrent use)
+    pub async fn verify_client_credentials<'c, E>(
+        executor: E,
+        redis_pool: &RedisPool,
+        identifier_hash: &str,
+        public_key: &str,
+        ttl_secs: Option<u64>,
+    ) -> Result<bool>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let ttl = ttl_secs.unwrap_or(600);
+        let cache_key = Self::cache_key(identifier_hash, public_key);
+        let index_key = Self::index_key(identifier_hash);
+
+        let mut redis = redis_pool.get().await?;
+
+        // Attempt to read from cache first
+        if let Ok(Some(cached)) = redis.get::<_, Option<String>>(&cache_key).await {
+            return Ok(cached == "1");
+        }
+
+        // Query the database if not cached
+        let exists = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM clients 
+                WHERE client_identifier_hash = $1 
+                AND public_key = $2
+                AND is_active = true
+            )
+            "#,
+        )
+        .bind(identifier_hash)
+        .bind(public_key)
+        .fetch_one(executor)
+        .await?;
+
+        // Cache result and register the key in the index set
+        let _: () = redis
+            .set_ex(&cache_key, if exists { "1" } else { "0" }, ttl)
+            .await
+            .unwrap_or(());
+        let _: () = redis.sadd(&index_key, &cache_key).await.unwrap_or(());
+
+        Ok(exists)
+    }
+
+    /// Update a client's public key and invalidate relevant cache entries
+    pub async fn update_public_key<'c, E>(
+        executor: E,
+        redis_pool: &RedisPool,
+        identifier_hash: &str,
+        new_public_key: String,
+    ) -> Result<Self>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        if new_public_key.is_empty() || new_public_key.len() > 1024 {
+            return Err(VaultlessError::Validation(
+                "Public key must not be empty or too long".to_string(),
+            ));
+        }
+
+        let client = sqlx::query_as::<_, Self>(
+            r#"
+            UPDATE clients
+            SET public_key = $1, updated_at = NOW()
+            WHERE client_identifier_hash = $2
+            RETURNING *
+            "#,
+        )
+        .bind(&new_public_key)
+        .bind(identifier_hash)
+        .fetch_optional(executor)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Client not found".into()))?;
+
+        // Invalidate all cache entries for this client identifier
+        let mut redis = redis_pool.get().await?;
+        let index_key = Self::index_key(identifier_hash);
+
+        if let Ok(keys) = redis.smembers::<_, Vec<String>>(&index_key).await {
+            for key in keys {
+                let _: () = redis.del(&key).await.unwrap_or(());
+            }
+            let _: () = redis.del(&index_key).await.unwrap_or(());
+        }
+
+        Ok(client)
     }
 }

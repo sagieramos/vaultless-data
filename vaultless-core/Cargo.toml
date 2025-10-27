@@ -6,15 +6,21 @@ edition = "2024"
 [dependencies]
 aes-gcm = "0.10.3"
 anyhow = "1.0.100"
+async-trait = "0.1.89"
 base64 = "0.22.1"
 bcrypt = "0.17.1"
+bincode = { version = "2.0.1", features = ["alloc", "serde"] }
 chrono = { version = "0.4.42", features = ["serde"] }
+deadpool-redis = "0.22.0"
 ed25519 = "2.2.3"
 getrandom = "0.3.3"
 hex = "0.4.3"
 hmac = "0.12.1"
 ipnetwork = "0.21.1"
+moka = { version = "0.12.11", features = ["future"] }
+prometheus = "0.14.0"
 rand = "0.9.2"
+redis = { version = "0.32.7", features = ["aio", "connection-manager"] }
 ring = "0.17.14"
 ring-compat = "0.8.0"
 serde = { version = "1.0.228", features = ["derive"] }

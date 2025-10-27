@@ -2,23 +2,21 @@ pub mod api_key;
 pub mod billing;
 pub mod client;
 pub mod client_token;
-pub mod group;
 pub mod message;
 pub mod notification;
 pub mod proof;
 pub mod usage;
-pub mod usage_timescale;
 pub mod user;
 pub mod email_job;
+pub mod group;
 
 pub use api_key::{ApiKey, CreateApiKey};
 pub use billing::*;
-pub use message::{CreateMessage, Message, MessageMetadata, PaginatedMessages};
+pub use message::{CreateMessage, message::Message, MessageMetadata, PaginatedMessages};
 pub use notification::{
     Notification, NotificationBuilder, NotificationFilters, NotificationSeverity,
     NotificationStats, NotificationType,
 };
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
-pub use usage::{UsageMetric, UsageSummary};
-pub use usage_timescale::{DailyUsageSummary, MonthlyTotal, UsageTrends, WeeklyUsageSummary};
+pub use usage::*;
 pub use user::{LoginAttempt, RefreshToken, User, UserSession};

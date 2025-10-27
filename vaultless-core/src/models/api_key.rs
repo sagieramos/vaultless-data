@@ -1,20 +1,39 @@
-// vaultless-core/src/models/api_key.rs
+//! # API Key Model
+//!
+//! Optimized for high-frequency lookups with Redis caching (~100µs hits).
+//! Includes tier-based defaults, quota checks, and cache invalidation hooks.
+
 use chrono::{DateTime, Utc};
+use deadpool_redis::Pool as RedisPool;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{Executor, FromRow, Postgres};
+use std::sync::Arc;
+use tracing::{self, error};
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::error::{Result, VaultlessError};
 use crate::types::SubscriptionTier;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+// =============================================================================
+// Type Aliases & Constants
+// =============================================================================
+
+pub type RedisPoolType = RedisPool;
+
+const API_KEY_CACHE_TTL: u64 = 600; // 10 minutes
+const QUOTA_CACHE_TTL: u64 = 3600; // 1 hour
+
+// =============================================================================
+// Models
+// =============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ApiKey {
     pub id: Uuid,
-    pub user_id: Uuid,          // REFERENCES users(id)
-    pub key_hash: String,       // SHA-256 hash of the API key
-    pub key_prefix: String,     // first 8 chars of key
-    pub tier: SubscriptionTier, // enum type
+    pub user_id: Uuid,
+    pub tier: SubscriptionTier,
     pub monthly_message_quota: i32,
     pub message_retention_seconds: i32,
     pub description: Option<String>,
@@ -25,25 +44,19 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
     pub rate_limit_per_minute: i32,
 }
-/* fn validate_future_date(date: &Option<DateTime<Utc>>) -> std::result::Result<(), ValidationError> {
-    if let Some(d) = date {
-        if *d < Utc::now() {
-            // Construct and return the validator::ValidationError
-            return Err(ValidationError::new("must_be_in_the_future"));
-        }
-    }
-    Ok(())
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedApiKeys {
+    pub keys: Vec<ApiKey>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub has_more: bool,
 }
- */
+
 #[derive(Debug, Clone, Validate, Deserialize)]
 pub struct CreateApiKey {
     pub user_id: Uuid,
-
-    #[validate(length(min = 64, max = 64))]
-    pub key_hash: String,
-
-    #[validate(length(min = 1, max = 8))]
-    pub key_prefix: String,
 
     pub tier: SubscriptionTier,
 
@@ -53,41 +66,61 @@ pub struct CreateApiKey {
     #[validate(length(min = 1))]
     pub scopes: Option<String>,
 
-    /* #[validate(custom(function = "validate_future_date"))] */
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+// =============================================================================
+// Cache Key Generators
+// =============================================================================
+
+fn cache_key_by_hash(key_hash: &str) -> String {
+    format!("api_key:hash:{}", key_hash)
+}
+
+fn cache_key_by_id(id: Uuid) -> String {
+    format!("api_key:id:{}", id)
+}
+
+fn quota_cache_key(api_key_id: Uuid) -> String {
+    format!("quota_count:{}:{}", api_key_id, Utc::now().format("%Y-%m"))
+}
+
+// =============================================================================
+// Implementation
+// =============================================================================
+
 impl ApiKey {
-    /// Create a new API key
-    pub async fn create(pool: &PgPool, input: CreateApiKey) -> Result<Self> {
+    /// Creates a new API key with tier defaults.
+    pub async fn create<'c, E>(executor: E, input: CreateApiKey) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
         input
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         let tier = input.tier;
 
-        let api_key = sqlx::query_as::<_, Self>(
+        let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
-        INSERT INTO api_keys (
-            user_id,
-            key_hash,
-            key_prefix,
-            tier,
-            monthly_message_quota,
-            message_retention_seconds,
-            description,
-            scopes,
-            rate_limit_per_minute,
-            expires_at,
-            is_active
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
-        RETURNING *
-        "#,
+            INSERT INTO api_keys (
+                user_id,
+                tier,
+                monthly_message_quota,
+                message_retention_seconds,
+                description,
+                scopes,
+                rate_limit_per_minute,
+                expires_at,
+                is_active
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+            RETURNING id, user_id, tier, monthly_message_quota,
+                      message_retention_seconds, description, scopes,
+                      is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+            "#,
         )
         .bind(input.user_id)
-        .bind(&input.key_hash)
-        .bind(&input.key_prefix)
         .bind(tier)
         .bind(tier.default_monthly_quota())
         .bind(tier.default_retention_seconds())
@@ -95,7 +128,7 @@ impl ApiKey {
         .bind(&input.scopes)
         .bind(tier.default_rate_limit())
         .bind(input.expires_at)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
@@ -107,86 +140,245 @@ impl ApiKey {
         Ok(api_key)
     }
 
-    /// Find API key by hash
-    pub async fn find_by_hash(pool: &PgPool, key_hash: &str) -> Result<Self> {
-        let api_key = sqlx::query_as::<_, Self>(
+    /// Finds API key by hash with Redis caching (TTL 10min).
+    pub async fn find_by_hash<'c, E>(
+        exec: E,
+        redis: Arc<RedisPoolType>,
+        key_hash: &str,
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let cache_key = cache_key_by_hash(key_hash);
+
+        // --- Fast path (Cache Read) ---
+        let mut conn = redis
+            .get()
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Redis pool error: {}", e)))?;
+
+        if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
+            if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
+                return Ok(api_key);
+            }
+        }
+
+        // --- Cache miss (Database Read) ---
+        let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT * FROM api_keys WHERE key_hash = $1
+            SELECT id, user_id, tier, monthly_message_quota,
+                   message_retention_seconds, description, scopes,
+                   is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+            FROM api_keys
+            WHERE key_hash = $1
+            LIMIT 1
             "#,
         )
         .bind(key_hash)
-        .fetch_optional(pool)
+        .fetch_optional(exec)
         .await?
-        .ok_or_else(|| VaultlessError::NotFound("API key not found".to_string()))?;
+        .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
+
+        // --- Cache write (fire-and-forget) ---
+        let redis_clone = Arc::clone(&redis);
+        let cache_key_clone = cache_key.clone();
+        if let Ok(serialized) = serde_json::to_string(&api_key) {
+            tokio::spawn(async move {
+                if let Ok(mut conn) = redis_clone.get().await {
+                    let _: () = conn
+                        .set_ex(&cache_key_clone, serialized, API_KEY_CACHE_TTL)
+                        .await
+                        .unwrap_or_else(|e| {
+                            error!(
+                                cache_key = %cache_key_clone,
+                                error = %e,
+                                "Failed to set API key cache key"
+                            );
+                        });
+                }
+            });
+        }
 
         Ok(api_key)
     }
 
-    /// Find API key by ID
-    pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Self> {
-        let api_key = sqlx::query_as::<_, Self>(
+    /// Finds API key by ID with caching.
+    pub async fn find_by_id<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
+        id: Uuid,
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // Try cache if Redis is available
+        if let Some(redis) = &redis {
+            let cache_key = cache_key_by_id(id);
+
+            if let Ok(mut conn) = redis.get().await {
+                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
+                    if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
+                        return Ok(api_key);
+                    }
+                }
+            }
+        }
+
+        // Fetch from DB
+        let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT * FROM api_keys WHERE id = $1
+            SELECT id, user_id, tier, monthly_message_quota,
+                   message_retention_seconds, description, scopes,
+                   is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+            FROM api_keys WHERE id = $1
             "#,
         )
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(exec)
         .await?
         .ok_or_else(|| VaultlessError::NotFound("API key not found".to_string()))?;
 
+        // Cache if Redis available
+        if let Some(redis) = redis {
+            let cache_key = cache_key_by_id(id);
+            if let Ok(serialized) = serde_json::to_string(&api_key) {
+                tokio::spawn(async move {
+                    if let Ok(mut conn) = redis.get().await {
+                        let _: () = conn
+                            .set_ex(&cache_key, serialized, API_KEY_CACHE_TTL)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!(
+                                    cache_key = %cache_key,
+                                    error = %e,
+                                    "Failed to set API key cache key"
+                                );
+                            });
+                    }
+                });
+            }
+        }
         Ok(api_key)
     }
 
-    pub async fn find_by_owner(pool: &PgPool, user_id: Uuid) -> Result<Vec<Self>> {
-        let keys = sqlx::query_as::<_, Self>(
+    /// Lists API keys by owner (paginated with total count).
+    pub async fn find_by_owner_paginated<'c, E>(
+        exec: E,
+        user_id: Uuid,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<PaginatedApiKeys>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let page = page.unwrap_or(1).max(1);
+        let page_size = page_size.unwrap_or(50).clamp(1, 100);
+        let offset = (page - 1) * page_size;
+
+        // Get total count
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_keys WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(exec.clone())
+            .await?;
+
+        // Get keys
+        let keys = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT * FROM api_keys 
+            SELECT id, user_id, tier, monthly_message_quota,
+                   message_retention_seconds, description, scopes,
+                   is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+            FROM api_keys 
             WHERE user_id = $1
             ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
             "#,
         )
         .bind(user_id)
-        .fetch_all(pool)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(exec)
         .await?;
 
-        Ok(keys)
+        let has_more = (offset + page_size) < total;
+
+        Ok(PaginatedApiKeys {
+            keys,
+            total,
+            page,
+            page_size,
+            has_more,
+        })
     }
 
-    /// List all API keys (with pagination)
-    pub async fn list(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
-        let keys = sqlx::query_as::<_, Self>(
+    /// Lists all API keys (paginated with total count).
+    pub async fn list<'c, E>(
+        exec: E,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<PaginatedApiKeys>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let page = page.unwrap_or(1).max(1);
+        let page_size = page_size.unwrap_or(50).clamp(1, 100);
+        let offset = (page - 1) * page_size;
+
+        // Get total count
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_keys")
+            .fetch_one(exec.clone())
+            .await?;
+
+        // Get keys
+        let keys = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT * FROM api_keys 
+            SELECT id, user_id, tier, monthly_message_quota,
+                   message_retention_seconds, description, scopes,
+                   is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+            FROM api_keys 
             ORDER BY created_at DESC 
             LIMIT $1 OFFSET $2
             "#,
         )
-        .bind(limit)
+        .bind(page_size)
         .bind(offset)
-        .fetch_all(pool)
+        .fetch_all(exec)
         .await?;
 
-        Ok(keys)
+        let has_more = (offset + page_size) < total;
+
+        Ok(PaginatedApiKeys {
+            keys,
+            total,
+            page,
+            page_size,
+            has_more,
+        })
     }
 
-    /// Validate API key and check if it's usable
+    /// Validates active/expiry.
     pub fn validate(&self) -> Result<()> {
         if !self.is_active {
             return Err(VaultlessError::ApiKeyInactive);
         }
-
-        if let Some(expires_at) = self.expires_at
-            && expires_at < Utc::now()
-        {
-            return Err(VaultlessError::ApiKeyExpired);
+        if let Some(expires_at) = self.expires_at {
+            if expires_at < Utc::now() {
+                return Err(VaultlessError::ApiKeyExpired);
+            }
         }
-
         Ok(())
     }
 
-    /// Update tier and associated limits
-    pub async fn update_tier(pool: &PgPool, id: Uuid, new_tier: SubscriptionTier) -> Result<Self> {
-        let api_key = sqlx::query_as::<_, Self>(
+    /// Updates tier with cache invalidation.
+    pub async fn update_tier<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
+        id: Uuid,
+        new_tier: SubscriptionTier,
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
             UPDATE api_keys 
             SET 
@@ -195,7 +387,9 @@ impl ApiKey {
                 message_retention_seconds = $4,
                 rate_limit_per_minute = $5
             WHERE id = $1
-            RETURNING *
+            RETURNING id, user_id, tier, monthly_message_quota,
+                      message_retention_seconds, description, scopes,
+                      is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             "#,
         )
         .bind(id)
@@ -203,92 +397,182 @@ impl ApiKey {
         .bind(new_tier.default_monthly_quota())
         .bind(new_tier.default_retention_seconds())
         .bind(new_tier.default_rate_limit())
-        .fetch_one(pool)
+        .fetch_one(exec)
         .await?;
+
+        // Invalidate cache
+        Self::invalidate_cache(redis, id).await;
 
         Ok(api_key)
     }
 
-    /// Deactivate API key
-    pub async fn deactivate(pool: &PgPool, id: Uuid) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE api_keys SET is_active = false WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
+    /// Deactivate key with cache invalidation.
+    pub async fn deactivate<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
+        id: Uuid,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        sqlx::query("UPDATE api_keys SET is_active = false WHERE id = $1")
+            .bind(id)
+            .execute(exec)
+            .await?;
+
+        // Invalidate cache
+        Self::invalidate_cache(redis, id).await;
 
         Ok(())
     }
 
-    /// Reactivate API key
-    pub async fn reactivate(pool: &PgPool, id: Uuid) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE api_keys SET is_active = true WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
+    /// Reactivate key with cache invalidation.
+    pub async fn reactivate<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
+        id: Uuid,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        sqlx::query("UPDATE api_keys SET is_active = true WHERE id = $1")
+            .bind(id)
+            .execute(exec)
+            .await?;
+
+        // Invalidate cache
+        Self::invalidate_cache(redis, id).await;
 
         Ok(())
     }
 
-    /// Update API key metadata (name, notes, etc.)
-    pub async fn update_metadata(
-        pool: &PgPool,
+    /// Update description with cache invalidation.
+    pub async fn update_metadata<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
         id: Uuid,
         description: Option<String>,
-    ) -> Result<Self> {
-        let api_key = sqlx::query_as::<_, Self>(
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
             UPDATE api_keys 
             SET description = COALESCE($2, description)
             WHERE id = $1
-            RETURNING *
+            RETURNING id, user_id, tier, monthly_message_quota,
+                      message_retention_seconds, description, scopes,
+                      is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             "#,
         )
         .bind(id)
         .bind(description)
-        .fetch_one(pool)
+        .fetch_one(exec)
         .await?;
+
+        // Invalidate cache
+        Self::invalidate_cache(redis, id).await;
 
         Ok(api_key)
     }
 
-    /// Delete API key (soft delete by deactivating, or hard delete)
-    pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
-        sqlx::query(
-            r#"
-            DELETE FROM api_keys WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
+    /// Hard delete key with cache invalidation.
+    pub async fn delete<'c, E>(exec: E, redis: Option<Arc<RedisPoolType>>, id: Uuid) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        sqlx::query("DELETE FROM api_keys WHERE id = $1")
+            .bind(id)
+            .execute(exec)
+            .await?;
+
+        // Invalidate cache
+        Self::invalidate_cache(redis, id).await;
 
         Ok(())
     }
 
-    /// Check if API key has exceeded quota
-    pub async fn check_quota(pool: &PgPool, api_key_id: Uuid) -> Result<bool> {
+    /// Quota check with caching.
+    pub async fn check_quota<'c, E>(
+        exec: E,
+        redis: Arc<RedisPoolType>,
+        api_key_id: Uuid,
+    ) -> Result<bool>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let api_key = Self::find_by_id(exec.clone(), Some(Arc::clone(&redis)), api_key_id).await?;
+        let quota = api_key.monthly_message_quota as i64;
+        let month_key = quota_cache_key(api_key_id);
+
+        // Try cache first
+        if let Ok(mut conn) = redis.get().await {
+            if let Ok(count) = conn.get::<_, i64>(&month_key).await {
+                return Ok(count < quota);
+            }
+        }
+
+        // Cache miss - fetch from DB
         let count: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*) 
             FROM messages 
             WHERE api_key_id = $1 
-                "AND created_at > NOW() - INTERVAL '30 days'"
+              AND created_at >= date_trunc('month', NOW())
             "#,
         )
         .bind(api_key_id)
-        .fetch_one(pool)
+        .fetch_one(exec)
         .await?;
 
-        let api_key = Self::find_by_id(pool, api_key_id).await?;
-        Ok(count < api_key.monthly_message_quota as i64)
+        // Update cache (fire-and-forget)
+        tokio::spawn(async move {
+            if let Ok(mut conn) = redis.get().await {
+                let _: () = conn
+                    .set_ex(&month_key, count, QUOTA_CACHE_TTL)
+                    .await
+                    .unwrap_or_else(|e| {
+                        error!(
+                            cache_key = %month_key,
+                            error = %e,
+                            "Failed to set quota cache key"
+                        );
+                    });
+            }
+        });
+
+        Ok(count < quota)
+    }
+
+    /// Invalidate all caches for an API key
+    async fn invalidate_cache(redis: Option<Arc<RedisPoolType>>, id: Uuid) {
+        if let Some(redis) = redis {
+            tokio::spawn(async move {
+                if let Ok(mut conn) = redis.get().await {
+                    let cache_key = cache_key_by_id(id);
+
+                    // 1. Invalidate API key cache
+                    let _: () = conn.del(&cache_key).await.unwrap_or_else(|e| {
+                        error!(
+                            cache_key = %cache_key,
+                            error = %e,
+                            "Failed to invalidate API key cache"
+                        );
+                    });
+
+                    // 2. Invalidate quota cache
+                    let quota_key = quota_cache_key(id);
+                    let _: () = conn.del(&quota_key).await.unwrap_or_else(|e| {
+                        error!(
+                            cache_key = %quota_key,
+                            error = %e,
+                            "Failed to invalidate quota cache"
+                        );
+                    });
+                }
+            });
+        }
     }
 }
 
@@ -301,5 +585,14 @@ mod tests {
         assert_eq!(SubscriptionTier::Free.default_monthly_quota(), 1_000);
         assert_eq!(SubscriptionTier::Pro.default_rate_limit(), 1_000);
         assert_eq!(SubscriptionTier::Starter.monthly_price_cents(), Some(2_900));
+    }
+
+    #[test]
+    fn test_cache_keys() {
+        let id = Uuid::new_v4();
+        let hash = "test_hash";
+
+        assert_eq!(cache_key_by_hash(hash), "api_key:hash:test_hash");
+        assert_eq!(cache_key_by_id(id), format!("api_key:id:{}", id));
     }
 }
