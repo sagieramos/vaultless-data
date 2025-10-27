@@ -24,16 +24,14 @@
 //! ```
 
 use crate::error::{Result, VaultlessError};
+use crate::usage::{MetricsConfig, increment_message_received_pool, increment_message_sent_pool};
 use chrono::{DateTime, Duration, Utc};
-use deadpool_redis::redis::AsyncCommands;
-use deadpool_redis::Pool;
+use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{Acquire, Executor, FromRow, PgPool, Postgres};
+use sqlx::{Acquire, Executor, FromRow, PgPool, Postgres, Transaction};
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
-
-use crate::models::usage::usage::{RedisConn, increment_message_sent}; // From usage module
 
 const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
 
@@ -124,14 +122,12 @@ impl Message {
     /// ```rust,no_run
     /// let message = Message::create(&pool, &redis, input).await?;
     /// ```
-   pub async fn create(
+    pub async fn create(
         pool: &PgPool,
-        redis: Arc<RedisConn>,
-        input: CreateMessage, // Assuming this struct exists
-    ) -> Result<Message> // Assuming Message struct exists
-    {
-        // ... (Validation and Quota Checks remain the same and are correct) ...
-
+        redis: Arc<RedisPool>,
+        input: CreateMessage,
+    ) -> Result<Message> {
+        // --- Validation ---
         input
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
@@ -139,46 +135,45 @@ impl Message {
         if input.content_size_bytes as usize != input.ciphertext.len() {
             return Err(VaultlessError::Validation("Size mismatch".to_string()));
         }
-        if let Some(ttl) = input.ttl_seconds
-            && ttl < 0
-        {
-            return Err(VaultlessError::Validation(
-                "TTL must be non-negative".to_string(),
-            ));
+
+        if let Some(ttl) = input.ttl_seconds {
+            if ttl < 0 {
+                return Err(VaultlessError::Validation(
+                    "TTL must be non-negative".to_string(),
+                ));
+            }
         }
 
-        let mut tx = pool.begin().await?;
+        let mut tx: Transaction<'_, Postgres> = pool.begin().await?;
 
-        // Optimistic quota check (Redis async)
+        // --- Quota Check via Redis ---
         let current_month = Utc::now().format("%Y-%m").to_string();
         let usage_key = format!("usage:{}:{}", input.api_key_id, current_month);
         let quota_key = format!("quota:{}", input.api_key_id);
 
-        // --- Quota Limit Check ---
-        let mut redis_conn_limit = redis
+        // Redis connection
+        let mut conn = redis
             .get()
             .await
             .map_err(|e| VaultlessError::Internal(format!("Redis pool error: {}", e)))?;
 
-        let quota_limit: i64 = redis_conn_limit
-            .get(&quota_key)
+        // Fetch quota limit (default: 10_000)
+        let quota_limit: Option<i64> = deadpool_redis::redis::cmd("GET")
+            .arg(&quota_key)
+            .query_async(&mut *conn)
             .await
-            .ok()
-            .flatten()
-            .unwrap_or(10000);
+            .ok();
 
-        // --- Current Usage Check ---
-        let mut redis_conn_usage = redis
-            .get()
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis pool error: {}", e)))?;
+        let quota_limit = quota_limit.unwrap_or(10_000);
 
-        let current_count: i64 = redis_conn_usage
-            .get(&usage_key)
+        // Fetch current usage (default: 0)
+        let current_count: Option<i64> = deadpool_redis::redis::cmd("GET")
+            .arg(&usage_key)
+            .query_async(&mut *conn)
             .await
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+            .ok();
+
+        let current_count = current_count.unwrap_or(0);
 
         if current_count >= quota_limit {
             let _ = tx.rollback().await;
@@ -187,8 +182,7 @@ impl Message {
             ));
         }
 
-        // ... (API Key/Retention Query remains the same) ...
-
+        // --- Fetch message retention ---
         let (message_retention_seconds, _quota_limit_db) = sqlx::query_as::<_, (i64, i64)>(
             "SELECT message_retention_seconds, monthly_message_quota FROM api_keys WHERE id = $1",
         )
@@ -202,8 +196,7 @@ impl Message {
             .unwrap_or(message_retention_seconds as i32);
         let expires_at = Utc::now() + Duration::seconds(ttl_seconds as i64);
 
-        // ... (Message INSERT query remains the same) ...
-
+        // --- Insert message into DB ---
         let message = sqlx::query_as::<_, Message>(
             r#"
         INSERT INTO messages (
@@ -239,31 +232,26 @@ impl Message {
 
         tx.commit().await?;
 
-        // Batch metrics post-commit (non-blocking)
-        let redis_pool_clone = redis.clone();
+        // --- Background metric increment (async) ---
+        let redis_clone = redis.clone();
         let api_key_clone = input.api_key_id;
         let size_clone = input.content_size_bytes as i64;
-        
-        tokio::spawn(async move {
-            // 🛠️ FIX 3: Get connection from pool inside the async block
-            if let Ok(mut conn) = redis_pool_clone.get().await {
-                // 🛠️ FIX 4: Create/get MetricsConfig to satisfy the inner function signature
-                let config = MetricsConfig::default(); 
 
-                // 🛠️ FIX 5: Pass &mut conn and &config to the metrics function
-                if let Err(e) = increment_message_sent(&mut conn, api_key_clone, size_clone, &config).await {
-                    // 🛠️ FIX 6: Use structured tracing::error!
-                    error!(
-                        api_key_id = %api_key_clone,
-                        size_bytes = size_clone,
-                        error = ?e,
-                        "Metrics increment failed after message creation"
-                    );
-                }
-            } else {
-                error!("Failed to get Redis connection for metrics background task.");
+        if let Ok(mut conn) = redis_clone.get().await {
+            let config = MetricsConfig::default();
+            if let Err(e) =
+                increment_message_sent_pool(&self.redis_pool, api_key_clone, size_clone, &config).await
+            {
+                error!(
+                    api_key_id = %api_key_clone,
+                    size_bytes = size_clone,
+                    error = ?e,
+                    "Metrics increment failed after message creation"
+                );
             }
-        });
+        } else {
+            error!("Failed to get Redis connection for metrics background task.");
+        }
 
         Ok(message)
     }

@@ -319,7 +319,6 @@ CREATE TABLE api_keys (
 
 -- Indexes
 CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
-CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX idx_api_keys_active ON api_keys(is_active) WHERE is_active = true;
 CREATE INDEX idx_api_keys_tier ON api_keys(tier);
 
@@ -332,7 +331,7 @@ CREATE TABLE messages (
     
     -- Encrypted Payload
     ciphertext TEXT NOT NULL, -- Base64-encoded AES-256-GCM encrypted data
-    nonce VARCHAR(32) NOT NULL, -- Base64-encoded 96-bit nonce for AES-GCM
+    nonce UUID NOT NULL,
     
     -- Message Metadata (encrypted or public)
     content_type VARCHAR(100) DEFAULT 'application/octet-stream',

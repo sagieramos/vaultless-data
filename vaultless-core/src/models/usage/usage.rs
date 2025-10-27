@@ -18,7 +18,7 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDateTime, Time
 use deadpool_redis::{Pool as RedisPool, Runtime as RedisRuntime};
 use redis::{AsyncCommands, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, FromRow, PgPool, Postgres};
+use sqlx::{Executor, FromRow, PgPool, Postgres, query_builder::QueryBuilder};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::HashMap, sync::Arc};
 use tokio::time::error::Elapsed;
@@ -674,14 +674,13 @@ async fn recover_orphaned_keys(
     Ok(orphaned)
 }
 
+
 async fn flush_redis_to_pg(
     redis: Arc<RedisConn>,
     pg: Arc<PgPool>,
     config: &MetricsConfig,
     metrics: Option<&FlusherMetrics>,
 ) -> Result<()> {
-    // Note: If you use a metrics system like Prometheus, you'd use a timer provided by that system.
-    // Since FlusherMetrics is custom, we'll use std::time::Instant.
     let start = std::time::Instant::now();
     let mut conn = redis.as_ref().clone();
 
@@ -721,7 +720,7 @@ async fn flush_redis_to_pg(
     let mut batch: HashMap<(Uuid, DateTime<Utc>), MetricCounters> = HashMap::new();
     let mut keys_to_delete = Vec::new();
 
-    // Process keys with timeouts
+    // Process keys with timeouts (unchanged)
     for key_str in all_keys {
         let key = match MetricKey::try_from(key_str) {
             Ok(key) => key,
@@ -754,7 +753,6 @@ async fn flush_redis_to_pg(
             .await;
 
             match values_result {
-                // Outer Result is Ok, Inner Result is Ok (we successfully got the map)
                 Ok(Ok(values)) => {
                     let counters = batch
                         .entry((api_key_id, period))
@@ -763,14 +761,12 @@ async fn flush_redis_to_pg(
                     counters.merge_from_map(&values);
                     keys_to_delete.push(key);
                 }
-                // Outer Result is Ok, Inner Result is Err (Redis operation failed)
                 Ok(Err(e)) => {
                     error!("Failed to get values for key {}: {}", key.as_str(), e);
                     if let Some(metrics) = metrics {
                         metrics.errors.fetch_add(1, Ordering::SeqCst);
                     }
                 }
-                // Outer Result is Err (Tokio timeout occurred)
                 Err(_) => {
                     warn!("Timeout getting values for key: {}", key.as_str());
                     if let Some(metrics) = metrics {
@@ -791,57 +787,69 @@ async fn flush_redis_to_pg(
     let mut flushed_count = 0;
 
     for chunk in batch_vec.chunks(config.max_batch_size) {
+        let non_zero_chunk: Vec<_> = chunk
+            .iter()
+            .filter(|(_, counters)| !counters.is_zero())
+            .cloned()
+            .collect();
+
+        if non_zero_chunk.is_empty() {
+            continue;
+        }
+
         let mut tx = pg.begin().await?;
 
-        for ((api_key_id, period_start), counters) in chunk {
-            if counters.is_zero() {
-                continue;
-            }
+        // Build dynamic multi-row UPSERT
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            r#"
+            INSERT INTO usage_metrics (
+                api_key_id, period_start, period_end,
+                messages_sent, messages_received, proofs_verified,
+                total_bytes_stored, rate_limit_hits, estimated_cost_cents
+            ) 
+            "#,
+        );
 
+        qb.push_values(non_zero_chunk.iter(), |mut b, ((api_key_id, period_start), counters)| {
             let period_end = *period_start + ChronoDuration::hours(1);
             let estimated_cost = counters.estimate_cost_cents();
 
-            sqlx::query(
-                r#"
-                INSERT INTO usage_metrics (
-                    api_key_id, period_start, period_end,
-                    messages_sent, messages_received, proofs_verified,
-                    total_bytes_stored, rate_limit_hits, estimated_cost_cents
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (api_key_id, period_start)
-                DO UPDATE SET
-                    messages_sent = usage_metrics.messages_sent + EXCLUDED.messages_sent,
-                    messages_received = usage_metrics.messages_received + EXCLUDED.messages_received,
-                    proofs_verified = usage_metrics.proofs_verified + EXCLUDED.proofs_verified,
-                    total_bytes_stored = usage_metrics.total_bytes_stored + EXCLUDED.total_bytes_stored,
-                    rate_limit_hits = usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits,
-                    estimated_cost_cents = usage_metrics.estimated_cost_cents + EXCLUDED.estimated_cost_cents
-                "#,
-            )
-            .bind(api_key_id)
-            .bind(period_start)
-            .bind(period_end)
-            .bind(counters.messages_sent as i32)
-            .bind(counters.messages_received as i32)
-            .bind(counters.proofs_verified as i32)
-            .bind(counters.total_bytes_stored)
-            .bind(counters.rate_limit_hits as i32)
-            .bind(estimated_cost)
-            .execute(&mut *tx)
-            .await?;
+            b.push_bind(*api_key_id)
+                .push_bind(*period_start)
+                .push_bind(period_end)
+                .push_bind(counters.messages_sent as i32)
+                .push_bind(counters.messages_received as i32)
+                .push_bind(counters.proofs_verified as i32)
+                .push_bind(counters.total_bytes_stored)
+                .push_bind(counters.rate_limit_hits as i32)
+                .push_bind(estimated_cost);
+        });
 
-            flushed_count += 1;
-        }
+        qb.push(
+            r#"
+            ON CONFLICT (api_key_id, period_start)
+            DO UPDATE SET
+                messages_sent = usage_metrics.messages_sent + EXCLUDED.messages_sent,
+                messages_received = usage_metrics.messages_received + EXCLUDED.messages_received,
+                proofs_verified = usage_metrics.proofs_verified + EXCLUDED.proofs_verified,
+                total_bytes_stored = usage_metrics.total_bytes_stored + EXCLUDED.total_bytes_stored,
+                rate_limit_hits = usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits,
+                estimated_cost_cents = usage_metrics.estimated_cost_cents + EXCLUDED.estimated_cost_cents
+            "#,
+        );
 
+        // Execute
+        let query = qb.build();
+        let result = query.execute(&mut *tx).await?;
         tx.commit().await?;
 
+        flushed_count += non_zero_chunk.len();
         if let Some(metrics) = metrics {
-            metrics.batches_processed.fetch_add(1, Ordering::SeqCst); // FIXED: use fetch_add
+            metrics.batches_processed.fetch_add(1, Ordering::SeqCst);
         }
     }
 
-    // Delete keys and remove from tracking set with error handling
+    // Delete keys and remove from tracking set with error handling (unchanged)
     for key in &keys_to_delete {
         if let Err(e) = tokio::time::timeout(
             Duration::from_secs(config.redis_operation_timeout_secs),
@@ -871,7 +879,7 @@ async fn flush_redis_to_pg(
     if let Some(metrics) = metrics {
         metrics
             .keys_processed
-            .fetch_add(flushed_count as u64, Ordering::SeqCst); // FIXED: use fetch_add
+            .fetch_add(flushed_count as u64, Ordering::SeqCst);
         metrics
             .total_flush_duration_ms
             .fetch_add(duration.as_millis() as u64, Ordering::SeqCst);

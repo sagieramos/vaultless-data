@@ -380,8 +380,7 @@ ON message_reactions(message_id, encrypted_reaction);
 
 -- Index for file downloads
 CREATE INDEX IF NOT EXISTS idx_files_downloads 
-ON group_files(download_count DESC, created_at DESC)
-WHERE expires_at IS NULL OR expires_at > NOW();
+ON group_files(download_count DESC, created_at DESC);
 
 -- ============================================================================
 -- 12. Example usage queries

@@ -87,6 +87,19 @@ impl SubscriptionTier {
             Self::Enterprise => None,     // Custom pricing
         }
     }
+
+    /// Whether this tier has proof-based features enabled
+    ///
+    /// For example: cryptographic proofs, signed verifications, or
+    /// zero-knowledge-based message integrity validation.
+    pub fn proof_enabled(&self) -> bool {
+        matches!(self, Self::Pro | Self::Enterprise)
+    }
+
+    /// Whether proof *must* be enforced (optional helper)
+    pub fn proof_required(&self) -> bool {
+        matches!(self, Self::Enterprise)
+    }
 }
 
 impl Default for SubscriptionTier {
