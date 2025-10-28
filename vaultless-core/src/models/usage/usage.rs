@@ -258,7 +258,7 @@ impl TryFrom<String> for MetricKey {
 
 /// Returns the start of the current hour (UTC) for bucketing.
 /// Never panics - returns a safe default if date construction fails.
-fn get_period_start(now: &DateTime<Utc>) -> DateTime<Utc> {
+pub fn get_period_start(now: &DateTime<Utc>) -> DateTime<Utc> {
     now.date_naive()
         .and_hms_opt(now.hour(), 0, 0)
         .map(|dt| dt.and_utc())
@@ -674,7 +674,6 @@ async fn recover_orphaned_keys(
     Ok(orphaned)
 }
 
-
 async fn flush_redis_to_pg(
     redis: Arc<RedisConn>,
     pg: Arc<PgPool>,
@@ -687,9 +686,11 @@ async fn flush_redis_to_pg(
     // Recover any orphaned keys first
     let _ = recover_orphaned_keys(&redis, config).await;
 
-    // Get all active keys from tracking set using SSCAN
-    let mut all_keys = Vec::new();
+    // Process keys in streaming fashion - no unbounded Vec
     let mut cursor: u64 = 0;
+    let mut batch: HashMap<(Uuid, DateTime<Utc>), MetricCounters> = HashMap::new();
+    let mut keys_to_delete = Vec::new();
+    let mut total_keys_seen = 0;
 
     loop {
         let (next_cursor, keys): (u64, Vec<String>) = tokio::time::timeout(
@@ -705,7 +706,83 @@ async fn flush_redis_to_pg(
         .map_err(|_| VaultlessError::Timeout("Redis SSCAN timed out".into()))?
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-        all_keys.extend(keys);
+        total_keys_seen += keys.len();
+
+        // Process this chunk immediately
+        for key_str in keys {
+            let key = match MetricKey::try_from(key_str) {
+                Ok(key) => key,
+                Err(e) => {
+                    warn!("Skipping invalid metric key: {}", e);
+                    continue;
+                }
+            };
+
+            // Mark as processing for idempotency with timeout
+            let mark_result = tokio::time::timeout(
+                Duration::from_secs(config.redis_operation_timeout_secs),
+                conn.hset::<_, _, _, ()>(key.as_str(), PROCESSING_FLAG, 1),
+            )
+            .await;
+
+            if mark_result.is_err() {
+                warn!("Timeout marking key as processing: {}", key.as_str());
+                continue;
+            }
+
+            if let Some((api_key_id, period)) = key.parse() {
+                let values_result: std::result::Result<
+                    std::result::Result<HashMap<String, i64>, redis::RedisError>,
+                    tokio::time::error::Elapsed,
+                > = tokio::time::timeout(
+                    Duration::from_secs(config.redis_operation_timeout_secs),
+                    conn.hgetall(key.as_str()),
+                )
+                .await;
+
+                match values_result {
+                    Ok(Ok(values)) => {
+                        let counters = batch
+                            .entry((api_key_id, period))
+                            .or_insert_with(MetricCounters::default);
+
+                        counters.merge_from_map(&values);
+                        keys_to_delete.push(key);
+                    }
+                    Ok(Err(e)) => {
+                        error!("Failed to get values for key {}: {}", key.as_str(), e);
+                        if let Some(metrics) = metrics {
+                            metrics.errors.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    Err(_) => {
+                        warn!("Timeout getting values for key: {}", key.as_str());
+                        if let Some(metrics) = metrics {
+                            metrics.errors.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                }
+            }
+
+            // Flush to DB if batch gets too large to prevent memory issues
+            if batch.len() >= config.max_batch_size {
+                if let Err(e) = flush_batch_to_pg(
+                    &pg,
+                    &mut batch,
+                    &mut keys_to_delete,
+                    &mut conn,
+                    config,
+                    metrics,
+                )
+                .await
+                {
+                    error!("Failed to flush intermediate batch: {}", e);
+                    if let Some(metrics) = metrics {
+                        metrics.errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
 
         cursor = next_cursor;
         if cursor == 0 {
@@ -713,77 +790,53 @@ async fn flush_redis_to_pg(
         }
     }
 
-    if all_keys.is_empty() {
-        return Ok(());
-    }
-
-    let mut batch: HashMap<(Uuid, DateTime<Utc>), MetricCounters> = HashMap::new();
-    let mut keys_to_delete = Vec::new();
-
-    // Process keys with timeouts (unchanged)
-    for key_str in all_keys {
-        let key = match MetricKey::try_from(key_str) {
-            Ok(key) => key,
-            Err(e) => {
-                warn!("Skipping invalid metric key: {}", e);
-                continue;
-            }
-        };
-
-        // Mark as processing for idempotency with timeout
-        let mark_result = tokio::time::timeout(
-            Duration::from_secs(config.redis_operation_timeout_secs),
-            conn.hset::<_, _, _, ()>(key.as_str(), PROCESSING_FLAG, 1),
+    // Flush any remaining items
+    if !batch.is_empty() {
+        flush_batch_to_pg(
+            &pg,
+            &mut batch,
+            &mut keys_to_delete,
+            &mut conn,
+            config,
+            metrics,
         )
-        .await;
-
-        if mark_result.is_err() {
-            warn!("Timeout marking key as processing: {}", key.as_str());
-            continue;
-        }
-
-        if let Some((api_key_id, period)) = key.parse() {
-            let values_result: std::result::Result<
-                std::result::Result<HashMap<String, i64>, redis::RedisError>,
-                Elapsed,
-            > = tokio::time::timeout(
-                Duration::from_secs(config.redis_operation_timeout_secs),
-                conn.hgetall(key.as_str()),
-            )
-            .await;
-
-            match values_result {
-                Ok(Ok(values)) => {
-                    let counters = batch
-                        .entry((api_key_id, period))
-                        .or_insert_with(MetricCounters::default);
-
-                    counters.merge_from_map(&values);
-                    keys_to_delete.push(key);
-                }
-                Ok(Err(e)) => {
-                    error!("Failed to get values for key {}: {}", key.as_str(), e);
-                    if let Some(metrics) = metrics {
-                        metrics.errors.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-                Err(_) => {
-                    warn!("Timeout getting values for key: {}", key.as_str());
-                    if let Some(metrics) = metrics {
-                        metrics.errors.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-            }
-        }
+        .await?;
     }
 
+    let duration = start.elapsed();
+
+    info!(
+        total_keys = total_keys_seen,
+        duration_ms = duration.as_millis(),
+        "Completed metrics flush cycle"
+    );
+
+    // Check if flusher is falling behind
+    if duration.as_secs() > (config.flush_interval_secs / 2) as u64 {
+        warn!(
+            duration_secs = duration.as_secs(),
+            flush_interval = config.flush_interval_secs,
+            "Flusher taking more than 50% of interval! Consider scaling or increasing interval"
+        );
+    }
+
+    Ok(())
+}
+
+// Extract the DB flushing logic into a helper function
+async fn flush_batch_to_pg(
+    pg: &PgPool,
+    batch: &mut HashMap<(Uuid, DateTime<Utc>), MetricCounters>,
+    keys_to_delete: &mut Vec<MetricKey>,
+    conn: &mut RedisConn,
+    config: &MetricsConfig,
+    metrics: Option<&FlusherMetrics>,
+) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
     }
 
-    // Flush in batches to avoid transaction timeouts
-    let batch_vec: Vec<_> = batch.into_iter().collect();
-    let total_keys = batch_vec.len();
+    let batch_vec: Vec<_> = batch.drain().collect();
     let mut flushed_count = 0;
 
     for chunk in batch_vec.chunks(config.max_batch_size) {
@@ -810,20 +863,23 @@ async fn flush_redis_to_pg(
             "#,
         );
 
-        qb.push_values(non_zero_chunk.iter(), |mut b, ((api_key_id, period_start), counters)| {
-            let period_end = *period_start + ChronoDuration::hours(1);
-            let estimated_cost = counters.estimate_cost_cents();
+        qb.push_values(
+            non_zero_chunk.iter(),
+            |mut b, ((api_key_id, period_start), counters)| {
+                let period_end = *period_start + ChronoDuration::hours(1);
+                let estimated_cost = counters.estimate_cost_cents();
 
-            b.push_bind(*api_key_id)
-                .push_bind(*period_start)
-                .push_bind(period_end)
-                .push_bind(counters.messages_sent as i32)
-                .push_bind(counters.messages_received as i32)
-                .push_bind(counters.proofs_verified as i32)
-                .push_bind(counters.total_bytes_stored)
-                .push_bind(counters.rate_limit_hits as i32)
-                .push_bind(estimated_cost);
-        });
+                b.push_bind(*api_key_id)
+                    .push_bind(*period_start)
+                    .push_bind(period_end)
+                    .push_bind(counters.messages_sent as i32)
+                    .push_bind(counters.messages_received as i32)
+                    .push_bind(counters.proofs_verified as i32)
+                    .push_bind(counters.total_bytes_stored)
+                    .push_bind(counters.rate_limit_hits as i32)
+                    .push_bind(estimated_cost);
+            },
+        );
 
         qb.push(
             r#"
@@ -840,7 +896,7 @@ async fn flush_redis_to_pg(
 
         // Execute
         let query = qb.build();
-        let result = query.execute(&mut *tx).await?;
+        query.execute(&mut *tx).await?;
         tx.commit().await?;
 
         flushed_count += non_zero_chunk.len();
@@ -849,8 +905,8 @@ async fn flush_redis_to_pg(
         }
     }
 
-    // Delete keys and remove from tracking set with error handling (unchanged)
-    for key in &keys_to_delete {
+    // Delete keys and remove from tracking set
+    for key in keys_to_delete.drain(..) {
         if let Err(e) = tokio::time::timeout(
             Duration::from_secs(config.redis_operation_timeout_secs),
             conn.srem::<_, _, ()>(ACTIVE_KEYS_SET, key.as_str()),
@@ -874,32 +930,13 @@ async fn flush_redis_to_pg(
         }
     }
 
-    let duration = start.elapsed();
-
     if let Some(metrics) = metrics {
         metrics
             .keys_processed
             .fetch_add(flushed_count as u64, Ordering::SeqCst);
-        metrics
-            .total_flush_duration_ms
-            .fetch_add(duration.as_millis() as u64, Ordering::SeqCst);
     }
 
-    info!(
-        keys_flushed = flushed_count,
-        total_keys = total_keys,
-        duration_ms = duration.as_millis(),
-        "Flushed metrics to Postgres"
-    );
-
-    // Check if flusher is falling behind
-    if duration.as_secs() > (config.flush_interval_secs / 2) as u64 {
-        warn!(
-            duration_secs = duration.as_secs(),
-            flush_interval = config.flush_interval_secs,
-            "Flusher taking more than 50% of interval! Consider scaling or increasing interval"
-        );
-    }
+    info!(keys_flushed = flushed_count, "Flushed batch to Postgres");
 
     Ok(())
 }
