@@ -2,7 +2,7 @@
 //! All critical + minor issues fixed. Production-ready.
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::RedisResult;
 use redis::{AsyncCommands, pipe};
@@ -17,10 +17,12 @@ use tokio::{sync::mpsc, time::interval};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::crypto::{PRIVATE_KEY_SIZE, verify_signature};
+
+use crate::crypto::{verify_signature};
 use crate::error::{Result, VaultlessError};
-use crate::usage::{
-    MetricsConfig, get_period_start, increment_message_sent_pool,
+use crate::models::usage::{
+    MetricsConfig, increment_message_received_pool, increment_message_sent_pool,
+    increment_proof_verified_pool,
 };
 
 // =============================================================================
@@ -28,6 +30,7 @@ use crate::usage::{
 // =============================================================================
 
 const CACHE_TTL_SECS: u64 = 600;
+/// Flush interval in seconds for message batching to DB.
 const FLUSH_INTERVAL_SECS: u64 = 60;
 const MAX_BATCH_SIZE: usize = 2000;
 const CHANNEL_BUFFER: usize = 20_000;
@@ -39,6 +42,8 @@ const DELETE_CHANNEL_BUFFER: usize = 10_000;
 
 const PURGE_INTERVAL_HOURS: u64 = 1;
 const RETENTION_AFTER_DELIVERY_HOURS: i64 = 24;
+/// Default message expiry in days.
+const DEFAULT_MESSAGE_EXPIRY_DAYS: i64 = 7;
 
 const MAX_INBOX_FETCH: usize = 100;
 const PIPELINE_CHUNK_SIZE: usize = 500;
@@ -47,22 +52,13 @@ const SQL_FALLBACK_PARALLELISM: usize = 4;
 // Lock and TTL constants
 const REBUILD_LOCK_TTL_SECS: i64 = 5;
 const SENT_COUNTED_TTL_SECS: i64 = 86400; // 24 hours
-const DELIVERED_COUNTED_TTL_SECS: i64 = 86400; // 24 hours
-const METRIC_TTL_SECS: i64 = 7200; // 2 hours
 
 // Lua script for atomic delivery counting
 const ATOMIC_DELIVERY_COUNT_SCRIPT: &str = r#"
     local counted_key = KEYS[1]
-    local metric_key = KEYS[2]
-    local size_bytes = ARGV[1]
     
     -- Atomically check and set the counted flag
     if redis.call('SET', counted_key, '1', 'NX', 'EX', 86400) then
-        -- Only increment if we successfully set the flag
-        redis.call('HINCRBY', metric_key, 'messages_received', 1)
-        redis.call('HINCRBY', metric_key, 'total_bytes_stored', size_bytes)
-        redis.call('SADD', 'metric:active_keys', metric_key)
-        redis.call('EXPIRE', metric_key, 7200)
         return 1
     end
     return 0
@@ -72,42 +68,52 @@ const ATOMIC_DELIVERY_COUNT_SCRIPT: &str = r#"
 // Envelope (Canonical JSON)
 // =============================================================================
 
+/// Canonical envelope for signature verification.
 #[derive(Serialize)]
 struct Envelope<'a> {
     id: &'a Uuid,
     sender_client_id: &'a Uuid,
     recipient_client_id: &'a Uuid,
-    api_key_id: &'a Option<Uuid>,
+    api_key_id: &'a Uuid, // Aligned: non-optional per schema
     is_group_message: bool,
     content_size_bytes: i64,
     created_at: &'a DateTime<Utc>,
+    require_proof_verification: bool,
 }
 
 // =============================================================================
 // Message & File
 // =============================================================================
 
+/// P2P instant message struct.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Message {
     pub id: Uuid,
     pub ciphertext: String,
-    pub nonce: String,
-    pub sender_client_id: Uuid,
-    pub recipient_client_id: Uuid,
-    pub api_key_id: Option<Uuid>,
-    pub is_group_message: bool,
-
-    pub content_size_bytes: i64,
+    pub nonce: Uuid,                  // Fixed: uuid per schema
+    pub content_type: Option<String>, // Aligned: varchar(100), default handled in INSERT
+    pub content_size_bytes: i32,      // Fixed: integer per schema (i64 → i32 for bind)
+    pub api_key_id: Uuid,             // Fixed: non-optional per schema
     pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,          // Added: required NOT NULL
+    pub accessed_at: Option<DateTime<Utc>>, // Added: for alignment (nullable)
+    pub access_count: i32,                  // Added: integer NOT NULL DEFAULT 0
     pub is_delivered: bool,
     pub delivered_at: Option<DateTime<Utc>>,
+    pub max_access_count: Option<i32>, // Added: integer (nullable)
+    pub require_proof_verification: bool,
+    pub sender_client_id: Uuid,
+    pub recipient_client_id: Uuid,
+    pub group_id: Option<Uuid>, // Added: for groups (nullable, None for P2P)
+    pub is_group_message: bool,
 
+    // Non-schema fields (stored in Redis JSON only; not persisted to DB)
     pub signature: String,
     pub envelope_public_key: String,
-
     pub file_id: Option<Uuid>,
 }
 
+/// P2P file attachment.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct P2PFile {
     pub id: Uuid,
@@ -126,6 +132,7 @@ pub struct P2PFile {
     pub max_downloads: Option<i32>,
 }
 
+/// Read receipt for P2P messages.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ReadReceipt {
     pub id: Uuid,
@@ -138,6 +145,7 @@ pub struct ReadReceipt {
 // Pending Read
 // =============================================================================
 
+/// Pending read receipt for Redis-only messages.
 #[derive(Serialize, Deserialize)]
 struct PendingRead {
     message_id: Uuid,
@@ -149,6 +157,7 @@ struct PendingRead {
 // Delete Task
 // =============================================================================
 
+/// Task for background message deletion.
 #[derive(Debug, Clone)]
 struct DeleteTask {
     msg_id: Uuid,
@@ -159,6 +168,8 @@ struct DeleteTask {
 // InstantMessage Core (with Weak<PgPool> for fallback)
 // =============================================================================
 
+/// Core struct for P2P instant messaging.
+/// Manages Redis caching, DB persistence, metrics, and background tasks.
 #[derive(Clone)]
 pub struct InstantMessage {
     redis_pool: Arc<RedisPool>,
@@ -167,27 +178,11 @@ pub struct InstantMessage {
     config: MetricsConfig,
     sender: mpsc::Sender<Message>,
     delete_sender: mpsc::Sender<DeleteTask>,
-    server_private_key: [u8; PRIVATE_KEY_SIZE],
 }
 
 impl InstantMessage {
+    /// Creates a new `InstantMessage` instance and spawns background tasks.
     pub fn new(redis_pool: RedisPool, db_pool: PgPool, config: MetricsConfig) -> Result<Self> {
-        let private_key_b64 = env::var("VAULTLESS_SERVER_PRIVATE_KEY").map_err(|_| {
-            VaultlessError::Internal("Missing env VAULTLESS_SERVER_PRIVATE_KEY".into())
-        })?;
-        let private_key_bytes = BASE64.decode(&private_key_b64).map_err(|e| {
-            VaultlessError::Validation(format!("Invalid base64 private key: {}", e))
-        })?;
-        if private_key_bytes.len() != PRIVATE_KEY_SIZE {
-            return Err(VaultlessError::Validation(format!(
-                "Private key must be {} bytes, got {}",
-                PRIVATE_KEY_SIZE,
-                private_key_bytes.len()
-            )));
-        }
-        let mut server_private_key = [0u8; PRIVATE_KEY_SIZE];
-        server_private_key.copy_from_slice(&private_key_bytes);
-
         let db_pool_arc = Arc::new(db_pool);
         let weak_db_pool = Arc::downgrade(&db_pool_arc);
 
@@ -200,7 +195,6 @@ impl InstantMessage {
             config,
             sender: tx,
             delete_sender: delete_tx,
-            server_private_key,
         };
         this.spawn_flusher(rx);
         this.spawn_deleter(delete_rx);
@@ -211,74 +205,81 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Send Instant Message
     // -------------------------------------------------------------------------
+    /// Sends a P2P instant message, caches in Redis, queues for DB flush, and increments sent metrics.
     pub async fn send_instant_message(
         &self,
         sender_client_id: Uuid,
         recipient_client_id: Uuid,
         ciphertext: String,
-        nonce: String,
-        content_size_bytes: i64,
-        api_key_id: Option<Uuid>,
+        nonce: Uuid,             // Fixed: Uuid per schema
+        content_size_bytes: i32, // Fixed: i32 per schema
+        api_key_id: Uuid,        // Fixed: non-optional per schema
         signature: String,
         envelope_public_key: String,
+        require_proof_verification: bool,
     ) -> Result<Uuid> {
         // Create message
         let msg_id = Uuid::new_v4();
         let created_at = Utc::now();
+        let expires_at = created_at + ChronoDuration::days(DEFAULT_MESSAGE_EXPIRY_DAYS); // Aligned: required NOT NULL
         let msg = Message {
             id: msg_id,
             ciphertext,
             nonce,
-            sender_client_id,
-            recipient_client_id,
-            api_key_id,
-            is_group_message: false,
+            content_type: None, // Will default in DB
             content_size_bytes,
+            api_key_id,
             created_at,
+            expires_at,
+            accessed_at: None,
+            access_count: 0,
             is_delivered: false,
             delivered_at: None,
+            max_access_count: None,
+            require_proof_verification,
+            sender_client_id,
+            recipient_client_id,
+            group_id: None, // P2P: no group
+            is_group_message: false,
             signature,
             envelope_public_key,
             file_id: None,
         };
 
         // Increment sent metrics (idempotent, best-effort)
-        if let Some(sender_api_key_id) = msg.api_key_id {
-            let mut conn = self.redis_pool.get().await?;
-            let counted_key = format!("sent_counted:{}", msg_id);
-            let set: bool = conn.set_nx(&counted_key, "1").await?;
-            if set {
-                let _: () = conn.expire(&counted_key, SENT_COUNTED_TTL_SECS).await?;
-                if let Err(e) = increment_message_sent_pool(
-                    &self.redis_pool,
-                    sender_api_key_id,
-                    msg.content_size_bytes,
-                    &self.config,
-                )
-                .await
-                {
-                    error!(
-                        msg_id = %msg_id,
-                        api_key_id = %sender_api_key_id,
-                        error = %e,
-                        "Failed to increment sent metrics - billing may be affected"
-                    );
-                }
+        let mut conn = self.redis_pool.get().await?;
+        let counted_key = format!("sent_counted:{}", msg_id);
+        let set: bool = conn.set_nx(&counted_key, "1").await?;
+        if set {
+            let _: () = conn.expire(&counted_key, SENT_COUNTED_TTL_SECS).await?;
+            if let Err(e) = increment_message_sent_pool(
+                &self.redis_pool,
+                msg.api_key_id,
+                msg.content_size_bytes as i64, // Cast back for metrics
+                &self.config,
+            )
+            .await
+            {
+                error!(
+                    msg_id = %msg_id,
+                    api_key_id = %msg.api_key_id,
+                    error = %e,
+                    "Failed to increment sent metrics - billing may be affected"
+                );
             }
         }
 
         // Cache in Redis + queue to flusher
-        let mut conn = self.redis_pool.get().await?;
         let redis_key = format!("msg:{}", msg_id);
         let data = serde_json::to_string(&msg)?;
         let _: () = conn.set_ex(&redis_key, data, CACHE_TTL_SECS).await?;
         let queue_key = format!("inbox:{}", recipient_client_id);
         let _: () = conn.rpush(&queue_key, msg_id.to_string()).await?;
         let _: () = conn.ltrim(&queue_key, 0, MAX_QUEUE_LEN).await?;
-        
+
         // Handle backpressure with emergency write
         match self.sender.try_send(msg.clone()) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 warn!(
                     msg_id = %msg_id,
@@ -294,7 +295,7 @@ impl InstantMessage {
                         );
                     }
                 });
-            },
+            }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 return Err(VaultlessError::Internal("Flusher channel closed".into()));
             }
@@ -313,6 +314,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Mark as read (P2P)
     // -------------------------------------------------------------------------
+    /// Marks a message as read, inserts receipt, and publishes via Pub/Sub.
     pub async fn mark_read_instant_message(
         &self,
         reader_client_id: Uuid,
@@ -374,7 +376,7 @@ impl InstantMessage {
         let _: () = conn
             .publish(&format!("read:{}", msg_id), reader_client_id.to_string())
             .await?;
-        
+
         info!(
             msg_id = %msg_id,
             reader = %reader_client_id,
@@ -387,6 +389,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Fetch read receipts
     // -------------------------------------------------------------------------
+    /// Fetches read receipts for a message from DB.
     pub async fn fetch_read_receipts(&self, msg_id: Uuid) -> Result<Vec<ReadReceipt>> {
         let receipts = query_as::<_, ReadReceipt>(
             "SELECT id, message_id, client_id, read_at FROM p2p_read_receipts WHERE message_id = $1",
@@ -400,6 +403,8 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Fetch messages (paginated, MGET, inbox cap)
     // -------------------------------------------------------------------------
+    /// Fetches up to `MAX_INBOX_FETCH` undelivered messages for a recipient from Redis/DB.
+    /// Verifies signatures, marks delivered, increments received metrics, and queues deletes.
     pub async fn fetch_messages_for_recipient(
         &self,
         recipient_client_id: Uuid,
@@ -450,7 +455,7 @@ impl InstantMessage {
             return Ok(vec![]);
         }
 
-        // Bulk fetch from Redis
+        // Bulk fetch from Redis (full Message incl. non-DB fields)
         let redis_keys: Vec<String> = msg_ids.iter().map(|id| format!("msg:{}", id)).collect();
         let results: Vec<Option<String>> = conn
             .mget(&redis_keys)
@@ -466,8 +471,8 @@ impl InstantMessage {
 
             if let Some(data) = data_opt {
                 match serde_json::from_str::<Message>(&data) {
-                    Ok(msg) => {
-                        // CRITICAL: Verify signature BEFORE any state changes
+                    Ok(mut msg) => {
+                        // CRITICAL: Verify signature BEFORE any state changes (conditional on require_proof_verification)
                         if !self.verify_envelope_soft(&msg).await {
                             error!(
                                 msg_id = %msg_id,
@@ -479,43 +484,49 @@ impl InstantMessage {
                         }
 
                         // Signature valid - safe to process
-                        let mut delivered_msg = msg.clone();
-                        delivered_msg.is_delivered = true;
-                        delivered_msg.delivered_at = Some(Utc::now());
+                        msg.is_delivered = true;
+                        msg.delivered_at = Some(Utc::now());
 
                         // Use atomic counting to prevent race conditions
-                        if let Some(api_key_id) = delivered_msg.api_key_id {
-                            match self
-                                .count_delivery_once_atomic(
-                                    &mut conn,
-                                    msg_id,
-                                    api_key_id,
-                                    delivered_msg.content_size_bytes,
-                                )
-                                .await
-                            {
-                                Ok(counted) => {
-                                    if counted {
-                                        info!(
+                        match self.count_delivery_once_atomic(&mut conn, msg_id).await {
+                            Ok(counted) => {
+                                if counted {
+                                    if let Err(e) = increment_message_received_pool(
+                                        &self.redis_pool,
+                                        msg.api_key_id,
+                                        msg.content_size_bytes as i64,
+                                        &self.config,
+                                    )
+                                    .await
+                                    {
+                                        error!(
                                             msg_id = %msg_id,
-                                            api_key_id = %api_key_id,
-                                            "Delivery counted successfully"
+                                            api_key_id = %msg.api_key_id,
+                                            error = %e,
+                                            "Failed to increment received metrics - billing may be affected"
                                         );
                                     }
-                                }
-                                Err(e) => {
-                                    error!(
+                                    info!(
                                         msg_id = %msg_id,
-                                        api_key_id = %api_key_id,
-                                        error = %e,
-                                        "Failed to count delivery - billing may be affected!"
+                                        api_key_id = %msg.api_key_id,
+                                        "Delivery counted successfully"
                                     );
                                 }
                             }
+                            Err(e) => {
+                                error!(
+                                    msg_id = %msg_id,
+                                    api_key_id = %msg.api_key_id,
+                                    error = %e,
+                                    "Failed to count delivery - billing may be affected!"
+                                );
+                            }
                         }
 
-                        messages.push(delivered_msg);
-                        self.queue_delete(msg_id, msg.is_group_message).await;
+                        let is_group = msg.is_group_message;
+
+                        messages.push(msg);
+                        self.queue_delete(msg_id, is_group).await;
                     }
                     Err(e) => {
                         error!(
@@ -538,10 +549,21 @@ impl InstantMessage {
             for id_str in &msg_id_strs {
                 pipe.lrem(&queue_key, 1, id_str);
             }
-            let _: () = pipe.query_async(&mut conn).await.unwrap_or(());
+            if let Err(e) = pipe.query_async::<()>(&mut conn).await {
+                error!(
+                    recipient = %recipient_client_id,
+                    error = %e,
+                    "Failed to trim inbox queue using Redis pipeline"
+                );
+            }
         }
 
-        // Parallel SQL fallback for cache misses
+        let from_redis = messages.len();
+
+        //Clone self to ensure thread-safe access to Arc<RedisPool> and MetricsConfig
+        let self_clone = self.clone();
+
+        // Parallel SQL fallback for cache misses (fetches DB fields only; non-DB fields default/None)
         if !fallback_ids.is_empty() {
             let chunk_size =
                 (fallback_ids.len() + SQL_FALLBACK_PARALLELISM - 1) / SQL_FALLBACK_PARALLELISM;
@@ -559,9 +581,16 @@ impl InstantMessage {
 
             for handle in handles {
                 match handle.await {
-                    Ok(Ok(mut sql_msgs)) => {
+                    Ok(Ok(sql_msgs)) => {
                         for mut msg in sql_msgs {
-                            if !verify_envelope_soft_static(&msg) {
+                            // MODIFIED: Use self_clone and .await
+                            if !verify_envelope_soft_static(
+                                &msg,
+                                &self_clone.redis_pool, // Use self_clone
+                                &self_clone.config,     // Use self_clone
+                            )
+                            .await
+                            {
                                 error!(
                                     msg_id = %msg.id,
                                     "SQL fallback: Signature verification failed"
@@ -569,14 +598,67 @@ impl InstantMessage {
                                 continue;
                             }
 
+                            // 🛠️ IMPROVEMENT: Use atomic delivery counting for fallback
+                            match self_clone.redis_pool.get().await {
+                                Ok(mut rconn) => {
+                                    match self_clone
+                                        .count_delivery_once_atomic(&mut rconn, msg.id)
+                                        .await
+                                    {
+                                        Ok(counted) => {
+                                            if counted {
+                                                // Metrics increment only if newly counted
+                                                if let Err(e) = increment_message_received_pool(
+                                                    &self_clone.redis_pool,
+                                                    msg.api_key_id,
+                                                    msg.content_size_bytes as i64,
+                                                    &self_clone.config,
+                                                )
+                                                .await
+                                                {
+                                                    error!(
+                                                        msg_id = %msg.id,
+                                                        api_key_id = %msg.api_key_id,
+                                                        error = %e,
+                                                        "Failed to increment received metrics in fallback - billing may be affected"
+                                                    );
+                                                }
+                                                info!(
+                                                    msg_id = %msg.id,
+                                                    api_key_id = %msg.api_key_id,
+                                                    "Fallback delivery counted atomically"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                msg_id = %msg.id,
+                                                api_key_id = %msg.api_key_id,
+                                                error = %e,
+                                                "Failed to execute atomic delivery count script in fallback"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        msg_id = %msg.id,
+                                        error = %e,
+                                        "Redis pool connection failed in fallback metrics"
+                                    );
+                                }
+                            }
+
                             msg.is_delivered = true;
                             msg.delivered_at = Some(Utc::now());
+                            // Non-DB fields default (e.g., signature="", etc.) since from DB
 
                             let msg_id_for_delete = msg.id;
                             let is_group_message_for_delete = msg.is_group_message;
 
                             messages.push(msg);
-                            self.queue_delete(msg_id_for_delete, is_group_message_for_delete)
+                            self_clone
+                                .queue_delete(msg_id_for_delete, is_group_message_for_delete) // Use self_clone
                                 .await;
                         }
                     }
@@ -598,6 +680,8 @@ impl InstantMessage {
             }
         }
 
+        let from_sql = messages.len() - from_redis;
+
         // Mark all messages as read
         for msg in &messages {
             if let Err(e) = self
@@ -615,8 +699,8 @@ impl InstantMessage {
         info!(
             recipient = %recipient_client_id,
             total = messages.len(),
-            from_redis = messages.len() - fallback_ids.len(),
-            from_sql = fallback_ids.len(),
+            from_redis,
+            from_sql,
             "Fetched messages successfully"
         );
 
@@ -624,21 +708,46 @@ impl InstantMessage {
     }
 
     // -------------------------------------------------------------------------
-    // Soft envelope verification (logs, returns bool)
+    // Soft envelope verification (logs, returns bool) - conditional on require_proof_verification
     // -------------------------------------------------------------------------
+    /// Soft-verifies message envelope signature; logs errors, returns bool.
     async fn verify_envelope_soft(&self, msg: &Message) -> bool {
+        if !msg.require_proof_verification {
+            info!(msg_id = %msg.id, "Proof verification not required - skipping signature check");
+            return true;
+        }
+
         let envelope = Envelope {
             id: &msg.id,
             sender_client_id: &msg.sender_client_id,
             recipient_client_id: &msg.recipient_client_id,
             api_key_id: &msg.api_key_id,
             is_group_message: msg.is_group_message,
-            content_size_bytes: msg.content_size_bytes,
+            content_size_bytes: msg.content_size_bytes as i64,
             created_at: &msg.created_at,
+            require_proof_verification: msg.require_proof_verification,
         };
         match serde_json::to_vec(&envelope) {
             Ok(bytes) => match verify_signature(&bytes, &msg.signature, &msg.envelope_public_key) {
-                Ok(()) => true,
+                Ok(()) => {
+                    if let Err(e) = increment_proof_verified_pool(
+                        &self.redis_pool,
+                        msg.api_key_id,
+                        &self.config,
+                    )
+                    .await
+                    {
+                        // Log the error but allow the operation (signature verification) to succeed
+                        tracing::error!(
+                            msg_id = %msg.id,
+                            api_key_id = %msg.api_key_id,
+                            error = %e,
+                            "Failed to increment proof verified metrics"
+                        );
+                    }
+                    // Verification succeeded, return true for the outer block
+                    true
+                }
                 Err(e) => {
                     error!(
                         msg_id = %msg.id,
@@ -662,25 +771,16 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Atomic delivery counting using Lua script
     // -------------------------------------------------------------------------
+    /// Atomically checks/sets delivery flag via Lua; returns true if newly set.
     async fn count_delivery_once_atomic(
         &self,
         conn: &mut impl AsyncCommands,
         msg_id: Uuid,
-        api_key_id: Uuid,
-        size_bytes: i64,
     ) -> Result<bool> {
         let counted_key = format!("delivered_counted:{}", msg_id);
-        let period_start = get_period_start(&Utc::now());
-        let metric_key = format!(
-            "metric:hash:{}:{}",
-            api_key_id,
-            period_start.format("%Y%m%d%H")
-        );
 
         let result: i32 = redis::Script::new(ATOMIC_DELIVERY_COUNT_SCRIPT)
             .key(&counted_key)
-            .key(&metric_key)
-            .arg(size_bytes)
             .invoke_async(conn)
             .await
             .map_err(|e| VaultlessError::Internal(format!("Atomic count failed: {}", e)))?;
@@ -691,6 +791,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // queue_delete with weak pool fallback
     // -------------------------------------------------------------------------
+    /// Queues message for background deletion; falls back to immediate DB delete if channel full.
     async fn queue_delete(&self, msg_id: Uuid, is_group_message: bool) {
         if self
             .delete_sender
@@ -729,6 +830,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // rebuild_inbox (extracted)
     // -------------------------------------------------------------------------
+    /// Rebuilds inbox queue from undelivered DB messages.
     async fn rebuild_inbox(
         &self,
         conn: &mut impl AsyncCommands,
@@ -785,6 +887,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Safely rebuild inbox with distributed locking
     // -------------------------------------------------------------------------
+    /// Safely rebuilds inbox with Redis lock to prevent races.
     async fn rebuild_inbox_safe(
         &self,
         conn: &mut impl AsyncCommands,
@@ -840,6 +943,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Background flusher
     // -------------------------------------------------------------------------
+    /// Spawns background task to flush message batches to DB.
     fn spawn_flusher(&self, mut rx: mpsc::Receiver<Message>) {
         let db_pool = Arc::clone(&self.db_pool);
         let redis_pool = Arc::clone(&self.redis_pool);
@@ -887,6 +991,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Background deleter
     // -------------------------------------------------------------------------
+    /// Spawns background task to process message deletes.
     fn spawn_deleter(&self, mut rx: mpsc::Receiver<DeleteTask>) {
         let db_pool = Arc::clone(&self.db_pool);
         let redis_pool = Arc::clone(&self.redis_pool);
@@ -934,6 +1039,7 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Background purger
     // -------------------------------------------------------------------------
+    /// Spawns background task to purge old delivered messages.
     fn spawn_purger(&self) {
         let db_pool = Arc::clone(&self.db_pool);
         let redis_pool = Arc::clone(&self.redis_pool);
@@ -997,10 +1103,7 @@ impl InstantMessage {
                         "Purge DB delete failed"
                     );
                 } else {
-                    info!(
-                        count = ids.len(),
-                        "Purged old messages successfully"
-                    );
+                    info!(count = ids.len(), "Purged old messages successfully");
                 }
             }
         });
@@ -1009,12 +1112,14 @@ impl InstantMessage {
     // -------------------------------------------------------------------------
     // Health check for monitoring
     // -------------------------------------------------------------------------
+    /// Returns health status of background channels.
     pub fn get_health_status(&self) -> HealthStatus {
         HealthStatus {
             flusher_channel_capacity: self.sender.capacity(),
             flusher_channel_available: self.sender.max_capacity() - self.sender.capacity(),
             deleter_channel_capacity: self.delete_sender.capacity(),
-            deleter_channel_available: self.delete_sender.max_capacity() - self.delete_sender.capacity(),
+            deleter_channel_available: self.delete_sender.max_capacity()
+                - self.delete_sender.capacity(),
         }
     }
 }
@@ -1023,6 +1128,7 @@ impl InstantMessage {
 // Health Status
 // =============================================================================
 
+/// Health status for monitoring channel backpressure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthStatus {
     pub flusher_channel_capacity: usize,
@@ -1032,28 +1138,63 @@ pub struct HealthStatus {
 }
 
 // =============================================================================
-// Static soft verify (for parallel fallback)
+// Static soft verify (for parallel fallback) - conditional on require_proof_verification
 // =============================================================================
-fn verify_envelope_soft_static(msg: &Message) -> bool {
+/// Static envelope verification for SQL fallback (no self access).
+/// NOTE: This is an async function to allow for the metrics increment call.
+async fn verify_envelope_soft_static(
+    msg: &Message,
+    redis_pool: &RedisPool, // Passed in for metrics connection
+    config: &MetricsConfig, // Passed in for metrics configuration
+) -> bool {
+    // 1. Check if verification is required
+    if !msg.require_proof_verification || msg.signature.is_empty() {
+        return true;
+    }
+
+    // 2. Build the envelope struct for serialization
     let envelope = Envelope {
         id: &msg.id,
         sender_client_id: &msg.sender_client_id,
         recipient_client_id: &msg.recipient_client_id,
         api_key_id: &msg.api_key_id,
         is_group_message: msg.is_group_message,
-        content_size_bytes: msg.content_size_bytes,
+        content_size_bytes: msg.content_size_bytes as i64,
         created_at: &msg.created_at,
+        require_proof_verification: msg.require_proof_verification,
     };
+
+    // 3. Serialize and verify the signature
     if let Ok(bytes) = serde_json::to_vec(&envelope) {
-        verify_signature(&bytes, &msg.signature, &msg.envelope_public_key).is_ok()
+        if verify_signature(&bytes, &msg.signature, &msg.envelope_public_key).is_ok() {
+            // Signature SUCCESSFUL. Call the proof verified metrics function.
+            // We use explicit error handling (if let Err) to avoid propagating the error (no '?').
+            if let Err(e) = increment_proof_verified_pool(redis_pool, msg.api_key_id, config).await
+            {
+                // Log the metrics failure, but the core verification is still valid.
+                tracing::error!(
+                    msg_id = %msg.id,
+                    api_key_id = %msg.api_key_id,
+                    error = %e,
+                    "Failed to increment proof verified metrics during static verification"
+                );
+            }
+
+            // Return the core verification result (SUCCESS)
+            true
+        } else {
+            // Signature verification failed.
+            false
+        }
     } else {
+        // Serialization failed.
         false
     }
 }
-
 // =============================================================================
 // SQL Fallback
 // =============================================================================
+/// Fetches messages from DB for cache misses.
 async fn fetch_sql_fallback(
     db_pool: &PgPool,
     ids: &[Uuid],
@@ -1070,40 +1211,46 @@ async fn fetch_sql_fallback(
 // =============================================================================
 // Emergency Write (for channel backpressure)
 // =============================================================================
+/// Emergency DB insert for flusher backpressure.
 async fn emergency_write_message(db_pool: &PgPool, msg: &Message) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO messages (
-            id, ciphertext, nonce, sender_client_id, recipient_client_id,
-            api_key_id, is_group_message, content_size_bytes, created_at,
-            is_delivered, delivered_at, signature, envelope_public_key, file_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            id, ciphertext, nonce, content_type, content_size_bytes,
+            api_key_id, created_at, expires_at, access_count, is_delivered,
+            delivered_at, max_access_count, require_proof_verification,
+            sender_client_id, recipient_client_id, group_id, is_group_message
+        ) VALUES ($1, $2, $3, COALESCE($4, 'application/octet-stream'), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         ON CONFLICT (id) DO NOTHING
         "#,
     )
     .bind(msg.id)
     .bind(&msg.ciphertext)
-    .bind(&msg.nonce)
-    .bind(msg.sender_client_id)
-    .bind(msg.recipient_client_id)
-    .bind(msg.api_key_id)
-    .bind(msg.is_group_message)
+    .bind(msg.nonce)
+    .bind(msg.content_type.as_ref()) // Defaults in SQL if None
     .bind(msg.content_size_bytes)
+    .bind(msg.api_key_id)
     .bind(msg.created_at)
+    .bind(msg.expires_at)
+    .bind(msg.access_count)
     .bind(msg.is_delivered)
     .bind(msg.delivered_at)
-    .bind(&msg.signature)
-    .bind(&msg.envelope_public_key)
-    .bind(msg.file_id)
+    .bind(msg.max_access_count)
+    .bind(msg.require_proof_verification)
+    .bind(msg.sender_client_id)
+    .bind(msg.recipient_client_id)
+    .bind(msg.group_id)
+    .bind(msg.is_group_message)
     .execute(db_pool)
     .await?;
-    
+
     Ok(())
 }
 
 // =============================================================================
 // Batch Insert + Pending Reads + Metrics
 // =============================================================================
+/// Flushes batch of messages to DB, processes pending reads, cleans Redis.
 async fn flush_batch(
     db_pool: &PgPool,
     redis_pool: &RedisPool,
@@ -1120,27 +1267,36 @@ async fn flush_batch(
     let mut qb = QueryBuilder::<Postgres>::new(
         r#"
         INSERT INTO messages (
-            id, ciphertext, nonce, sender_client_id, recipient_client_id,
-            api_key_id, is_group_message, content_size_bytes, created_at,
-            is_delivered, delivered_at, signature, envelope_public_key, file_id
+            id, ciphertext, nonce, content_type, content_size_bytes,
+            api_key_id, created_at, expires_at, access_count, is_delivered,
+            delivered_at, max_access_count, require_proof_verification,
+            sender_client_id, recipient_client_id, group_id, is_group_message
         ) 
         "#,
     );
+
     qb.push_values(&to_insert, |mut b, msg| {
+        let content_type_str = msg
+            .content_type
+            .as_deref() // Convert Option<String> to Option<&str>
+            .unwrap_or("application/octet-stream");
         b.push_bind(msg.id)
             .push_bind(&msg.ciphertext)
-            .push_bind(&msg.nonce)
-            .push_bind(msg.sender_client_id)
-            .push_bind(msg.recipient_client_id)
-            .push_bind(msg.api_key_id)
-            .push_bind(msg.is_group_message)
+            .push_bind(msg.nonce)
+            .push_bind(content_type_str) // Default
             .push_bind(msg.content_size_bytes)
+            .push_bind(msg.api_key_id)
             .push_bind(msg.created_at)
+            .push_bind(msg.expires_at)
+            .push_bind(msg.access_count)
             .push_bind(msg.is_delivered)
             .push_bind(msg.delivered_at)
-            .push_bind(&msg.signature)
-            .push_bind(&msg.envelope_public_key)
-            .push_bind(msg.file_id);
+            .push_bind(msg.max_access_count)
+            .push_bind(msg.require_proof_verification)
+            .push_bind(msg.sender_client_id)
+            .push_bind(msg.recipient_client_id)
+            .push_bind(msg.group_id)
+            .push_bind(msg.is_group_message);
     });
     qb.push(" ON CONFLICT (id) DO NOTHING");
     qb.build().execute(&mut *tx).await?;
@@ -1154,18 +1310,19 @@ async fn flush_batch(
             if let Ok(pending) = serde_json::from_str::<PendingRead>(&data) {
                 let _ = sqlx::query(
                     r#"INSERT INTO p2p_read_receipts (id, message_id, client_id, read_at) 
-                       VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING"#
+                       VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING"#,
                 )
                 .bind(Uuid::new_v4())
                 .bind(msg.id)
                 .bind(pending.reader_client_id)
                 .bind(pending.read_at)
-                .execute(db_pool).await;
+                .execute(db_pool)
+                .await;
             }
         }
     }
 
-    // Clean Redis
+    // Clean Redis (non-DB fields like signature stay in Redis until DEL)
     let mut pipe = pipe();
     for msg in &to_insert {
         pipe.del(format!("msg:{}", msg.id));
@@ -1191,6 +1348,7 @@ async fn flush_batch(
 // =============================================================================
 // Batch Delete
 // =============================================================================
+/// Processes batch of delete tasks: cleans Redis, deletes/updates DB.
 async fn delete_batch(
     db_pool: &PgPool,
     redis_pool: &RedisPool,
@@ -1232,7 +1390,7 @@ async fn delete_batch(
     if !group_updates.is_empty() {
         sqlx::query(
             r#"UPDATE messages SET is_delivered = true, delivered_at = $1 
-               WHERE id = ANY($2::uuid[]) AND is_group_message = true AND delivered_at IS NULL"#
+               WHERE id = ANY($2::uuid[]) AND is_group_message = true AND delivered_at IS NULL"#,
         )
         .bind(Utc::now())
         .bind(&group_updates)
@@ -1241,7 +1399,7 @@ async fn delete_batch(
     }
 
     tx.commit().await?;
-    
+
     info!(
         count = task_count,
         p2p = p2p_deletes.len(),

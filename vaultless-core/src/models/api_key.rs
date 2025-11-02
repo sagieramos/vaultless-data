@@ -33,6 +33,7 @@ const QUOTA_CACHE_TTL: u64 = 3600; // 1 hour
 pub struct ApiKey {
     pub id: Uuid,
     pub user_id: Uuid,
+    pub key_prefix: String,
     pub tier: SubscriptionTier,
     pub monthly_message_quota: i32,
     pub message_retention_seconds: i32,
@@ -57,6 +58,10 @@ pub struct PaginatedApiKeys {
 #[derive(Debug, Clone, Validate, Deserialize)]
 pub struct CreateApiKey {
     pub user_id: Uuid,
+
+    pub key_hash: String,
+
+    pub key_prefix: String,
 
     pub tier: SubscriptionTier,
 
@@ -85,6 +90,10 @@ fn quota_cache_key(api_key_id: Uuid) -> String {
     format!("quota_count:{}:{}", api_key_id, Utc::now().format("%Y-%m"))
 }
 
+fn cache_key_by_api_key(raw_api_key: &str) -> String {
+    format!("raw_api_key:{}", raw_api_key)
+}
+
 // =============================================================================
 // Implementation
 // =============================================================================
@@ -105,6 +114,8 @@ impl ApiKey {
             r#"
             INSERT INTO api_keys (
                 user_id,
+                key_hash,
+                key_prefix,
                 tier,
                 monthly_message_quota,
                 message_retention_seconds,
@@ -114,13 +125,15 @@ impl ApiKey {
                 expires_at,
                 is_active
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
-            RETURNING id, user_id, tier, monthly_message_quota,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+            RETURNING id, user_id, key_prefix, tier, monthly_message_quota,
                       message_retention_seconds, description, scopes,
                       is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             "#,
         )
         .bind(input.user_id)
+        .bind(&input.key_hash)
+        .bind(&input.key_prefix)
         .bind(tier)
         .bind(tier.default_monthly_quota())
         .bind(tier.default_retention_seconds())
@@ -143,63 +156,131 @@ impl ApiKey {
     /// Finds API key by hash with Redis caching (TTL 10min).
     pub async fn find_by_hash<'c, E>(
         exec: E,
-        redis: Arc<RedisPoolType>,
-        key_hash: &str,
+        redis: Option<Arc<RedisPoolType>>,
+        key_hash: String,
     ) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let cache_key = cache_key_by_hash(key_hash);
+        // --- Cache Read (if Redis available) ---
+        if let Some(redis) = &redis {
+            let cache_key = cache_key_by_hash(&key_hash);
 
-        // --- Fast path (Cache Read) ---
-        let mut conn = redis
-            .get()
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis pool error: {}", e)))?;
-
-        if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-            if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
-                return Ok(api_key);
+            if let Ok(mut conn) = redis.get().await {
+                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
+                    if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
+                        return Ok(api_key);
+                    }
+                }
             }
         }
 
-        // --- Cache miss (Database Read) ---
+        // --- Database Read ---
         let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT id, user_id, tier, monthly_message_quota,
-                   message_retention_seconds, description, scopes,
-                   is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+            SELECT id, user_id, key_prefix, tier, monthly_message_quota,
+                message_retention_seconds, description, scopes,
+                is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             FROM api_keys
             WHERE key_hash = $1
             LIMIT 1
             "#,
         )
-        .bind(key_hash)
+        .bind(&key_hash)
         .fetch_optional(exec)
         .await?
         .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
 
-        // --- Cache write (fire-and-forget) ---
-        let redis_clone = Arc::clone(&redis);
-        let cache_key_clone = cache_key.clone();
-        if let Ok(serialized) = serde_json::to_string(&api_key) {
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis_clone.get().await {
-                    let _: () = conn
-                        .set_ex(&cache_key_clone, serialized, API_KEY_CACHE_TTL)
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!(
-                                cache_key = %cache_key_clone,
-                                error = %e,
-                                "Failed to set API key cache key"
-                            );
-                        });
-                }
-            });
+        // --- Cache Write (fire-and-forget, if Redis available) ---
+        if let Some(redis) = redis {
+            let cache_key = cache_key_by_hash(&key_hash);
+            if let Ok(serialized) = serde_json::to_string(&api_key) {
+                let redis_clone = Arc::clone(&redis);
+                let cache_key_clone = cache_key.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut conn) = redis_clone.get().await {
+                        let _: () = conn
+                            .set_ex(&cache_key_clone, serialized, API_KEY_CACHE_TTL)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!(
+                                    cache_key = %cache_key_clone,
+                                    error = %e,
+                                    "Failed to set API key cache key"
+                                );
+                            });
+                    }
+                });
+            }
         }
 
         Ok(api_key)
+    }
+
+    pub async fn find_by_api_key<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
+        api_key: String,
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // --- Cache Read (if Redis available) ---
+        if let Some(redis) = &redis {
+            let cache_key = cache_key_by_api_key(&api_key);
+
+            if let Ok(mut conn) = redis.get().await {
+                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
+                    if let Ok(cached_key) = serde_json::from_str::<ApiKey>(&cached_json) {
+                        return Ok(cached_key);
+                    }
+                }
+            }
+        }
+
+        // --- Cache miss: Query Postgres ---
+        let key_hash = crate::crypto::hash_content(api_key.as_bytes());
+
+        let api_key_record = sqlx::query_as::<_, ApiKey>(
+            r#"
+        SELECT id, user_id, key_prefix, tier, monthly_message_quota,
+               message_retention_seconds, description, scopes,
+               is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
+        FROM api_keys
+        WHERE key_hash = $1
+        LIMIT 1
+        "#,
+        )
+        .bind(&key_hash)
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
+
+        // --- Write to Redis cache (fire-and-forget, if Redis available) ---
+        if let Some(redis) = redis {
+            let cache_key = cache_key_by_api_key(&api_key);
+            if let Ok(serialized) = serde_json::to_string(&api_key_record) {
+                let redis_clone = Arc::clone(&redis);
+                let cache_key_clone = cache_key.clone();
+                let serialized_clone = serialized.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut conn) = redis_clone.get().await {
+                        let _: () = conn
+                            .set_ex(&cache_key_clone, serialized_clone, API_KEY_CACHE_TTL)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!(
+                                    cache_key = %cache_key_clone,
+                                    error = %e,
+                                    "Failed to set API key cache key"
+                                );
+                            });
+                    }
+                });
+            }
+        }
+
+        Ok(api_key_record)
     }
 
     /// Finds API key by ID with caching.
@@ -227,7 +308,7 @@ impl ApiKey {
         // Fetch from DB
         let api_key = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT id, user_id, tier, monthly_message_quota,
+            SELECT id, user_id, key_prefix, tier, monthly_message_quota,
                    message_retention_seconds, description, scopes,
                    is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             FROM api_keys WHERE id = $1
@@ -284,7 +365,7 @@ impl ApiKey {
         // Get keys
         let keys = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT id, user_id, tier, monthly_message_quota,
+            SELECT id, user_id, key_prefix, tier, monthly_message_quota,
                    message_retention_seconds, description, scopes,
                    is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             FROM api_keys 
@@ -331,7 +412,7 @@ impl ApiKey {
         // Get keys
         let keys = sqlx::query_as::<_, ApiKey>(
             r#"
-            SELECT id, user_id, tier, monthly_message_quota,
+            SELECT id, user_id, key_prefix, tier, monthly_message_quota,
                    message_retention_seconds, description, scopes,
                    is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             FROM api_keys 
@@ -387,7 +468,7 @@ impl ApiKey {
                 message_retention_seconds = $4,
                 rate_limit_per_minute = $5
             WHERE id = $1
-            RETURNING id, user_id, tier, monthly_message_quota,
+            RETURNING id, user_id, key_prefix, tier, monthly_message_quota,
                       message_retention_seconds, description, scopes,
                       is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             "#,
@@ -461,7 +542,7 @@ impl ApiKey {
             UPDATE api_keys 
             SET description = COALESCE($2, description)
             WHERE id = $1
-            RETURNING id, user_id, tier, monthly_message_quota,
+            RETURNING id, user_id, key_prefix, tier, monthly_message_quota,
                       message_retention_seconds, description, scopes,
                       is_active, created_at, expires_at, last_used_at, rate_limit_per_minute
             "#,
@@ -496,21 +577,28 @@ impl ApiKey {
     /// Quota check with caching.
     pub async fn check_quota<'c, E>(
         exec: E,
-        redis: Arc<RedisPoolType>,
+        redis: Option<Arc<RedisPoolType>>,
         api_key_id: Uuid,
     ) -> Result<bool>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        let api_key = Self::find_by_id(exec.clone(), Some(Arc::clone(&redis)), api_key_id).await?;
+        let api_key = Self::find_by_id(exec.clone(), redis.clone(), api_key_id).await?;
         let quota = api_key.monthly_message_quota as i64;
         let month_key = quota_cache_key(api_key_id);
 
-        // Try cache first
-        if let Ok(mut conn) = redis.get().await {
-            if let Ok(count) = conn.get::<_, i64>(&month_key).await {
-                return Ok(count < quota);
+        // Try cache first (if Redis available)
+        let mut count = None;
+        if let Some(redis) = &redis {
+            if let Ok(mut conn) = redis.get().await {
+                if let Ok(cached_count) = conn.get::<_, i64>(&month_key).await {
+                    count = Some(cached_count);
+                }
             }
+        }
+
+        if let Some(c) = count {
+            return Ok(c < quota);
         }
 
         // Cache miss - fetch from DB
@@ -519,28 +607,32 @@ impl ApiKey {
             SELECT COUNT(*) 
             FROM messages 
             WHERE api_key_id = $1 
-              AND created_at >= date_trunc('month', NOW())
+              AND created_at >= date_trunc('month', current_date)
             "#,
         )
         .bind(api_key_id)
         .fetch_one(exec)
         .await?;
 
-        // Update cache (fire-and-forget)
-        tokio::spawn(async move {
-            if let Ok(mut conn) = redis.get().await {
-                let _: () = conn
-                    .set_ex(&month_key, count, QUOTA_CACHE_TTL)
-                    .await
-                    .unwrap_or_else(|e| {
-                        error!(
-                            cache_key = %month_key,
-                            error = %e,
-                            "Failed to set quota cache key"
-                        );
-                    });
-            }
-        });
+        // Update cache (fire-and-forget, if Redis available)
+        if let Some(redis) = redis {
+            let redis_clone = Arc::clone(&redis);
+            let month_key_clone = month_key.clone();
+            tokio::spawn(async move {
+                if let Ok(mut conn) = redis_clone.get().await {
+                    let _: () = conn
+                        .set_ex(&month_key_clone, count, QUOTA_CACHE_TTL)
+                        .await
+                        .unwrap_or_else(|e| {
+                            error!(
+                                cache_key = %month_key_clone,
+                                error = %e,
+                                "Failed to set quota cache key"
+                            );
+                        });
+                }
+            });
+        }
 
         Ok(count < quota)
     }

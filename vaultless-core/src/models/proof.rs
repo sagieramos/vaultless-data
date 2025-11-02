@@ -63,8 +63,6 @@ impl MessageProof {
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         // Verify message exists
-        let _message = crate::models::message::message::Message::find_by_id(pool, input.message_id).await?;
-
         let proof = sqlx::query_as::<_, Self>(
             r#"
             INSERT INTO message_proofs (

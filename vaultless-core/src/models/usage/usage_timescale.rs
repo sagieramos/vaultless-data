@@ -15,6 +15,8 @@ pub struct DailyUsageSummary {
     pub total_messages_received: Option<i64>,
     pub total_proofs_verified: Option<i64>,
     pub total_bytes_stored: Option<i64>,
+    pub total_bytes_sent: Option<i64>,
+    pub total_bytes_received: Option<i64>,
     pub total_rate_limit_hits: Option<i64>,
     pub total_estimated_cost_cents: Option<i64>,
 }
@@ -28,6 +30,8 @@ pub struct WeeklyUsageSummary {
     pub total_messages_received: Option<i64>,
     pub total_proofs_verified: Option<i64>,
     pub total_bytes_stored: Option<i64>,
+    pub total_bytes_sent: Option<i64>,
+    pub total_bytes_received: Option<i64>,
     pub total_rate_limit_hits: Option<i64>,
     pub total_estimated_cost_cents: Option<i64>,
 }
@@ -49,6 +53,8 @@ impl DailyUsageSummary {
                 total_messages_received,
                 total_proofs_verified,
                 total_bytes_stored,
+                total_bytes_sent,
+                total_bytes_received,
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_daily
@@ -78,6 +84,8 @@ impl DailyUsageSummary {
                 total_messages_received,
                 total_proofs_verified,
                 total_bytes_stored,
+                total_bytes_sent,
+                total_bytes_received,
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_daily
@@ -104,6 +112,8 @@ impl DailyUsageSummary {
             COALESCE(SUM(total_messages_received)::BIGINT, 0) as total_messages_received,
             COALESCE(SUM(total_proofs_verified)::BIGINT, 0) as total_proofs_verified,
             COALESCE(SUM(total_bytes_stored)::BIGINT, 0) as total_bytes_stored,
+            COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
+            COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
             COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
             COALESCE(SUM(total_estimated_cost_cents)::BIGINT, 0) as total_estimated_cost_cents
             FROM usage_metrics_daily
@@ -137,6 +147,8 @@ impl WeeklyUsageSummary {
                 total_messages_received,
                 total_proofs_verified,
                 total_bytes_stored,
+                total_bytes_sent,
+                total_bytes_received,
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_weekly
@@ -170,6 +182,8 @@ impl WeeklyUsageSummary {
                 total_messages_received,
                 total_proofs_verified,
                 total_bytes_stored,
+                total_bytes_sent,
+                total_bytes_received,
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_weekly
@@ -194,6 +208,8 @@ pub struct MonthlyTotal {
     pub total_messages_received: i64,
     pub total_proofs_verified: i64,
     pub total_bytes_stored: i64,
+    pub total_bytes_sent: i64,
+    pub total_bytes_received: i64,
     pub total_rate_limit_hits: i64,
     pub total_estimated_cost_cents: i64,
 }
@@ -212,6 +228,8 @@ pub async fn get_realtime_usage(
             COALESCE(SUM(messages_received)::BIGINT, 0) as total_messages_received,
             COALESCE(SUM(proofs_verified)::BIGINT, 0) as total_proofs_verified,
             COALESCE(SUM(total_bytes_stored)::BIGINT, 0) as total_bytes_stored,
+            COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
+            COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
             COALESCE(SUM(rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
             COALESCE(SUM(COALESCE(estimated_cost_cents, 0))::BIGINT, 0) as total_estimated_cost_cents
 
@@ -233,6 +251,8 @@ pub async fn get_realtime_usage(
         total_messages_received: 0,
         total_proofs_verified: 0,
         total_bytes_stored: 0,
+        total_bytes_sent: 0,
+        total_bytes_received: 0,
         total_rate_limit_hits: 0,
         total_estimated_cost_cents: 0,
     });
