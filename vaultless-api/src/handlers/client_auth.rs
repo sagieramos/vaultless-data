@@ -36,14 +36,11 @@ pub struct RegisterClientResponse {
 // POST /clients/register
 pub async fn register_client(
     State(state): State<AppState>,
-    api_key: ApiKey,
-    user_id: Uuid,
     Json(req): Json<RegisterClientRequest>,
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
     // Create client (using hash from client-side)
     let client = Client::get_or_create_by_hash(
         &state.db,
-        user_id,
         req.identifier_hash,
         Some(req.public_key),
     )

@@ -5,7 +5,7 @@ use axum::{
     response::Response,
 };
 use std::net::SocketAddr;
-use vaultless_core::{ApiKey, UsageMetric};
+use vaultless_core::{ApiKey, MetricsConfig, increment_rate_limit_hit_pool};
 
 use crate::{middleware::error::ApiError, services::RateLimiter, state::AppState};
 
@@ -25,12 +25,16 @@ pub async fn rate_limit_by_api_key(
 
     if !result.allowed {
         // Record violation
+        increment_rate_limit_hit_pool(&state.redis_pool, api_key.id, &MetricsConfig::default());
         if let Err(e) = rate_limiter.record_violation(api_key.id).await {
             tracing::warn!("Failed to record rate limit violation: {}", e);
         }
 
         // Record in usage metrics
-        if let Err(e) = UsageMetric::record_rate_limit_hit(&state.db, api_key.id).await {
+        if let Err(e) =
+            increment_rate_limit_hit_pool(&state.redis_pool, api_key.id, &MetricsConfig::default())
+                .await
+        {
             tracing::warn!("Failed to record rate limit hit in metrics: {}", e);
         }
 

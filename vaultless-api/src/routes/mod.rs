@@ -4,6 +4,7 @@ pub mod message;
 pub mod notifications;
 pub mod proof;
 pub mod user_auth;
+pub mod websocket;
 
 use axum::{Router, routing::get};
 

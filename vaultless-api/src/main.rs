@@ -19,7 +19,7 @@ mod routes;
 mod services;
 mod state;
 
-use crate::config::AppConfig;
+use crate::config::Config;
 use crate::middleware::track_metrics;
 use crate::routes::build_routes;
 use crate::state::AppState;
@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     //----------------------------------------------------
     // 1. Load configuration
     //----------------------------------------------------
-    let config = AppConfig::from_env()?;
+    let config = Config::from_env()?;
     init_tracing(&config.server.log_level);
 
     tracing::info!("🚀 Starting Vaultless API...");
@@ -148,6 +148,8 @@ async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response:
         }
     }
 }
+
+
 
 //----------------------------------------------------
 // Graceful shutdown signal

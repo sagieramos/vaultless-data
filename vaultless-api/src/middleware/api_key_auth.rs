@@ -1,4 +1,4 @@
-//vaultless-api/src/middleware/api_key_auth.rs
+// vaultless-api/src/middleware/api_key_auth.rs
 use axum::{
     extract::{Request, State},
     http::HeaderMap,
@@ -11,7 +11,6 @@ use crate::config::AuthHeader;
 
 use crate::{
     middleware::error::ApiError,
-    services::cache::{CacheService, api_key_cache_key},
     state::AppState,
 };
 
@@ -40,70 +39,25 @@ pub async fn extract_api_key(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(api_key.to_string())
 }
 
-/// Validate API key with cache-first lookup
+/// Validate API key (relies on core's internal caching via find_by_hash)
 pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey, ApiError> {
     // Hash the API key
-    let key_hash = vaultless_core::crypto::hash_content(api_key.as_bytes());
 
-    tracing::debug!("Validating API key. Hash: {}", key_hash);
+    tracing::debug!("Validating API key: {}", api_key);
 
-    // Try cache first
-    let cache = CacheService::new(state.redis_pool.clone(), state.config.cache.default_ttl);
-    let cache_key = api_key_cache_key(&key_hash);
+    // Look up in database (with core-level Redis caching)
+    let api_key_record = ApiKey::find_by_api_key(
+        &state.db,  // Dereference Arc<PgPool> to &PgPool (implements Executor)
+        Arc::new(raw_redis_pool),  // Pass Arc<RedisPool> for core-level caching
+        api_key.to_string(),
+    )
+    .await
+    .map_err(|e| ApiError::from(e))?;
 
-    // Check cache
-    if let Ok(Some(cached_key)) = cache.get::<ApiKey>(&cache_key).await {
-        tracing::debug!("API key cache hit");
+    // Validate key is usable (e.g., active, not expired)
+    api_key_record.validate().map_err(|e| ApiError::from(e))?;
 
-        // Validate cached key
-        cached_key.validate().map_err(|e| match e {
-            vaultless_core::VaultlessError::ApiKeyInactive => {
-                ApiError::forbidden("API key is inactive")
-            }
-            vaultless_core::VaultlessError::ApiKeyExpired => {
-                ApiError::unauthorized("API key has expired")
-            }
-            _ => ApiError::from(e),
-        })?;
-
-        return Ok(cached_key);
-    }
-
-    // Cache miss - look up in database
-    tracing::debug!("API key cache miss, checking database");
-
-    let api_key_record = ApiKey::find_by_hash(&state.db, &key_hash)
-        .await
-        .map_err(|e| match e {
-            vaultless_core::VaultlessError::NotFound(_) => {
-                ApiError::unauthorized("Invalid API key")
-            }
-            _ => ApiError::from(e),
-        })?;
-
-    // Validate key is usable
-    api_key_record.validate().map_err(|e| match e {
-        vaultless_core::VaultlessError::ApiKeyInactive => {
-            ApiError::forbidden("API key is inactive")
-        }
-        vaultless_core::VaultlessError::ApiKeyExpired => {
-            ApiError::unauthorized("API key has expired")
-        }
-        _ => ApiError::from(e),
-    })?;
-
-    // Cache the API key (cache for 5 minutes)
-    let cache_ttl = std::time::Duration::from_secs(300);
-    if let Err(e) = cache
-        .set_with_ttl(&cache_key, &api_key_record, cache_ttl)
-        .await
-    {
-        tracing::warn!("Failed to cache API key: {}", e);
-        // Don't fail the request
-    } else {
-        tracing::debug!("API key cached");
-    }
-
+    tracing::debug!("API key validated successfully");
     Ok(api_key_record)
 }
 
@@ -116,7 +70,7 @@ pub async fn require_client_api_key(
     // Extract API key from headers
     let api_key_str = extract_api_key(request.headers()).await?;
 
-    // Validate API key (with caching)
+    // Validate API key (with core caching)
     let api_key = validate_api_key(&state, &api_key_str).await?;
 
     tracing::debug!(

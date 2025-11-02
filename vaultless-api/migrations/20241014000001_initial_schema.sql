@@ -414,6 +414,8 @@ CREATE TABLE usage_metrics (
     messages_received BIGINT NOT NULL DEFAULT 0,
     proofs_verified BIGINT NOT NULL DEFAULT 0,
     total_bytes_stored BIGINT NOT NULL DEFAULT 0,
+    total_bytes_sent BIGINT NOT NULL DEFAULT 0,
+    total_bytes_received BIGINT NOT NULL DEFAULT 0,
     
     -- Rate limiting violations
     rate_limit_hits INTEGER NOT NULL DEFAULT 0,
@@ -428,7 +430,10 @@ CREATE TABLE usage_metrics (
         messages_sent >= 0 AND 
         messages_received >= 0 AND 
         proofs_verified >= 0 AND
-        total_bytes_stored >= 0
+        total_bytes_stored >= 0 AND
+        total_bytes_sent >= 0 AND
+        total_bytes_received >= 0 AND
+        rate_limit_hits >= 0
     )
 );
 
@@ -440,6 +445,8 @@ SELECT create_hypertable('usage_metrics', 'period_start', if_not_exists => TRUE)
 CREATE INDEX idx_usage_api_key ON usage_metrics(api_key_id);
 CREATE INDEX idx_usage_period ON usage_metrics(period_start, period_end);
 CREATE INDEX idx_usage_created ON usage_metrics(created_at DESC);
+CREATE INDEX idx_usage_bytes_sent ON usage_metrics (total_bytes_sent ASC NULLS LAST);
+CREATE INDEX idx_usage_bytes_received ON usage_metrics (total_bytes_received ASC NULLS LAST);
 
 -- Unique constraint: one metric record per API key per period
 -- We enforce this at application level with period_start rounded to the hour

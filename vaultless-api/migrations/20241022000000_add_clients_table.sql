@@ -42,6 +42,10 @@ ADD COLUMN sender_client_id UUID REFERENCES clients(id) ON DELETE CASCADE,
 ADD COLUMN recipient_client_id UUID REFERENCES clients(id) ON DELETE CASCADE;
 
 -- Indexes
+CREATE INDEX idx_clients_identifier_hash ON clients (client_identifier_hash);
+CREATE INDEX idx_messages_conversation_lookup
+    ON messages (sender_client_id, recipient_client_id, created_at DESC);
+
 CREATE INDEX idx_messages_sender_client ON messages(sender_client_id, created_at DESC);
 CREATE INDEX idx_messages_recipient_client ON messages(recipient_client_id, created_at DESC);
 CREATE INDEX idx_messages_conversation ON messages(sender_client_id, recipient_client_id, created_at DESC);

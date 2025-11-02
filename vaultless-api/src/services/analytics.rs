@@ -6,7 +6,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::middleware::error::ApiError;
-use crate::services::cache::CacheService;
 use vaultless_core::{ApiKey, DailyUsageSummary, SubscriptionTier, UsageTrends};
 /// Main analytics service with intelligent caching
 pub struct AnalyticsService {
@@ -31,6 +30,8 @@ pub struct UsageOverview {
     pub total_messages_received: i64,
     pub total_proofs_verified: i64,
     pub total_bytes_stored: i64,
+    pub total_bytes_sent: i64,
+    pub total_bytes_received: i64,
     pub total_rate_limit_hits: i64,
     pub period_start: DateTime<Utc>,
     pub period_end: DateTime<Utc>,
@@ -71,25 +72,17 @@ pub struct TimeSeriesDataPoint {
     pub messages_received: i64,
     pub proofs_verified: i64,
     pub bytes_stored: i64,
+    pub bytes_sent: i64,
+    pub bytes_received: i64,
 }
 
 impl AnalyticsService {
-    pub fn new(db: PgPool, cache: CacheService) -> Self {
-        Self { db, cache }
-    }
-
     /// Get complete dashboard data for an API key
     pub async fn get_dashboard(
         &self,
         api_key_id: Uuid,
         user_tier: SubscriptionTier,
     ) -> Result<AnalyticsDashboard, ApiError> {
-        // Check cache first (5 min TTL for dashboard)
-        let cache_key = format!("analytics:dashboard:{}", api_key_id);
-        if let Some(cached) = self.cache.get::<AnalyticsDashboard>(&cache_key).await? {
-            return Ok(cached);
-        }
-
         // Fetch all data in parallel
         let (overview, trends, cost_breakdown, tier_info, quota_status, recent_activity) = tokio::join!(
             self.get_usage_overview(api_key_id),
@@ -108,11 +101,6 @@ impl AnalyticsService {
             quota_status: quota_status?,
             recent_activity: recent_activity?,
         };
-
-        // Cache for 5 minutes
-        self.cache
-            .set_with_ttl(&cache_key, &dashboard, std::time::Duration::from_secs(300))
-            .await?;
 
         Ok(dashboard)
     }
@@ -141,6 +129,8 @@ impl AnalyticsService {
             total_messages_received: usage.total_messages_received,
             total_proofs_verified: usage.total_proofs_verified,
             total_bytes_stored: usage.total_bytes_stored,
+            total_bytes_sent: usage.total_bytes_sent,
+            total_bytes_received: usage.total_bytes_received,
             total_rate_limit_hits: usage.total_rate_limit_hits,
             period_start: month_start,
             period_end: now,
@@ -182,7 +172,7 @@ impl AnalyticsService {
         let total_cost = messages_cost + storage_cost_val + verification_cost;
 
         // Calculate overage cost
-        let api_key = ApiKey::find_by_id(&self.db, api_key_id)
+        let api_key = ApiKey::find_by_id(&self.db, None, api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -206,7 +196,7 @@ impl AnalyticsService {
 
     /// Get tier information
     async fn get_tier_info(&self, api_key_id: Uuid) -> Result<TierInfo, ApiError> {
-        let api_key = ApiKey::find_by_id(&self.db, api_key_id)
+        let api_key = ApiKey::find_by_id(&self.db, None, api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -226,7 +216,7 @@ impl AnalyticsService {
 
     /// Get quota status with percentage calculation
     pub async fn get_quota_status(&self, api_key_id: Uuid) -> Result<QuotaStatus, ApiError> {
-        let api_key = ApiKey::find_by_id(&self.db, api_key_id)
+        let api_key = ApiKey::find_by_id(&self.db, None, api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -335,12 +325,18 @@ impl AnalyticsService {
 
         let data_points = daily_summaries
             .into_iter()
-            .map(|s| TimeSeriesDataPoint {
-                timestamp: s.day,
-                messages_sent: s.total_messages_sent.unwrap_or(0),
-                messages_received: s.total_messages_received.unwrap_or(0),
-                proofs_verified: s.total_proofs_verified.unwrap_or(0),
-                bytes_stored: s.total_bytes_stored.unwrap_or(0),
+            .map(|s| {
+                let sent = s.total_bytes_sent.unwrap_or(0);
+                let received = s.total_bytes_received.unwrap_or(0);
+                TimeSeriesDataPoint {
+                    timestamp: s.day,
+                    messages_sent: s.total_messages_sent.unwrap_or(0),
+                    messages_received: s.total_messages_received.unwrap_or(0),
+                    proofs_verified: s.total_proofs_verified.unwrap_or(0),
+                    bytes_stored: s.total_bytes_stored.unwrap_or(0),
+                    bytes_sent: sent,
+                    bytes_received: received,
+                }
             })
             .collect();
 
