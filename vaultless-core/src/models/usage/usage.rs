@@ -28,8 +28,10 @@ use tokio::{
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::crypto;
 use crate::error::{Result, VaultlessError};
 use crate::models::ApiKey;
+use crate::models::api_key::quota_cache_key;
 
 // =============================================================================
 // Type Aliases & Constants
@@ -267,6 +269,25 @@ where
         ));
     }
 
+    // --- START: logic for real-time quota ---
+    let monthly_key = quota_cache_key(api_key_id);
+    // Set a ~31 day TTL. Redis will auto-delete the key after a month of inactivity.
+    let ttl_seconds: i64 = 31 * 24 * 60 * 60;
+
+    // Atomically increment the monthly key and set TTL only if it's new
+    // We ignore the returned count for the increment operation
+    let _: () = redis::pipe()
+        .atomic()
+        .incr(&monthly_key, 1)
+        .cmd("EXPIRE")
+        .arg(&monthly_key)
+        .arg(ttl_seconds)
+        .arg("NX")
+        .query_async(conn)
+        .await
+        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+    // --- END: New logic for real-time quota ---
+
     let now = Utc::now();
     let key = MetricKey::new(api_key_id, get_period_start(&now))?;
 
@@ -426,7 +447,7 @@ pub async fn get_aggregate_by_api_key<'c, E>(
     api_key: &str,
 ) -> Result<UsageAggregate>
 where
-    E: Executor<'c, Database = Postgres> + Clone,
+    E: Executor<'static, Database = Postgres> + Clone + Send + Sync + 'static,
 {
     if api_key.is_empty() || api_key.len() > 256 {
         return Err(VaultlessError::InvalidInput(
@@ -434,8 +455,9 @@ where
         ));
     }
 
-    let api_key =
-        ApiKey::find_by_api_key(exec.clone(), Some(redis_pool), api_key.to_string()).await?;
+    let key_hash = crypto::hash_content(api_key.as_bytes());
+
+    let api_key = ApiKey::find_by_hash(exec.clone(), Some(redis_pool), key_hash).await?;
 
     let aggregate = sqlx::query_as::<_, UsageAggregate>(
         r#"

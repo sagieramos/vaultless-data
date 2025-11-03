@@ -3,20 +3,17 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 use vaultless_core::getrandom;
 use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier};
-
 use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
-
 // ============================================================================
 // REQUEST/RESPONSE TYPES
 // ============================================================================
-
 #[derive(Debug, Serialize)]
 pub struct ApiKeyInfo {
     pub id: String,
@@ -31,35 +28,28 @@ pub struct ApiKeyInfo {
     pub monthly_quota: i32,
     pub rate_limit: i32,
 }
-
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateApiKeyRequest {
     #[validate(length(min = 1, max = 255))]
     pub description: Option<String>,
-
     pub scopes: Option<String>,
-
     pub tier: Option<SubscriptionTier>,
 }
-
 #[derive(Debug, Serialize)]
 pub struct CreateApiKeyResponse {
     pub api_key: String, // The actual key (only shown once!)
     pub key_info: ApiKeyInfo,
     pub warning: String,
 }
-
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateApiKeyRequest {
     #[validate(length(min = 1, max = 255))]
     pub description: Option<String>,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct UpgradeRequest {
     pub target_tier: SubscriptionTier,
 }
-
 #[derive(Debug, Serialize)]
 pub struct UpgradeResponse {
     pub current_tier: String,
@@ -68,11 +58,9 @@ pub struct UpgradeResponse {
     pub checkout_url: Option<String>,
     pub requires_payment: bool,
 }
-
 // ============================================================================
 // HANDLERS
 // ============================================================================
-
 /// Create new API key
 /// POST /api/v1/keys
 pub async fn create_api_key(
@@ -84,36 +72,28 @@ pub async fn create_api_key(
     payload
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-
     let user_id: Uuid = session
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     tracing::info!(
         user_id = %user_id,
         email = %session.email,
         "Creating new API key"
     );
-
     // Generate API key (vlt_live_<random_bytes>)
     let mut key_bytes = [0u8; 32];
     getrandom::fill(&mut key_bytes).map_err(|e| {
         ApiError::internal_server_error(format!("Failed to generate API key: {}", e))
     })?;
-
     let key_suffix = URL_SAFE_NO_PAD.encode(key_bytes);
     let api_key_string = format!("vlt_live_{}", key_suffix);
-
     // Hash the key for storage
     let key_hash = vaultless_core::crypto::hash_content(api_key_string.as_bytes());
-
     // Key prefix for display (first 8 chars after vlt_live_)
     let key_prefix = format!("vlt_live_{}", &key_suffix[..8]);
-
     // Create API key in database
     let tier = payload.tier.unwrap_or(SubscriptionTier::Free);
-
     let api_key = ApiKey::create(
         &state.db,
         CreateApiKey {
@@ -128,13 +108,11 @@ pub async fn create_api_key(
     )
     .await
     .map_err(ApiError::from)?;
-
     tracing::info!(
         api_key_id = %api_key.id,
         tier = ?tier,
         "API key created successfully"
     );
-
     Ok((
         StatusCode::CREATED,
         Json(CreateApiKeyResponse {
@@ -147,7 +125,7 @@ pub async fn create_api_key(
                 scopes: api_key.scopes,
                 is_active: api_key.is_active,
                 created_at: api_key.created_at.to_rfc3339(),
-                last_used_at: None,
+                last_used_at: api_key.last_used_at.map(|d| d.to_rfc3339()),
                 expires_at: api_key.expires_at.map(|d| d.to_rfc3339()),
                 monthly_quota: api_key.monthly_message_quota,
                 rate_limit: api_key.rate_limit_per_minute,
@@ -156,7 +134,6 @@ pub async fn create_api_key(
         }),
     ))
 }
-
 /// List all API keys for current user
 /// GET /api/v1/keys
 pub async fn list_api_keys(
@@ -167,13 +144,11 @@ pub async fn list_api_keys(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     tracing::debug!(user_id = %user_id, "Listing API keys");
-
-    let keys = ApiKey::find_by_owner(&state.db, user_id)
+    let paginated = ApiKey::find_by_owner(&state.db, user_id, None, None)
         .await
         .map_err(ApiError::from)?;
-
+    let keys = paginated.keys;
     let key_infos: Vec<ApiKeyInfo> = keys
         .into_iter()
         .map(|k| ApiKeyInfo {
@@ -190,10 +165,8 @@ pub async fn list_api_keys(
             rate_limit: k.rate_limit_per_minute,
         })
         .collect();
-
     Ok(Json(key_infos))
 }
-
 /// Get specific API key details
 /// GET /api/v1/keys/:key_id
 pub async fn get_api_key(
@@ -205,16 +178,13 @@ pub async fn get_api_key(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
-    let key = ApiKey::find_by_id(&state.db, key_id)
+    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     // Verify ownership
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-
     Ok(Json(ApiKeyInfo {
         id: key.id.to_string(),
         key_prefix: key.key_prefix,
@@ -229,7 +199,6 @@ pub async fn get_api_key(
         rate_limit: key.rate_limit_per_minute,
     }))
 }
-
 /// Update API key metadata
 /// PATCH /api/v1/keys/:key_id
 pub async fn update_api_key(
@@ -241,28 +210,22 @@ pub async fn update_api_key(
     payload
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-
     let user_id: Uuid = session
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, key_id)
+    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-
     // Update metadata
-    let updated_key = ApiKey::update_metadata(&state.db, key_id, payload.description)
+    let updated_key = ApiKey::update_metadata(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id, payload.description)
         .await
         .map_err(ApiError::from)?;
-
     tracing::info!(key_id = %key_id, "API key metadata updated");
-
     Ok(Json(ApiKeyInfo {
         id: updated_key.id.to_string(),
         key_prefix: updated_key.key_prefix,
@@ -277,7 +240,6 @@ pub async fn update_api_key(
         rate_limit: updated_key.rate_limit_per_minute,
     }))
 }
-
 /// Revoke (delete) API key
 /// DELETE /api/v1/keys/:key_id
 pub async fn revoke_api_key(
@@ -289,26 +251,20 @@ pub async fn revoke_api_key(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, key_id)
+    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-
     // Delete the key
-    ApiKey::delete(&state.db, key_id)
+    ApiKey::delete(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     tracing::warn!(key_id = %key_id, "API key revoked");
-
     Ok(StatusCode::NO_CONTENT)
 }
-
 /// Deactivate API key (soft delete)
 /// POST /api/v1/keys/:key_id/deactivate
 pub async fn deactivate_api_key(
@@ -320,25 +276,19 @@ pub async fn deactivate_api_key(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, key_id)
+    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-
-    ApiKey::deactivate(&state.db, key_id)
+    ApiKey::deactivate(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     tracing::info!(key_id = %key_id, "API key deactivated");
-
     Ok(StatusCode::NO_CONTENT)
 }
-
 /// Reactivate API key
 /// POST /api/v1/keys/:key_id/reactivate
 pub async fn reactivate_api_key(
@@ -350,25 +300,19 @@ pub async fn reactivate_api_key(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, key_id)
+    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-
-    ApiKey::reactivate(&state.db, key_id)
+    ApiKey::reactivate(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     tracing::info!(key_id = %key_id, "API key reactivated");
-
     Ok(StatusCode::NO_CONTENT)
 }
-
 /// Request tier upgrade (triggers Stripe flow)
 /// POST /api/v1/keys/:key_id/upgrade
 pub async fn upgrade_api_key(
@@ -381,21 +325,19 @@ pub async fn upgrade_api_key(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, key_id)
+    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
         .await
         .map_err(ApiError::from)?;
-
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-
     // Validate upgrade path
-    if payload.target_tier.monthly_price_cents() <= key.tier.monthly_price_cents() {
+    let current_price = key.tier.monthly_price_cents().unwrap_or(0);
+    let target_price = payload.target_tier.monthly_price_cents().unwrap_or(0);
+    if target_price <= current_price {
         return Err(ApiError::bad_request("Can only upgrade to higher tiers"));
     }
-
     // TODO: Create Stripe checkout session
     tracing::info!(
         key_id = %key_id,
@@ -403,12 +345,11 @@ pub async fn upgrade_api_key(
         target_tier = ?payload.target_tier,
         "Upgrade requested"
     );
-
     Ok(Json(UpgradeResponse {
         current_tier: key.tier.to_string(),
         target_tier: payload.target_tier.to_string(),
         monthly_price: payload.target_tier.monthly_price_cents(),
         checkout_url: None, // TODO: Stripe URL
-        requires_payment: payload.target_tier.monthly_price_cents().is_some(),
+        requires_payment: payload.target_tier.monthly_price_cents().is_some_and(|p| p > 0),
     }))
 }

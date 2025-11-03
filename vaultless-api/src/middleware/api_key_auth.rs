@@ -5,14 +5,11 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use vaultless_core::ApiKey;
+use vaultless_core::{ApiKey, crypto};
 
 use crate::config::AuthHeader;
 
-use crate::{
-    middleware::error::ApiError,
-    state::AppState,
-};
+use crate::{middleware::error::ApiError, state::AppState};
 
 /// Extract API key from request headers
 /// Supports both "Authorization: X-api-key-id <key>" and "Authorization: <key>"
@@ -45,17 +42,20 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
 
     tracing::debug!("Validating API key: {}", api_key);
 
+    let key_hash = crypto::hash_content(api_key.as_bytes());
+
+    let redis_arc = Arc::new(state.redis_pool.clone());
+
     // Look up in database (with core-level Redis caching)
-    let api_key_record = ApiKey::find_by_api_key(
-        &state.db,  // Dereference Arc<PgPool> to &PgPool (implements Executor)
-        Arc::new(raw_redis_pool),  // Pass Arc<RedisPool> for core-level caching
-        api_key.to_string(),
-    )
-    .await
-    .map_err(|e| ApiError::from(e))?;
+    let api_key_record = ApiKey::find_by_hash(&state.db, Some(redis_arc.clone()), key_hash)
+        .await
+        .map_err(|e| ApiError::from(e))?;
 
     // Validate key is usable (e.g., active, not expired)
-    api_key_record.validate().map_err(|e| ApiError::from(e))?;
+    api_key_record
+        .validate(&state.db, Some(redis_arc))
+        .await
+        .map_err(ApiError::from)?;
 
     tracing::debug!("API key validated successfully");
     Ok(api_key_record)

@@ -9,8 +9,7 @@ use crate::middleware::error::ApiError;
 use vaultless_core::{ApiKey, DailyUsageSummary, SubscriptionTier, UsageTrends};
 /// Main analytics service with intelligent caching
 pub struct AnalyticsService {
-    db: PgPool,
-    cache: CacheService,
+    pub db: PgPool,
 }
 
 /// Complete analytics dashboard response

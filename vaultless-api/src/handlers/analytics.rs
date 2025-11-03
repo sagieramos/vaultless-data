@@ -2,7 +2,7 @@
 use axum::{
     Json,
     extract::{Query, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::IntoResponse,
 };
 use chrono::{DateTime, Utc};
@@ -11,13 +11,15 @@ use serde::{Deserialize, Serialize};
 use crate::middleware::api_key_auth::AuthenticatedApiKey;
 
 use crate::middleware::error::ApiError;
-use crate::services::analytics::{AnalyticsService, TimeSeriesDataPoint};
+use crate::services::analytics::{AnalyticsDashboard, AnalyticsService, TimeSeriesDataPoint};
 use crate::state::AppState;
 use vaultless_core::SubscriptionTier;
 
 // ============================================================================
-// REQUEST/RESPONSE DTOs
+// REQUEST/RESPONSE DTOs (UNMODIFIED)
 // ============================================================================
+
+// ... (All structs like TimeSeriesQuery, ExportFormat, AnalyticsResponse, QuotaStatusResponse) ...
 
 #[derive(Debug, Deserialize)]
 pub struct TimeSeriesQuery {
@@ -31,18 +33,18 @@ fn default_interval() -> String {
     "day".to_string()
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ExportQuery {
-    pub format: ExportFormat,
-    pub start: Option<DateTime<Utc>>,
-    pub end: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
     Json,
     Csv,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    pub format: ExportFormat,
+    pub start: Option<DateTime<Utc>>,
+    pub end: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,14 +77,17 @@ pub async fn get_dashboard(
     State(state): State<AppState>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
-
     // Check tier access
     if api_key.tier == SubscriptionTier::Free {
         return Err(ApiError::forbidden(
             "Analytics dashboard requires Starter tier or higher. Upgrade at https://vaultless.com/pricing",
         ));
     }
+
+    // FIX: Use the struct initialization as defined in your analytics service file
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
 
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
@@ -115,13 +120,22 @@ pub async fn get_usage_timeseries(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
 
     // Default to last 7 days if not specified
     let end = query.end.unwrap_or_else(Utc::now);
-    let start = query
-        .start
-        .unwrap_or_else(|| end - chrono::Duration::days(7));
+
+    // Default to last 7 days from the end point, respecting the tier limit
+    let default_duration = match api_key.tier {
+        SubscriptionTier::Starter => chrono::Duration::days(7),
+        SubscriptionTier::Pro => chrono::Duration::days(90),
+        SubscriptionTier::Enterprise => chrono::Duration::days(365),
+        SubscriptionTier::Free => chrono::Duration::days(0), // Should be caught by the check above
+    };
+
+    let start = query.start.unwrap_or_else(|| end - default_duration);
 
     let timeseries = analytics_service
         .get_time_series(api_key.id, api_key.tier, start, end)
@@ -150,16 +164,20 @@ pub async fn get_quota_status(
     State(state): State<AppState>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
 
+    // FIX: Now calling the streamlined service method
     let quota_status = analytics_service.get_quota_status(api_key.id).await?;
 
+    // Determine alert level based on QuotaStatus data
     let alert_level = if quota_status.is_over_quota {
         Some("critical".to_string())
     } else if quota_status.usage_percentage >= 90.0 {
         Some("warning".to_string())
     } else if quota_status.usage_percentage >= 80.0 {
-        Some("info".to_string())
+        Some("info".to_string()) // Or maybe "low_risk"
     } else {
         None
     };
@@ -191,7 +209,11 @@ pub async fn get_cost_breakdown(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
+
+    // FIX: Call get_dashboard and extract the cost_breakdown field
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -204,12 +226,14 @@ pub async fn get_cost_breakdown(
 }
 
 /// POST /analytics/export
-/// Export usage data as CSV or JSON (Pro+ only)
+/// Export usage data as CSV or JSON (Pro+ only)pub async fn export_analytics
+#[axum::debug_handler]
 pub async fn export_analytics(
     State(state): State<AppState>,
-    Query(query): Query<ExportQuery>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,
-) -> Result<impl IntoResponse, ApiError> {
+    Json(query): Json<ExportQuery>,
+) -> Result<Response, ApiError> {
+    // Return the concrete axum::response::Response
     // Pro+ only feature
     if !matches!(
         api_key.tier,
@@ -220,44 +244,57 @@ pub async fn export_analytics(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
+
+    // Determine the maximum range allowed by the tier
+    let max_days = match api_key.tier {
+        SubscriptionTier::Pro => 90,
+        SubscriptionTier::Enterprise => 365,
+        _ => 0, // Should be caught by the check above
+    };
 
     let end = query.end.unwrap_or_else(Utc::now);
-    let start = query
-        .start
-        .unwrap_or_else(|| end - chrono::Duration::days(30));
+    let start_default = end - chrono::Duration::days(max_days);
+
+    // Use the query start if provided, otherwise default to the maximum allowed range
+    let start = query.start.unwrap_or(start_default);
+
+    // Validate if the requested range exceeds the tier limit (redundant due to service check, but good defense)
+    let requested_duration = end.signed_duration_since(start).num_days();
+    if requested_duration > max_days {
+        return Err(ApiError::bad_request(format!(
+            "Your tier allows a maximum export of {} days of historical data.",
+            max_days
+        )));
+    }
 
     let timeseries = analytics_service
         .get_time_series(api_key.id, api_key.tier, start, end)
         .await?;
 
-    match query.format {
-        ExportFormat::Json => Ok((
-            StatusCode::OK,
-            [("Content-Type", "application/json")],
-            Json(AnalyticsResponse {
-                success: true,
-                data: timeseries,
-                upgrade_message: None,
-            }),
-        )
-            .into_response()),
+    let response = match query.format {
+        ExportFormat::Json => Json(AnalyticsResponse {
+            success: true,
+            data: timeseries,
+            upgrade_message: None,
+        })
+        .into_response(),
         ExportFormat::Csv => {
             let csv_data = generate_csv(&timeseries)?;
-            Ok((
-                StatusCode::OK,
-                [
-                    ("Content-Type", "text/csv"),
-                    (
-                        "Content-Disposition",
-                        "attachment; filename=\"analytics.csv\"",
-                    ),
-                ],
-                csv_data,
-            )
-                .into_response())
+            let headers = [
+                (header::CONTENT_TYPE, "text/csv".parse().unwrap()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"analytics.csv\"".parse().unwrap(),
+                ),
+            ];
+            (headers, csv_data).into_response()
         }
-    }
+    };
+
+    Ok(response)
 }
 
 /// GET /analytics/trends
@@ -273,7 +310,11 @@ pub async fn get_usage_trends(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
+
+    // FIX: Call get_dashboard and extract the trends field
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -297,7 +338,11 @@ pub async fn get_usage_overview(
         ));
     }
 
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
+
+    // FIX: Call get_dashboard and extract the overview field
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -309,20 +354,17 @@ pub async fn get_usage_overview(
     }))
 }
 
-#[derive(Serialize)]
-struct UpgradeOption {
-    tier: String,
-    monthly_price_cents: Option<i32>,
-    benefits: Vec<String>,
-}
-
 /// GET /analytics/tier
 /// Current tier information and features
 pub async fn get_tier_info(
     State(state): State<AppState>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService::new(state.db.clone(), state.cache_service());
+    let analytics_service = AnalyticsService {
+        db: state.db.clone(),
+    };
+
+    // FIX: Call get_dashboard and extract the tier_info field
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
         .await?;
@@ -331,7 +373,7 @@ pub async fn get_tier_info(
 
     #[derive(Serialize)]
     struct TierInfoResponse {
-        current_tier: vaultless_core::types::SubscriptionTier,
+        current_tier: vaultless_core::SubscriptionTier, // Use vaultless_core::SubscriptionTier
         features: Vec<String>,
         limits: TierLimits,
         upgrade_options: Vec<UpgradeOption>,
@@ -370,7 +412,7 @@ pub async fn get_tier_info(
 }
 
 // ============================================================================
-// HELPER FUNCTIONS
+// HELPER FUNCTIONS (UNMODIFIED)
 // ============================================================================
 
 /// Generate CSV from time-series data
