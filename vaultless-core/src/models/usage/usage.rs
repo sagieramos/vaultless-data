@@ -457,7 +457,7 @@ where
 
     let key_hash = crypto::hash_content(api_key.as_bytes());
 
-    let api_key = ApiKey::find_by_hash(exec.clone(), Some(redis_pool), key_hash).await?;
+    let api_key = ApiKey:: find_by_hash_sync(exec.clone(), Some(redis_pool), key_hash).await?;
 
     let aggregate = sqlx::query_as::<_, UsageAggregate>(
         r#"

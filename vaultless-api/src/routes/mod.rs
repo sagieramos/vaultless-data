@@ -1,11 +1,9 @@
 pub mod analytics;
 pub mod health;
 pub mod message;
-pub mod notifications;
-pub mod proof;
-pub mod user_auth;
-pub mod websocket;
 
+//pub mod proof;
+pub mod user_auth;
 use axum::{Router, routing::get};
 
 use user_auth::auth_routes;

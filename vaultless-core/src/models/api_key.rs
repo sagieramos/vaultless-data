@@ -98,10 +98,7 @@ fn cache_key_last_used_write(id: Uuid) -> String {
     format!("api_key:last_used_write:{}", id)
 }
 
-async fn update_last_used<E>(exec: E, redis: Option<Arc<RedisPoolType>>, id: Uuid)
-where
-    E: Executor<'static, Database = Postgres> + Send + 'static,
-{
+async fn update_last_used(pool: sqlx::PgPool, redis: Option<Arc<RedisPoolType>>, id: Uuid) {
     let month_key = cache_key_last_used_write(id);
     let mut proceed_with_db_write = true;
 
@@ -138,13 +135,11 @@ where
 
     // --- 2. Database Update (Conditional Execution) ---
     if proceed_with_db_write {
-        // Use the flag here
-        let result = sqlx::query!("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", id)
-            .execute(exec)
-            .await;
-
-        if let Err(e) = result {
-            tracing::error!(api_key_id = %id, error = %e, "Failed to update last_used_at timestamp");
+        if let Err(e) = sqlx::query!("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", id)
+            .execute(&pool)
+            .await
+        {
+            tracing::error!(api_key_id = %id, error = %e, "Failed to update last_used_at");
         }
     }
 }
@@ -208,16 +203,11 @@ impl ApiKey {
     }
 
     /// Finds API key by hash with Redis caching (TTL 10min) and rate-limited last_used_at update.
-    pub async fn find_by_hash<'c, E>(
-        exec: E,
+    pub async fn find_by_hash(
+        pool: &sqlx::PgPool,
         redis: Option<Arc<RedisPoolType>>,
         key_hash: String,
-    ) -> Result<ApiKey>
-    where
-        E: Executor<'static, Database = Postgres> + Clone + Send + Sync + 'static,
-    {
-        let exec_clone = exec.clone();
-        let redis_clone = redis.clone();
+    ) -> Result<ApiKey> {
         let cache_key = cache_key_by_hash(&key_hash);
 
         // --- 1. Redis Cache Lookup ---
@@ -225,15 +215,15 @@ impl ApiKey {
             if let Ok(mut conn) = redis_read.get().await {
                 if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
                     if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
-                        // Fire-and-forget last_used update (spawned safely)
-                        tokio::spawn({
-                            let exec_task = exec_clone.clone();
-                            let redis_task = redis_clone.clone();
-                            let id = api_key.id;
-                            async move {
-                                update_last_used(exec_task, redis_task, id).await;
-                            }
+                        // Fire-and-forget with pool clone
+                        let pool_clone = pool.clone();
+                        let redis_clone = redis.clone();
+                        let id = api_key.id;
+
+                        tokio::spawn(async move {
+                            update_last_used(pool_clone, redis_clone, id).await;
                         });
+
                         return Ok(api_key);
                     }
                 }
@@ -243,32 +233,30 @@ impl ApiKey {
         // --- 2. Database Fallback ---
         let api_key = sqlx::query_as::<_, ApiKey>(&format!(
             r#"
-                SELECT {}
-                FROM api_keys
-                WHERE key_hash = $1
-                LIMIT 1
-                "#,
+        SELECT {}
+        FROM api_keys
+        WHERE key_hash = $1
+        LIMIT 1
+        "#,
             PROJECTION
         ))
         .bind(&key_hash)
-        .fetch_optional(exec.clone())
+        .fetch_optional(pool)
         .await?
         .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
 
-        // Spawn background last_used_at update
-        tokio::spawn({
-            let exec_task = exec_clone.clone();
-            let redis_task = redis_clone.clone();
-            let id = api_key.id;
-            async move {
-                update_last_used(exec_task, redis_task, id).await;
-            }
+        // Spawn background update
+        let pool_clone = pool.clone();
+        let redis_clone = redis.clone();
+        let id = api_key.id;
+
+        tokio::spawn(async move {
+            update_last_used(pool_clone, redis_clone, id).await;
         });
 
-        // --- 3. Cache Write (fire-and-forget) ---
+        // --- 3. Cache Write ---
         if let Some(redis) = redis {
             if let Ok(serialized) = serde_json::to_string(&api_key) {
-                let cache_key = cache_key.clone();
                 tokio::spawn(async move {
                     if let Ok(mut conn) = redis.get().await {
                         if let Err(e) = conn
@@ -285,17 +273,71 @@ impl ApiKey {
         Ok(api_key)
     }
 
-    /// Finds API key by full key (hashed internally) with caching and last_used_at update.
-    pub async fn find_by_api_key<E>(
+    /// Finds API key by hash with Redis caching (TTL 10min).
+    /// Synchronous version without background last_used_at update.
+    /// Use this with generic executors or transactions where spawning is not needed.
+    pub async fn find_by_hash_sync<'c, E>(
         exec: E,
         redis: Option<Arc<RedisPoolType>>,
-        api_key: String,
+        key_hash: String,
     ) -> Result<ApiKey>
     where
-        E: Executor<'static, Database = Postgres> + Clone + Send + Sync + 'static,
+        E: Executor<'c, Database = Postgres>,
     {
+        let cache_key = cache_key_by_hash(&key_hash);
+
+        // --- 1. Redis Cache Lookup ---
+        if let Some(redis_read) = &redis {
+            if let Ok(mut conn) = redis_read.get().await {
+                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
+                    if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
+                        return Ok(api_key);
+                    }
+                }
+            }
+        }
+
+        // --- 2. Database Fallback ---
+        let api_key = sqlx::query_as::<_, ApiKey>(&format!(
+            r#"
+        SELECT {}
+        FROM api_keys
+        WHERE key_hash = $1
+        LIMIT 1
+        "#,
+            PROJECTION
+        ))
+        .bind(&key_hash)
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
+
+        // --- 3. Cache Write (fire-and-forget, if Redis available) ---
+        if let Some(redis) = redis {
+            if let Ok(serialized) = serde_json::to_string(&api_key) {
+                tokio::spawn(async move {
+                    if let Ok(mut conn) = redis.get().await {
+                        if let Err(e) = conn
+                            .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
+                            .await
+                        {
+                            error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
+                        }
+                    }
+                });
+            }
+        }
+
+        Ok(api_key)
+    }
+    /// Finds API key by full key (hashed internally) with caching and last_used_at update.
+    pub async fn find_by_api_key(
+        pool: &sqlx::PgPool,
+        redis: Option<Arc<RedisPoolType>>,
+        api_key: String,
+    ) -> Result<ApiKey> {
         let key_hash = crate::crypto::hash_content(api_key.as_bytes());
-        Self::find_by_hash(exec, redis, key_hash).await
+        Self::find_by_hash(pool, redis, key_hash).await
     }
 
     /// Finds API key by ID with caching.

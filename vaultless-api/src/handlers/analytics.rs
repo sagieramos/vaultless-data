@@ -3,7 +3,7 @@ use axum::{
     Json,
     extract::{Query, State},
     http::{StatusCode, header},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,13 @@ pub struct TimeSeriesQuery {
 
 fn default_interval() -> String {
     "day".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpgradeOption {
+    pub tier: String,
+    pub monthly_price_cents: Option<i32>,
+    pub benefits: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -283,13 +290,17 @@ pub async fn export_analytics(
         .into_response(),
         ExportFormat::Csv => {
             let csv_data = generate_csv(&timeseries)?;
+
+            use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValue};
+
             let headers = [
-                (header::CONTENT_TYPE, "text/csv".parse().unwrap()),
+                (CONTENT_TYPE, HeaderValue::from_static("text/csv")),
                 (
-                    header::CONTENT_DISPOSITION,
-                    "attachment; filename=\"analytics.csv\"".parse().unwrap(),
+                    CONTENT_DISPOSITION,
+                    HeaderValue::from_static("attachment; filename=\"analytics.csv\""),
                 ),
             ];
+
             (headers, csv_data).into_response()
         }
     };
