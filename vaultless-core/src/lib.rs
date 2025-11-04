@@ -13,12 +13,16 @@ pub use models::{
     ApiKey, CreateApiKey, CreateProof, Message, MessageProof, ProofVerificationResult,
     RefreshToken, User, UserSession, VerifyProofRequest,
     billing::*,
-    client::*,
+    client::{
+        AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
+        RegisterClientRequest, RegisterClientResponse, ClientPublic,
+    },
     client_token::*,
     message::*,
+    message::{InstantMessage, P2PFile, ReadReceipt, instant_message},
     usage::{
         FlusherMetrics, MetricCounters, MetricsConfig, get_aggregate_by_api_key, get_period_start,
-        start_redis_flusher, increment_rate_limit_hit_pool
+        increment_rate_limit_hit_pool, start_redis_flusher,
     },
     usage_timescale::{
         DailyUsageSummary, MonthlyTotal, UsageTrends, get_realtime_usage, get_usage_trends,

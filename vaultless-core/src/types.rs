@@ -2,6 +2,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Type;
 use std::str::FromStr;
 
+#[macro_export]
+macro_rules! cache_key {
+    ($($segment:expr),+ $(,)?) => {
+        format!("vaultless:{}", vec![$($segment.to_string()),+].join(":"))
+    };
+}
+
 /// Subscription tier enum matching the database
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[sqlx(type_name = "subscription_tier", rename_all = "lowercase")]

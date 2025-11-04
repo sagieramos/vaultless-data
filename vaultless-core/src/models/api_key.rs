@@ -14,7 +14,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::error::{Result, VaultlessError};
-use crate::types::SubscriptionTier;
+use crate::{cache_key, types::SubscriptionTier};
 
 // =============================================================================
 // Type Aliases & Constants
@@ -82,20 +82,20 @@ pub struct CreateApiKey {
 // Cache Key Generators
 // =============================================================================
 
-fn cache_key_by_hash(key_hash: &str) -> String {
-    format!("api_key:hash:{}", key_hash)
+pub fn cache_key_by_hash(key_hash: &str) -> String {
+    cache_key!("api_key", "hash", key_hash)
 }
 
-fn cache_key_by_id(id: Uuid) -> String {
-    format!("api_key:id:{}", id)
+pub fn cache_key_by_id(id: Uuid) -> String {
+    cache_key!("api_key", "id", id)
 }
 
 pub fn quota_cache_key(api_key_id: Uuid) -> String {
-    format!("quota_count:{}:{}", api_key_id, Utc::now().format("%Y-%m"))
+    cache_key!("quota_count", api_key_id, Utc::now().format("%Y-%m"))
 }
 
-fn cache_key_last_used_write(id: Uuid) -> String {
-    format!("api_key:last_used_write:{}", id)
+pub fn cache_key_last_used_write(id: Uuid) -> String {
+    cache_key!("api_key", "last_used_write", id)
 }
 
 async fn update_last_used(pool: sqlx::PgPool, redis: Option<Arc<RedisPoolType>>, id: Uuid) {

@@ -9,8 +9,11 @@ pub mod user;
 
 pub use api_key::{ApiKey, CreateApiKey};
 pub use billing::*;
-pub use message::{instant_message::*};
+pub use client::{
+    AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
+    RegisterClientRequest, RegisterClientResponse, 
+};
+pub use message::instant_message::*;
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use usage::*;
 pub use user::{LoginAttempt, RefreshToken, User, UserSession};
-pub use client::*;

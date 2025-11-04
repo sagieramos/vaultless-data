@@ -1,6 +1,10 @@
-//! High-performance P2P Instant Message Model
-//! All critical + minor issues fixed. Production-ready.
-
+use crate::crypto::verify_signature;
+use crate::error::{Result, VaultlessError};
+use crate::models::usage::{
+    MetricsConfig, increment_message_received_pool, increment_message_sent_pool,
+    increment_proof_verified_pool,
+};
+use crate::cache_key;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use deadpool_redis::Pool as RedisPool;
@@ -17,57 +21,65 @@ use tokio::{sync::mpsc, time::interval};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-
-use crate::crypto::{verify_signature};
-use crate::error::{Result, VaultlessError};
-use crate::models::usage::{
-    MetricsConfig, increment_message_received_pool, increment_message_sent_pool,
-    increment_proof_verified_pool,
-};
-
 // =============================================================================
 // Configuration
 // =============================================================================
-
 const CACHE_TTL_SECS: u64 = 600;
 /// Flush interval in seconds for message batching to DB.
 const FLUSH_INTERVAL_SECS: u64 = 60;
 const MAX_BATCH_SIZE: usize = 2000;
 const CHANNEL_BUFFER: usize = 20_000;
 const MAX_QUEUE_LEN: isize = 10_000;
-
 const CLEANUP_INTERVAL_SECS: u64 = 10;
 const MAX_DELETE_BATCH: usize = 1000;
 const DELETE_CHANNEL_BUFFER: usize = 10_000;
-
 const PURGE_INTERVAL_HOURS: u64 = 1;
 const RETENTION_AFTER_DELIVERY_HOURS: i64 = 24;
 /// Default message expiry in days.
 const DEFAULT_MESSAGE_EXPIRY_DAYS: i64 = 7;
-
 const MAX_INBOX_FETCH: usize = 100;
 const PIPELINE_CHUNK_SIZE: usize = 500;
 const SQL_FALLBACK_PARALLELISM: usize = 4;
-
 // Lock and TTL constants
 const REBUILD_LOCK_TTL_SECS: i64 = 5;
 const SENT_COUNTED_TTL_SECS: i64 = 86400; // 24 hours
-
 // Lua script for atomic delivery counting
 const ATOMIC_DELIVERY_COUNT_SCRIPT: &str = r#"
-    local counted_key = KEYS[1]
-    
-    -- Atomically check and set the counted flag
-    if redis.call('SET', counted_key, '1', 'NX', 'EX', 86400) then
-        return 1
-    end
-    return 0
+local counted_key = KEYS[1]
+-- Atomically check and set the counted flag
+if redis.call('SET', counted_key, '1', 'NX', 'EX', 86400) then
+  return 1
+end
+return 0
 "#;
+
+fn instant_message_key(msg_id: Uuid) -> String {
+    cache_key!("instant_message", "message", msg_id)
+}
+
+fn instant_inbox_key(client_id: Uuid) -> String {
+    cache_key!("instant_message", "inbox", client_id)
+}
+
+fn instant_pending_read_key(msg_id: Uuid) -> String {
+    cache_key!("instant_message", "pending_read", msg_id)
+}
+
+fn instant_rebuild_lock_key(client_id: Uuid) -> String {
+    cache_key!("instant_message", "rebuild_lock", client_id)
+}
+
+fn instant_sent_counted_key(msg_id: Uuid) -> String {
+    cache_key!("instant_message", "sent_counted", msg_id)
+}
+
+fn instant_delivered_counted_key(msg_id: Uuid) -> String {
+    cache_key!("instant_message", "delivered_counted", msg_id)
+}
 
 // =============================================================================
 // Envelope (Canonical JSON)
 // =============================================================================
-
 /// Canonical envelope for signature verification.
 #[derive(Serialize)]
 struct Envelope<'a> {
@@ -80,11 +92,9 @@ struct Envelope<'a> {
     created_at: &'a DateTime<Utc>,
     require_proof_verification: bool,
 }
-
 // =============================================================================
 // Message & File
 // =============================================================================
-
 /// P2P instant message struct.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Message {
@@ -106,13 +116,11 @@ pub struct Message {
     pub recipient_client_id: Uuid,
     pub group_id: Option<Uuid>, // Added: for groups (nullable, None for P2P)
     pub is_group_message: bool,
-
     // Non-schema fields (stored in Redis JSON only; not persisted to DB)
     pub signature: String,
     pub envelope_public_key: String,
     pub file_id: Option<Uuid>,
 }
-
 /// P2P file attachment.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct P2PFile {
@@ -131,7 +139,6 @@ pub struct P2PFile {
     pub download_count: i32,
     pub max_downloads: Option<i32>,
 }
-
 /// Read receipt for P2P messages.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ReadReceipt {
@@ -140,11 +147,9 @@ pub struct ReadReceipt {
     pub client_id: Uuid,
     pub read_at: DateTime<Utc>,
 }
-
 // =============================================================================
 // Pending Read
 // =============================================================================
-
 /// Pending read receipt for Redis-only messages.
 #[derive(Serialize, Deserialize)]
 struct PendingRead {
@@ -152,22 +157,18 @@ struct PendingRead {
     reader_client_id: Uuid,
     read_at: DateTime<Utc>,
 }
-
 // =============================================================================
 // Delete Task
 // =============================================================================
-
 /// Task for background message deletion.
 #[derive(Debug, Clone)]
 struct DeleteTask {
     msg_id: Uuid,
     is_group_message: bool,
 }
-
 // =============================================================================
 // InstantMessage Core (with Weak<PgPool> for fallback)
 // =============================================================================
-
 /// Core struct for P2P instant messaging.
 /// Manages Redis caching, DB persistence, metrics, and background tasks.
 #[derive(Clone)]
@@ -179,13 +180,11 @@ pub struct InstantMessage {
     sender: mpsc::Sender<Message>,
     delete_sender: mpsc::Sender<DeleteTask>,
 }
-
 impl InstantMessage {
-    /// Creates a new `InstantMessage` instance and spawns background tasks.
+    /// Creates a new InstantMessage instance and spawns background tasks.
     pub fn new(redis_pool: RedisPool, db_pool: PgPool, config: MetricsConfig) -> Result<Self> {
         let db_pool_arc = Arc::new(db_pool);
         let weak_db_pool = Arc::downgrade(&db_pool_arc);
-
         let (tx, rx) = mpsc::channel(CHANNEL_BUFFER);
         let (delete_tx, delete_rx) = mpsc::channel(DELETE_CHANNEL_BUFFER);
         let this = Self {
@@ -201,7 +200,6 @@ impl InstantMessage {
         this.spawn_purger();
         Ok(this)
     }
-
     // -------------------------------------------------------------------------
     // Send Instant Message
     // -------------------------------------------------------------------------
@@ -211,9 +209,9 @@ impl InstantMessage {
         sender_client_id: Uuid,
         recipient_client_id: Uuid,
         ciphertext: String,
-        nonce: Uuid,             // Fixed: Uuid per schema
-        content_size_bytes: i32, // Fixed: i32 per schema
-        api_key_id: Uuid,        // Fixed: non-optional per schema
+        nonce: Uuid,            
+        content_size_bytes: i32,
+        api_key_id: Uuid,        
         signature: String,
         envelope_public_key: String,
         require_proof_verification: bool,
@@ -245,10 +243,9 @@ impl InstantMessage {
             envelope_public_key,
             file_id: None,
         };
-
         // Increment sent metrics (idempotent, best-effort)
         let mut conn = self.redis_pool.get().await?;
-        let counted_key = format!("sent_counted:{}", msg_id);
+        let counted_key = instant_sent_counted_key(msg_id);
         let set: bool = conn.set_nx(&counted_key, "1").await?;
         if set {
             let _: () = conn.expire(&counted_key, SENT_COUNTED_TTL_SECS).await?;
@@ -268,15 +265,13 @@ impl InstantMessage {
                 );
             }
         }
-
         // Cache in Redis + queue to flusher
-        let redis_key = format!("msg:{}", msg_id);
+        let redis_key = instant_message_key(msg_id);
         let data = serde_json::to_string(&msg)?;
         let _: () = conn.set_ex(&redis_key, data, CACHE_TTL_SECS).await?;
-        let queue_key = format!("inbox:{}", recipient_client_id);
+        let queue_key = instant_inbox_key(recipient_client_id);
         let _: () = conn.rpush(&queue_key, msg_id.to_string()).await?;
         let _: () = conn.ltrim(&queue_key, 0, MAX_QUEUE_LEN).await?;
-
         // Handle backpressure with emergency write
         match self.sender.try_send(msg.clone()) {
             Ok(_) => {}
@@ -300,7 +295,6 @@ impl InstantMessage {
                 return Err(VaultlessError::Internal("Flusher channel closed".into()));
             }
         }
-
         info!(
             msg_id = %msg_id,
             sender = %sender_client_id,
@@ -310,7 +304,6 @@ impl InstantMessage {
         );
         Ok(msg_id)
     }
-
     // -------------------------------------------------------------------------
     // Mark as read (P2P)
     // -------------------------------------------------------------------------
@@ -321,7 +314,6 @@ impl InstantMessage {
         msg_id: Uuid,
     ) -> Result<()> {
         let mut conn = self.redis_pool.get().await?;
-
         // Try DB first
         let exists: Option<(Uuid,)> = sqlx::query_as("SELECT 1 FROM messages WHERE id = $1")
             .bind(msg_id)
@@ -335,7 +327,6 @@ impl InstantMessage {
                 );
                 VaultlessError::Internal(e.to_string())
             })?;
-
         if exists.is_some() {
             // DB path
             let receipt_id = Uuid::new_v4();
@@ -352,7 +343,6 @@ impl InstantMessage {
             .bind(Utc::now())
             .execute(&*self.db_pool)
             .await?;
-
             let _ = sqlx::query(
                 "UPDATE messages SET delivered_at = $1 WHERE id = $2 AND delivered_at IS NULL",
             )
@@ -367,16 +357,14 @@ impl InstantMessage {
                 reader_client_id,
                 read_at: Utc::now(),
             };
-            let key = format!("pending_read:{}", msg_id);
+            let key = instant_pending_read_key(msg_id);
             let data = serde_json::to_string(&pending)?;
             let _: () = conn.set_ex(&key, data, CACHE_TTL_SECS).await?;
         }
-
         // Pub/Sub
         let _: () = conn
             .publish(&format!("read:{}", msg_id), reader_client_id.to_string())
             .await?;
-
         info!(
             msg_id = %msg_id,
             reader = %reader_client_id,
@@ -385,7 +373,6 @@ impl InstantMessage {
         );
         Ok(())
     }
-
     // -------------------------------------------------------------------------
     // Fetch read receipts
     // -------------------------------------------------------------------------
@@ -399,25 +386,22 @@ impl InstantMessage {
         .await?;
         Ok(receipts)
     }
-
     // -------------------------------------------------------------------------
     // Fetch messages (paginated, MGET, inbox cap)
     // -------------------------------------------------------------------------
-    /// Fetches up to `MAX_INBOX_FETCH` undelivered messages for a recipient from Redis/DB.
+    /// Fetches up to MAX_INBOX_FETCH undelivered messages for a recipient from Redis/DB.
     /// Verifies signatures, marks delivered, increments received metrics, and queues deletes.
     pub async fn fetch_messages_for_recipient(
         &self,
         recipient_client_id: Uuid,
     ) -> Result<Vec<Message>> {
         let mut conn = self.redis_pool.get().await?;
-        let queue_key = format!("inbox:{}", recipient_client_id);
-
+        let queue_key = instant_inbox_key(recipient_client_id);
         // Check inbox length
         let total: isize = conn
             .llen(&queue_key)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         // Rebuild with race condition protection if empty
         if total == 0 {
             if let Err(e) = self
@@ -431,22 +415,18 @@ impl InstantMessage {
                 );
             }
         }
-
         // Fetch message IDs from inbox
         let msg_id_strs: Vec<String> = conn
             .lrange(&queue_key, 0, (MAX_INBOX_FETCH - 1) as isize)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         if msg_id_strs.is_empty() {
             return Ok(vec![]);
         }
-
         let msg_ids: Vec<Uuid> = msg_id_strs
             .iter()
             .filter_map(|s| Uuid::parse_str(s).ok())
             .collect();
-
         if msg_ids.is_empty() {
             warn!(
                 recipient = %recipient_client_id,
@@ -454,21 +434,17 @@ impl InstantMessage {
             );
             return Ok(vec![]);
         }
-
         // Bulk fetch from Redis (full Message incl. non-DB fields)
-        let redis_keys: Vec<String> = msg_ids.iter().map(|id| format!("msg:{}", id)).collect();
+        let redis_keys: Vec<String> = msg_ids.iter().map(|id| instant_message_key(*id)).collect();
         let results: Vec<Option<String>> = conn
             .mget(&redis_keys)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         let mut messages = Vec::new();
         let mut fallback_ids = Vec::new();
-
         // Process Redis results
         for (i, data_opt) in results.into_iter().enumerate() {
             let msg_id = msg_ids[i];
-
             if let Some(data) = data_opt {
                 match serde_json::from_str::<Message>(&data) {
                     Ok(mut msg) => {
@@ -478,15 +454,13 @@ impl InstantMessage {
                                 msg_id = %msg_id,
                                 "Signature verification failed - deleting message"
                             );
-                            let _: () = conn.del(format!("msg:{}", msg_id)).await.unwrap_or(());
+                            let _: () = conn.del(instant_message_key(msg_id)).await.unwrap_or(());
                             self.queue_delete(msg_id, msg.is_group_message).await;
                             continue;
                         }
-
                         // Signature valid - safe to process
                         msg.is_delivered = true;
                         msg.delivered_at = Some(Utc::now());
-
                         // Use atomic counting to prevent race conditions
                         match self.count_delivery_once_atomic(&mut conn, msg_id).await {
                             Ok(counted) => {
@@ -522,9 +496,7 @@ impl InstantMessage {
                                 );
                             }
                         }
-
                         let is_group = msg.is_group_message;
-
                         messages.push(msg);
                         self.queue_delete(msg_id, is_group).await;
                     }
@@ -534,7 +506,7 @@ impl InstantMessage {
                             error = %e,
                             "Deserialization failed - deleting message"
                         );
-                        let _: () = conn.del(format!("msg:{}", msg_id)).await.unwrap_or(());
+                        let _: () = conn.del(instant_message_key(msg_id)).await.unwrap_or(());
                         self.queue_delete(msg_id, false).await;
                     }
                 }
@@ -542,7 +514,6 @@ impl InstantMessage {
                 fallback_ids.push(msg_id);
             }
         }
-
         // Remove processed IDs from inbox (pipeline for efficiency)
         if !msg_id_strs.is_empty() {
             let mut pipe = redis::pipe();
@@ -557,19 +528,15 @@ impl InstantMessage {
                 );
             }
         }
-
         let from_redis = messages.len();
-
-        //Clone self to ensure thread-safe access to Arc<RedisPool> and MetricsConfig
+        // Clone self to ensure thread-safe access to Arc<RedisPool> and MetricsConfig
         let self_clone = self.clone();
-
         // Parallel SQL fallback for cache misses (fetches DB fields only; non-DB fields default/None)
         if !fallback_ids.is_empty() {
             let chunk_size =
                 (fallback_ids.len() + SQL_FALLBACK_PARALLELISM - 1) / SQL_FALLBACK_PARALLELISM;
             let chunks = fallback_ids.chunks(chunk_size);
             let mut handles = Vec::new();
-
             for chunk in chunks {
                 let chunk = chunk.to_vec();
                 let db_pool = Arc::clone(&self.db_pool);
@@ -578,7 +545,6 @@ impl InstantMessage {
                 });
                 handles.push(handle);
             }
-
             for handle in handles {
                 match handle.await {
                     Ok(Ok(sql_msgs)) => {
@@ -597,7 +563,6 @@ impl InstantMessage {
                                 );
                                 continue;
                             }
-
                             // 🛠️ IMPROVEMENT: Use atomic delivery counting for fallback
                             match self_clone.redis_pool.get().await {
                                 Ok(mut rconn) => {
@@ -648,14 +613,11 @@ impl InstantMessage {
                                     );
                                 }
                             }
-
                             msg.is_delivered = true;
                             msg.delivered_at = Some(Utc::now());
                             // Non-DB fields default (e.g., signature="", etc.) since from DB
-
                             let msg_id_for_delete = msg.id;
                             let is_group_message_for_delete = msg.is_group_message;
-
                             messages.push(msg);
                             self_clone
                                 .queue_delete(msg_id_for_delete, is_group_message_for_delete) // Use self_clone
@@ -679,9 +641,7 @@ impl InstantMessage {
                 }
             }
         }
-
         let from_sql = messages.len() - from_redis;
-
         // Mark all messages as read
         for msg in &messages {
             if let Err(e) = self
@@ -695,7 +655,6 @@ impl InstantMessage {
                 );
             }
         }
-
         info!(
             recipient = %recipient_client_id,
             total = messages.len(),
@@ -703,10 +662,8 @@ impl InstantMessage {
             from_sql,
             "Fetched messages successfully"
         );
-
         Ok(messages)
     }
-
     // -------------------------------------------------------------------------
     // Soft envelope verification (logs, returns bool) - conditional on require_proof_verification
     // -------------------------------------------------------------------------
@@ -716,7 +673,6 @@ impl InstantMessage {
             info!(msg_id = %msg.id, "Proof verification not required - skipping signature check");
             return true;
         }
-
         let envelope = Envelope {
             id: &msg.id,
             sender_client_id: &msg.sender_client_id,
@@ -767,7 +723,6 @@ impl InstantMessage {
             }
         }
     }
-
     // -------------------------------------------------------------------------
     // Atomic delivery counting using Lua script
     // -------------------------------------------------------------------------
@@ -777,17 +732,14 @@ impl InstantMessage {
         conn: &mut impl AsyncCommands,
         msg_id: Uuid,
     ) -> Result<bool> {
-        let counted_key = format!("delivered_counted:{}", msg_id);
-
+        let counted_key = instant_delivered_counted_key(msg_id);
         let result: i32 = redis::Script::new(ATOMIC_DELIVERY_COUNT_SCRIPT)
             .key(&counted_key)
             .invoke_async(conn)
             .await
             .map_err(|e| VaultlessError::Internal(format!("Atomic count failed: {}", e)))?;
-
         Ok(result == 1)
     }
-
     // -------------------------------------------------------------------------
     // queue_delete with weak pool fallback
     // -------------------------------------------------------------------------
@@ -826,7 +778,6 @@ impl InstantMessage {
             }
         }
     }
-
     // -------------------------------------------------------------------------
     // rebuild_inbox (extracted)
     // -------------------------------------------------------------------------
@@ -837,12 +788,14 @@ impl InstantMessage {
         recipient_client_id: Uuid,
     ) -> Result<()> {
         let undelivered: Vec<Uuid> = sqlx::query_scalar(
-            r#"SELECT id FROM messages 
-               WHERE recipient_client_id = $1 
-               AND is_delivered = false 
-               AND is_group_message = false
-               ORDER BY created_at ASC
-               LIMIT $2"#,
+            r#"
+            SELECT id FROM messages
+            WHERE recipient_client_id = $1
+              AND is_delivered = false
+              AND is_group_message = false
+            ORDER BY created_at ASC
+            LIMIT $2
+            "#,
         )
         .bind(recipient_client_id)
         .bind(MAX_QUEUE_LEN as i32)
@@ -856,34 +809,27 @@ impl InstantMessage {
             );
             VaultlessError::Internal(e.to_string())
         })?;
-
         if undelivered.is_empty() {
             return Ok(());
         }
-
-        let queue_key = format!("inbox:{}", recipient_client_id);
-
+        let queue_key = instant_inbox_key(recipient_client_id);
         // Use pipeline for efficiency
         let mut pipe = redis::pipe();
         for id in &undelivered {
             pipe.rpush(&queue_key, id.to_string());
         }
         pipe.expire(&queue_key, CACHE_TTL_SECS as i64);
-
         let _: () = pipe
             .query_async(conn)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         info!(
             recipient = %recipient_client_id,
             count = undelivered.len(),
             "Inbox rebuilt successfully"
         );
-
         Ok(())
     }
-
     // -------------------------------------------------------------------------
     // Safely rebuild inbox with distributed locking
     // -------------------------------------------------------------------------
@@ -893,15 +839,13 @@ impl InstantMessage {
         conn: &mut impl AsyncCommands,
         recipient_client_id: Uuid,
     ) -> Result<bool> {
-        let lock_key = format!("rebuild_lock:{}", recipient_client_id);
-        let queue_key = format!("inbox:{}", recipient_client_id);
-
+        let lock_key = instant_rebuild_lock_key(recipient_client_id);
+        let queue_key = instant_inbox_key(recipient_client_id);
         // Try to acquire lock
         let acquired: bool = conn
             .set_nx(&lock_key, "1")
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         if !acquired {
             info!(
                 recipient = %recipient_client_id,
@@ -909,19 +853,16 @@ impl InstantMessage {
             );
             return Ok(false);
         }
-
         // Set TTL for safety (auto-release if process crashes)
         let _: () = conn
             .expire(&lock_key, REBUILD_LOCK_TTL_SECS)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         // Double-check inbox is still empty (TOCTOU prevention)
         let total: isize = conn
             .llen(&queue_key)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
         if total > 0 {
             let _: () = conn.del(&lock_key).await.unwrap_or(());
             info!(
@@ -930,16 +871,12 @@ impl InstantMessage {
             );
             return Ok(false);
         }
-
         // Safe to rebuild
         let result = self.rebuild_inbox(conn, recipient_client_id).await;
-
         // Always release lock
         let _: () = conn.del(&lock_key).await.unwrap_or(());
-
         result.map(|_| true)
     }
-
     // -------------------------------------------------------------------------
     // Background flusher
     // -------------------------------------------------------------------------
@@ -947,20 +884,15 @@ impl InstantMessage {
     fn spawn_flusher(&self, mut rx: mpsc::Receiver<Message>) {
         let db_pool = Arc::clone(&self.db_pool);
         let redis_pool = Arc::clone(&self.redis_pool);
-
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(FLUSH_INTERVAL_SECS));
             let mut buffer: Vec<Message> = Vec::with_capacity(MAX_BATCH_SIZE);
-
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
                         if !buffer.is_empty() {
                             if let Err(e) = flush_batch(&db_pool, &redis_pool, &mut buffer).await {
-                                error!(
-                                    error = %e,
-                                    "Flush batch failed"
-                                );
+                                error!(error = %e, "Flush batch failed");
                             }
                         }
                     }
@@ -968,26 +900,20 @@ impl InstantMessage {
                         buffer.push(msg);
                         if buffer.len() >= MAX_BATCH_SIZE {
                             if let Err(e) = flush_batch(&db_pool, &redis_pool, &mut buffer).await {
-                                error!(
-                                    error = %e,
-                                    "Immediate flush failed"
-                                );
+                                error!(error = %e, "Immediate flush failed");
                             }
                         }
                     }
                     else => break,
                 }
             }
-
             // Final flush on shutdown
             if !buffer.is_empty() {
                 let _ = flush_batch(&db_pool, &redis_pool, &mut buffer).await;
             }
-
             info!("InstantMessage flusher stopped");
         });
     }
-
     // -------------------------------------------------------------------------
     // Background deleter
     // -------------------------------------------------------------------------
@@ -995,20 +921,15 @@ impl InstantMessage {
     fn spawn_deleter(&self, mut rx: mpsc::Receiver<DeleteTask>) {
         let db_pool = Arc::clone(&self.db_pool);
         let redis_pool = Arc::clone(&self.redis_pool);
-
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
             let mut buffer: Vec<DeleteTask> = Vec::with_capacity(MAX_DELETE_BATCH);
-
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
                         if !buffer.is_empty() {
                             if let Err(e) = delete_batch(&db_pool, &redis_pool, &mut buffer).await {
-                                error!(
-                                    error = %e,
-                                    "Delete batch failed"
-                                );
+                                error!(error = %e, "Delete batch failed");
                             }
                         }
                     }
@@ -1016,26 +937,20 @@ impl InstantMessage {
                         buffer.push(task);
                         if buffer.len() >= MAX_DELETE_BATCH {
                             if let Err(e) = delete_batch(&db_pool, &redis_pool, &mut buffer).await {
-                                error!(
-                                    error = %e,
-                                    "Immediate delete batch failed"
-                                );
+                                error!(error = %e, "Immediate delete batch failed");
                             }
                         }
                     }
                     else => break,
                 }
             }
-
             // Final flush on shutdown
             if !buffer.is_empty() {
                 let _ = delete_batch(&db_pool, &redis_pool, &mut buffer).await;
             }
-
             info!("InstantMessage deleter stopped");
         });
     }
-
     // -------------------------------------------------------------------------
     // Background purger
     // -------------------------------------------------------------------------
@@ -1043,17 +958,17 @@ impl InstantMessage {
     fn spawn_purger(&self) {
         let db_pool = Arc::clone(&self.db_pool);
         let redis_pool = Arc::clone(&self.redis_pool);
-
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(PURGE_INTERVAL_HOURS * 3600));
             loop {
                 ticker.tick().await;
-
                 let Ok(ids) = sqlx::query_scalar::<_, Uuid>(
-                    r#"SELECT id FROM messages 
-                       WHERE is_delivered = true 
-                       AND delivered_at <= NOW() - make_interval(hours => $1)
-                       AND is_group_message = false"#,
+                    r#"
+                    SELECT id FROM messages
+                    WHERE is_delivered = true
+                      AND delivered_at <= NOW() - make_interval(hours => $1)
+                      AND is_group_message = false
+                    "#,
                 )
                 .bind(RETENTION_AFTER_DELIVERY_HOURS)
                 .fetch_all(&*db_pool)
@@ -1061,54 +976,38 @@ impl InstantMessage {
                 else {
                     continue;
                 };
-
                 if ids.is_empty() {
                     continue;
                 }
-
                 let mut rconn = match redis_pool.get().await {
                     Ok(c) => c,
                     Err(e) => {
-                        error!(
-                            error = %e,
-                            "Redis connection failed in purger"
-                        );
+                        error!(error = %e, "Redis connection failed in purger");
                         continue;
                     }
                 };
-
                 for chunk in ids.chunks(PIPELINE_CHUNK_SIZE) {
                     let mut pipe = pipe();
                     for id in chunk {
-                        pipe.del(format!("msg:{}", id));
+                        pipe.del(instant_message_key(*id));
                     }
-
                     let result: redis::RedisResult<()> = pipe.query_async(&mut rconn).await;
-
                     if let Err(e) = result {
-                        error!(
-                            error = %e,
-                            "Purge Redis chunk failed"
-                        );
+                        error!(error = %e, "Purge Redis chunk failed");
                     }
                 }
-
                 if let Err(e) = sqlx::query("DELETE FROM messages WHERE id = ANY($1::uuid[])")
                     .bind(&ids)
                     .execute(&*db_pool)
                     .await
                 {
-                    error!(
-                        error = %e,
-                        "Purge DB delete failed"
-                    );
+                    error!(error = %e, "Purge DB delete failed");
                 } else {
                     info!(count = ids.len(), "Purged old messages successfully");
                 }
             }
         });
     }
-
     // -------------------------------------------------------------------------
     // Health check for monitoring
     // -------------------------------------------------------------------------
@@ -1123,11 +1022,9 @@ impl InstantMessage {
         }
     }
 }
-
 // =============================================================================
 // Health Status
 // =============================================================================
-
 /// Health status for monitoring channel backpressure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthStatus {
@@ -1136,7 +1033,6 @@ pub struct HealthStatus {
     pub deleter_channel_capacity: usize,
     pub deleter_channel_available: usize,
 }
-
 // =============================================================================
 // Static soft verify (for parallel fallback) - conditional on require_proof_verification
 // =============================================================================
@@ -1151,7 +1047,6 @@ async fn verify_envelope_soft_static(
     if !msg.require_proof_verification || msg.signature.is_empty() {
         return true;
     }
-
     // 2. Build the envelope struct for serialization
     let envelope = Envelope {
         id: &msg.id,
@@ -1163,7 +1058,6 @@ async fn verify_envelope_soft_static(
         created_at: &msg.created_at,
         require_proof_verification: msg.require_proof_verification,
     };
-
     // 3. Serialize and verify the signature
     if let Ok(bytes) = serde_json::to_vec(&envelope) {
         if verify_signature(&bytes, &msg.signature, &msg.envelope_public_key).is_ok() {
@@ -1179,7 +1073,6 @@ async fn verify_envelope_soft_static(
                     "Failed to increment proof verified metrics during static verification"
                 );
             }
-
             // Return the core verification result (SUCCESS)
             true
         } else {
@@ -1200,14 +1093,15 @@ async fn fetch_sql_fallback(
     ids: &[Uuid],
     recipient: Uuid,
 ) -> Result<Vec<Message>> {
-    query_as("SELECT * FROM messages WHERE id = ANY($1::uuid[]) AND recipient_client_id = $2 AND is_delivered = false")
-        .bind(ids)
-        .bind(recipient)
-        .fetch_all(db_pool)
-        .await
-        .map_err(Into::into)
+    query_as(
+        "SELECT * FROM messages WHERE id = ANY($1::uuid[]) AND recipient_client_id = $2 AND is_delivered = false",
+    )
+    .bind(ids)
+    .bind(recipient)
+    .fetch_all(db_pool)
+    .await
+    .map_err(Into::into)
 }
-
 // =============================================================================
 // Emergency Write (for channel backpressure)
 // =============================================================================
@@ -1216,12 +1110,15 @@ async fn emergency_write_message(db_pool: &PgPool, msg: &Message) -> Result<()> 
     sqlx::query(
         r#"
         INSERT INTO messages (
-            id, ciphertext, nonce, content_type, content_size_bytes,
-            api_key_id, created_at, expires_at, access_count, is_delivered,
-            delivered_at, max_access_count, require_proof_verification,
-            sender_client_id, recipient_client_id, group_id, is_group_message
-        ) VALUES ($1, $2, $3, COALESCE($4, 'application/octet-stream'), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-        ON CONFLICT (id) DO NOTHING
+          id, ciphertext, nonce, content_type, content_size_bytes,
+          api_key_id, created_at, expires_at, access_count,
+          is_delivered, delivered_at, max_access_count,
+          require_proof_verification, sender_client_id, recipient_client_id,
+          group_id, is_group_message
+        ) VALUES (
+          $1, $2, $3, COALESCE($4, 'application/octet-stream'), $5,
+          $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+        ) ON CONFLICT (id) DO NOTHING
         "#,
     )
     .bind(msg.id)
@@ -1243,10 +1140,8 @@ async fn emergency_write_message(db_pool: &PgPool, msg: &Message) -> Result<()> 
     .bind(msg.is_group_message)
     .execute(db_pool)
     .await?;
-
     Ok(())
 }
-
 // =============================================================================
 // Batch Insert + Pending Reads + Metrics
 // =============================================================================
@@ -1259,22 +1154,20 @@ async fn flush_batch(
     if buffer.is_empty() {
         return Ok(());
     }
-
     let start = Utc::now();
     let to_insert = buffer.drain(..).collect::<Vec<_>>();
-
     let mut tx = db_pool.begin().await?;
     let mut qb = QueryBuilder::<Postgres>::new(
         r#"
         INSERT INTO messages (
-            id, ciphertext, nonce, content_type, content_size_bytes,
-            api_key_id, created_at, expires_at, access_count, is_delivered,
-            delivered_at, max_access_count, require_proof_verification,
-            sender_client_id, recipient_client_id, group_id, is_group_message
-        ) 
+          id, ciphertext, nonce, content_type, content_size_bytes,
+          api_key_id, created_at, expires_at, access_count,
+          is_delivered, delivered_at, max_access_count,
+          require_proof_verification, sender_client_id, recipient_client_id,
+          group_id, is_group_message
+        )
         "#,
     );
-
     qb.push_values(&to_insert, |mut b, msg| {
         let content_type_str = msg
             .content_type
@@ -1301,16 +1194,18 @@ async fn flush_batch(
     qb.push(" ON CONFLICT (id) DO NOTHING");
     qb.build().execute(&mut *tx).await?;
     tx.commit().await?;
-
     // Flush pending reads
     let mut rconn = redis_pool.get().await?;
     for msg in &to_insert {
-        let pending_key = format!("pending_read:{}", msg.id);
+        let pending_key = instant_pending_read_key(msg.id);
         if let Ok(Some(data)) = rconn.get_del::<_, Option<String>>(&pending_key).await {
             if let Ok(pending) = serde_json::from_str::<PendingRead>(&data) {
                 let _ = sqlx::query(
-                    r#"INSERT INTO p2p_read_receipts (id, message_id, client_id, read_at) 
-                       VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING"#,
+                    r#"
+                    INSERT INTO p2p_read_receipts (id, message_id, client_id, read_at)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT DO NOTHING
+                    "#,
                 )
                 .bind(Uuid::new_v4())
                 .bind(msg.id)
@@ -1321,22 +1216,18 @@ async fn flush_batch(
             }
         }
     }
-
     // Clean Redis (non-DB fields like signature stay in Redis until DEL)
     let mut pipe = pipe();
     for msg in &to_insert {
-        pipe.del(format!("msg:{}", msg.id));
+        pipe.del(instant_message_key(msg.id));
         pipe.lrem(
-            format!("inbox:{}", msg.recipient_client_id),
+            instant_inbox_key(msg.recipient_client_id),
             1,
             msg.id.to_string(),
         );
     }
-
     let _: RedisResult<()> = pipe.query_async(&mut rconn).await;
-
     let duration_ms = (Utc::now() - start).num_milliseconds();
-
     info!(
         count = to_insert.len(),
         duration_ms = duration_ms,
@@ -1344,7 +1235,6 @@ async fn flush_batch(
     );
     Ok(())
 }
-
 // =============================================================================
 // Batch Delete
 // =============================================================================
@@ -1357,49 +1247,44 @@ async fn delete_batch(
     if buffer.is_empty() {
         return Ok(());
     }
-
     let mut rconn = redis_pool.get().await?;
     let mut tx = db_pool.begin().await?;
-
     let mut pipe = pipe();
     let mut p2p_deletes = Vec::new();
     let mut group_updates = Vec::new();
-
     let task_count = buffer.len();
-
     for task in buffer.drain(..) {
-        let redis_key = format!("msg:{}", task.msg_id);
+        let redis_key = instant_message_key(task.msg_id);
         pipe.del(redis_key);
-
         if task.is_group_message {
             group_updates.push(task.msg_id);
         } else {
             p2p_deletes.push(task.msg_id);
         }
     }
-
     let _: () = pipe.query_async(&mut rconn).await?;
-
     if !p2p_deletes.is_empty() {
         sqlx::query("DELETE FROM messages WHERE id = ANY($1::uuid[]) AND is_group_message = false")
             .bind(&p2p_deletes)
             .execute(&mut *tx)
             .await?;
     }
-
     if !group_updates.is_empty() {
         sqlx::query(
-            r#"UPDATE messages SET is_delivered = true, delivered_at = $1 
-               WHERE id = ANY($2::uuid[]) AND is_group_message = true AND delivered_at IS NULL"#,
+            r#"
+            UPDATE messages
+            SET is_delivered = true, delivered_at = $1
+            WHERE id = ANY($2::uuid[])
+              AND is_group_message = true
+              AND delivered_at IS NULL
+            "#,
         )
         .bind(Utc::now())
         .bind(&group_updates)
         .execute(&mut *tx)
         .await?;
     }
-
     tx.commit().await?;
-
     info!(
         count = task_count,
         p2p = p2p_deletes.len(),

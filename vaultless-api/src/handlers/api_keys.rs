@@ -130,7 +130,7 @@ pub async fn create_api_key(
                 monthly_quota: api_key.monthly_message_quota,
                 rate_limit: api_key.rate_limit_per_minute,
             },
-            warning: "⚠️ Save this API key now. You won't be able to see it again!".to_string(),
+            warning: "Save this API key now. You won't be able to see it again!".to_string(),
         }),
     ))
 }

@@ -4,6 +4,7 @@ pub mod logging;
 pub mod rate_limit;
 pub mod user_auth;
 pub mod metrics;
+pub mod client;
 
 pub use metrics::track_metrics;
 

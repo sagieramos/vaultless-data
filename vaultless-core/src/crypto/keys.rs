@@ -58,6 +58,18 @@ pub fn generate_encryption_key() -> Result<String> {
     Ok(BASE64.encode(key))
 }
 
+/// Generates a secure random token of length 'n' bytes,
+/// and returns it as a Base64 encoded array size.
+pub fn generate_secure_token<const N: usize>() -> Result<[u8; N]> {
+    let mut token_bytes = [0u8; N];
+
+    getrandom::fill(&mut token_bytes).map_err(|e| {
+        crate::error::VaultlessError::Internal(format!("Secure token generation failed: {}", e))
+    })?;
+
+    Ok(token_bytes)
+}
+
 /// Derive encryption key from password using PBKDF2
 ///
 /// # Arguments
