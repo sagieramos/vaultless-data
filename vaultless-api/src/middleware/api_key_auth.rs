@@ -5,7 +5,6 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use std::sync::Arc;
 use vaultless_core::{ApiKey, crypto};
 
 use crate::config::AuthHeader;
@@ -47,18 +46,17 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
     let db_pool = state.db.clone();
 
     // The Redis pool is already being handled correctly with an Arc wrapper.
-    let redis_arc = Arc::new(state.redis_pool.clone());
 
     // Look up in database (with core-level Redis caching)
-    let api_key_record = ApiKey::find_by_hash(&db_pool, Some(redis_arc.clone()), key_hash)
+    let api_key_record = ApiKey::find_by_hash(&db_pool, Some(state.redis_pool.clone()), key_hash)
         .await
         .map_err(|e| ApiError::from(e))?;
 
     // Validate key is usable (e.g., active, not expired)
     api_key_record
         .validate(
-            &db_pool, // Use the same reference to the cloned pool here
-            Some(redis_arc),
+            db_pool.as_ref(),
+            Some(state.redis_pool.clone()),
         )
         .await
         .map_err(ApiError::from)?;

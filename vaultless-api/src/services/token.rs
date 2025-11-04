@@ -3,6 +3,7 @@ use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 use vaultless_core::getrandom;
 
@@ -40,16 +41,15 @@ struct RefreshTokenCache {
 
 /// Token service for OAuth-like authentication
 pub struct TokenService {
-    db: PgPool,
+    db: Arc<PgPool>,
     cache: CacheService,
 }
 
 impl TokenService {
-    pub fn new(db: PgPool, cache_pool: RedisPool) -> Self {
-        let cache = CacheService::new(cache_pool, 3600); // 1 hour default TTL
+    pub fn new(db: Arc<PgPool>, cache_pool: Arc<RedisPool>) -> Self {
+        let cache = CacheService::new(cache_pool, 3600);
         Self { db, cache }
     }
-
     /// Generate cryptographically secure random token
     fn generate_token() -> Result<String, getrandom::Error> {
         let mut seed = [0u8; 32];

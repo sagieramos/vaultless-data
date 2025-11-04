@@ -1,3 +1,4 @@
+use axum::extract::FromRef;
 use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -8,16 +9,16 @@ use crate::services::cache::CacheService;
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
-    pub db: PgPool,
-    pub redis_pool: RedisPool,
+    pub db: Arc<PgPool>,
+    pub redis_pool: Arc<RedisPool>,
     pub config: Arc<Config>,
 }
 
 impl AppState {
     pub fn new(db: PgPool, redis_pool: RedisPool, config: Config) -> Self {
         Self {
-            db,
-            redis_pool,
+            db: Arc::new(db),
+            redis_pool: Arc::new(redis_pool),
             config: Arc::new(config),
         }
     }

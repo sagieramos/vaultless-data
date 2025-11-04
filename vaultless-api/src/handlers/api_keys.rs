@@ -1,3 +1,4 @@
+use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
 use axum::{
     Json,
     extract::{Path, State},
@@ -10,7 +11,6 @@ use uuid::Uuid;
 use validator::Validate;
 use vaultless_core::getrandom;
 use vaultless_core::{ApiKey, CreateApiKey, SubscriptionTier};
-use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
 // ============================================================================
 // REQUEST/RESPONSE TYPES
 // ============================================================================
@@ -95,7 +95,7 @@ pub async fn create_api_key(
     // Create API key in database
     let tier = payload.tier.unwrap_or(SubscriptionTier::Free);
     let api_key = ApiKey::create(
-        &state.db,
+        state.db.as_ref(),
         CreateApiKey {
             user_id,
             key_hash: key_hash.clone(),
@@ -145,7 +145,7 @@ pub async fn list_api_keys(
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     tracing::debug!(user_id = %user_id, "Listing API keys");
-    let paginated = ApiKey::find_by_owner(&state.db, user_id, None, None)
+    let paginated = ApiKey::find_by_owner(state.db.as_ref(), user_id, None, None)
         .await
         .map_err(ApiError::from)?;
     let keys = paginated.keys;
@@ -178,7 +178,7 @@ pub async fn get_api_key(
         .user_id
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    let key = ApiKey::find_by_id(state.db.as_ref(), Some(state.redis_pool), key_id)
         .await
         .map_err(ApiError::from)?;
     // Verify ownership
@@ -215,16 +215,21 @@ pub async fn update_api_key(
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    let key = ApiKey::find_by_id(state.db.as_ref(), Some(state.redis_pool.clone()), key_id)
         .await
         .map_err(ApiError::from)?;
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
     // Update metadata
-    let updated_key = ApiKey::update_metadata(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id, payload.description)
-        .await
-        .map_err(ApiError::from)?;
+    let updated_key = ApiKey::update_metadata(
+        state.db.as_ref(),
+        Some(state.redis_pool),
+        key_id,
+        payload.description,
+    )
+    .await
+    .map_err(ApiError::from)?;
     tracing::info!(key_id = %key_id, "API key metadata updated");
     Ok(Json(ApiKeyInfo {
         id: updated_key.id.to_string(),
@@ -252,14 +257,14 @@ pub async fn revoke_api_key(
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    let key = ApiKey::find_by_id(state.db.as_ref(), Some(state.redis_pool.clone()), key_id)
         .await
         .map_err(ApiError::from)?;
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
     // Delete the key
-    ApiKey::delete(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    ApiKey::delete(state.db.as_ref(), Some(state.redis_pool), key_id)
         .await
         .map_err(ApiError::from)?;
     tracing::warn!(key_id = %key_id, "API key revoked");
@@ -277,13 +282,13 @@ pub async fn deactivate_api_key(
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    let key = ApiKey::find_by_id(state.db.as_ref(), Some(state.redis_pool.clone()), key_id)
         .await
         .map_err(ApiError::from)?;
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-    ApiKey::deactivate(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    ApiKey::deactivate(state.db.as_ref(), Some(state.redis_pool), key_id)
         .await
         .map_err(ApiError::from)?;
     tracing::info!(key_id = %key_id, "API key deactivated");
@@ -301,13 +306,13 @@ pub async fn reactivate_api_key(
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    let key = ApiKey::find_by_id(state.db.as_ref(), Some(state.redis_pool.clone()), key_id)
         .await
         .map_err(ApiError::from)?;
     if key.user_id != user_id {
         return Err(ApiError::forbidden("You don't own this API key"));
     }
-    ApiKey::reactivate(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    ApiKey::reactivate(state.db.as_ref(), Some(state.redis_pool), key_id)
         .await
         .map_err(ApiError::from)?;
     tracing::info!(key_id = %key_id, "API key reactivated");
@@ -326,7 +331,7 @@ pub async fn upgrade_api_key(
         .parse()
         .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
     // Verify ownership
-    let key = ApiKey::find_by_id(&state.db, Some(Arc::new(state.redis_pool.clone())), key_id)
+    let key = ApiKey::find_by_id(state.db.as_ref(), Some(state.redis_pool), key_id)
         .await
         .map_err(ApiError::from)?;
     if key.user_id != user_id {
@@ -350,6 +355,9 @@ pub async fn upgrade_api_key(
         target_tier: payload.target_tier.to_string(),
         monthly_price: payload.target_tier.monthly_price_cents(),
         checkout_url: None, // TODO: Stripe URL
-        requires_payment: payload.target_tier.monthly_price_cents().is_some_and(|p| p > 0),
+        requires_payment: payload
+            .target_tier
+            .monthly_price_cents()
+            .is_some_and(|p| p > 0),
     }))
 }

@@ -103,7 +103,7 @@ async fn check_database(pool: &PgPool) -> DatabaseHealth {
 /// Readiness check endpoint (Kubernetes-friendly)
 /// GET /ready
 pub async fn readiness_check(State(state): State<AppState>) -> StatusCode {
-    match sqlx::query("SELECT 1").fetch_one(&state.db).await {
+    match sqlx::query("SELECT 1").fetch_one(state.db.as_ref()).await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }

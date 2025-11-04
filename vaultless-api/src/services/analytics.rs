@@ -3,13 +3,14 @@ use chrono::Datelike;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::middleware::error::ApiError;
 use vaultless_core::{ApiKey, DailyUsageSummary, SubscriptionTier, UsageTrends};
 /// Main analytics service with intelligent caching
 pub struct AnalyticsService {
-    pub db: PgPool,
+    db: Arc<PgPool>,
 }
 
 /// Complete analytics dashboard response
@@ -76,6 +77,9 @@ pub struct TimeSeriesDataPoint {
 }
 
 impl AnalyticsService {
+    pub fn new(db: Arc<PgPool>) -> Self {
+        Self { db }
+    }
     /// Get complete dashboard data for an API key
     pub async fn get_dashboard(
         &self,
@@ -171,7 +175,7 @@ impl AnalyticsService {
         let total_cost = messages_cost + storage_cost_val + verification_cost;
 
         // Calculate overage cost
-        let api_key = ApiKey::find_by_id(&self.db, None, api_key_id)
+        let api_key = ApiKey::find_by_id(self.db.as_ref(), None, api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -195,7 +199,7 @@ impl AnalyticsService {
 
     /// Get tier information
     async fn get_tier_info(&self, api_key_id: Uuid) -> Result<TierInfo, ApiError> {
-        let api_key = ApiKey::find_by_id(&self.db, None, api_key_id)
+        let api_key = ApiKey::find_by_id(self.db.as_ref(), None, api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -215,7 +219,7 @@ impl AnalyticsService {
 
     /// Get quota status with percentage calculation
     pub async fn get_quota_status(&self, api_key_id: Uuid) -> Result<QuotaStatus, ApiError> {
-        let api_key = ApiKey::find_by_id(&self.db, None, api_key_id)
+        let api_key = ApiKey::find_by_id(self.db.as_ref(), None, api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))

@@ -1,7 +1,4 @@
-use axum::{
-    extract::FromRequestParts,
-    http::{StatusCode, request::Parts},
-};
+use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{middleware::error::ApiError, state::AppState};
 use vaultless_core::{Client, ClientPublic};
@@ -37,16 +34,12 @@ where
         let app_state: AppState = axum::extract::FromRef::from_ref(state);
 
         // Verify session (converts VaultlessError to ApiError automatically)
-        let client = Client::verify_session(
-            &app_state.db,
-            Some(app_state.redis_pool.clone().into()),
-            token,
-        )
-        .await
-        .map_err(|e| {
-            tracing::warn!("Session verification failed: {}", e);
-            ApiError::from(e)
-        })?;
+        let client = Client::verify_session(&*app_state.db, Some(app_state.redis_pool), token)
+            .await
+            .map_err(|e| {
+                tracing::warn!("Session verification failed: {}", e);
+                ApiError::from(e)
+            })?;
 
         Ok(AuthenticatedClient(client))
     }
@@ -85,16 +78,12 @@ where
 
         let app_state: AppState = axum::extract::FromRef::from_ref(state);
 
-        let client = Client::verify_session(
-            &app_state.db,
-            Some(app_state.redis_pool.clone().into()),
-            &token,
-        )
-        .await
-        .map_err(|e| {
-            tracing::warn!("Session verification failed: {}", e);
-            ApiError::from(e)
-        })?;
+        let client = Client::verify_session(&*app_state.db, Some(app_state.redis_pool), &token)
+            .await
+            .map_err(|e| {
+                tracing::warn!("Session verification failed: {}", e);
+                ApiError::from(e)
+            })?;
 
         Ok(AuthenticatedClientWithToken { client, token })
     }
@@ -130,13 +119,7 @@ where
         let app_state: AppState = axum::extract::FromRef::from_ref(state);
 
         // Try to verify session
-        match Client::verify_session(
-            &app_state.db,
-            Some(app_state.redis_pool.clone().into()),
-            token,
-        )
-        .await
-        {
+        match Client::verify_session(&*app_state.db, Some(app_state.redis_pool), token).await {
             Ok(client) => Ok(OptionalAuthenticatedClient(Some(client))),
             Err(e) => {
                 tracing::debug!("Optional auth failed (non-critical): {}", e);

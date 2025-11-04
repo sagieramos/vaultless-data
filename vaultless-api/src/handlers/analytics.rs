@@ -91,10 +91,7 @@ pub async fn get_dashboard(
         ));
     }
 
-    // FIX: Use the struct initialization as defined in your analytics service file
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
+    let analytics_service = AnalyticsService::new(state.db.clone());
 
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
@@ -127,9 +124,7 @@ pub async fn get_usage_timeseries(
         ));
     }
 
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
+    let analytics_service = AnalyticsService::new(state.db.clone());
 
     // Default to last 7 days if not specified
     let end = query.end.unwrap_or_else(Utc::now);
@@ -171,11 +166,7 @@ pub async fn get_quota_status(
     State(state): State<AppState>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
-
-    // FIX: Now calling the streamlined service method
+    let analytics_service = AnalyticsService::new(state.db.clone());
     let quota_status = analytics_service.get_quota_status(api_key.id).await?;
 
     // Determine alert level based on QuotaStatus data
@@ -216,10 +207,7 @@ pub async fn get_cost_breakdown(
         ));
     }
 
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
-
+    let analytics_service = AnalyticsService::new(state.db.clone());
     // FIX: Call get_dashboard and extract the cost_breakdown field
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
@@ -251,9 +239,7 @@ pub async fn export_analytics(
         ));
     }
 
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
+    let analytics_service = AnalyticsService::new(state.db.clone());
 
     // Determine the maximum range allowed by the tier
     let max_days = match api_key.tier {
@@ -321,10 +307,7 @@ pub async fn get_usage_trends(
         ));
     }
 
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
-
+    let analytics_service = AnalyticsService::new(state.db.clone());
     // FIX: Call get_dashboard and extract the trends field
     let dashboard = analytics_service
         .get_dashboard(api_key.id, api_key.tier)
@@ -349,9 +332,7 @@ pub async fn get_usage_overview(
         ));
     }
 
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
+    let analytics_service = AnalyticsService::new(state.db.clone());
 
     // FIX: Call get_dashboard and extract the overview field
     let dashboard = analytics_service
@@ -371,9 +352,7 @@ pub async fn get_tier_info(
     State(state): State<AppState>,
     AuthenticatedApiKey(api_key): AuthenticatedApiKey,
 ) -> Result<impl IntoResponse, ApiError> {
-    let analytics_service = AnalyticsService {
-        db: state.db.clone(),
-    };
+    let analytics_service = AnalyticsService::new(state.db.clone());
 
     // FIX: Call get_dashboard and extract the tier_info field
     let dashboard = analytics_service

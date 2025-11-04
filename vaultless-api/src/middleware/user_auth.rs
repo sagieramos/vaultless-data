@@ -52,7 +52,7 @@ pub async fn require_user_auth(
     let token = extract_bearer_token(request.headers())?;
 
     // Verify token and get session
-    let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
+    let token_service = TokenService::new(state.db, state.redis_pool);
     let session_data = token_service.verify_access_token(&token).await?;
 
     // Store session data in request extensions
@@ -112,7 +112,7 @@ pub async fn require_api_key_ownership(
     let owned = sqlx::query(query)
         .bind(key_id)
         .bind(session.user_id)
-        .fetch_optional(&state.db)
+        .fetch_optional(state.db.as_ref())
         .await
         .map_err(|e| {
             tracing::error!("DB error during ownership check: {}", e);
