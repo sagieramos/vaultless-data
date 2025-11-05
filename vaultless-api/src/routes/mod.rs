@@ -1,8 +1,8 @@
 pub mod analytics;
-pub mod health;
-pub mod message;
 pub mod client;
+pub mod health;
 pub mod instant_message;
+pub mod message;
 
 //pub mod proof;
 pub mod user_auth;
@@ -19,5 +19,7 @@ pub fn build_routes(state: AppState) -> Router {
         .route("/health", get(health::health_check))
         // Nested auth routes (public and protected).
         .nest("/auth", auth_routes(state.clone()))
+        .nest("/api/clients", client::client_routes())
+        .nest("/api/messages", instant_message::message_routes())
         .with_state(state)
 }

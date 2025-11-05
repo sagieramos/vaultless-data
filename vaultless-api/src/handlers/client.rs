@@ -22,7 +22,8 @@ use vaultless_core::{
 
 #[derive(Debug, Deserialize)]
 pub struct LookupClientQuery {
-    pub identifier: String,
+    pub identifier: Option<String>,
+    pub pubkey: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,15 +57,18 @@ pub async fn register_client(
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
     tracing::info!("Client registration attempt");
 
+    // Call secure register with Redis (for nonce & caching)
     let response = Client::register(
         state.db.as_ref(),
         input,
-        None, // developer_id - extract from API key context if needed
-        None, // api_key_id - extract from API key context if needed
+        None,                           // developer_id - extract from API key context if needed
+        None,                           // api_key_id - extract from API key context if needed
+        Some(state.redis_pool.clone()), // arg for nonce replay protection + caching
     )
-    .await?; // ApiError conversion happens automatically via From trait
+    .await
+    .map_err(ApiError::from)?;
 
-    tracing::info!("Client registered: {}", response.client_id);
+    tracing::info!("Client registered successfully: {}", response.client_id);
 
     Ok(Json(response))
 }
@@ -102,29 +106,27 @@ pub async fn generate_challenge() -> Result<Json<ChallengeResponse>, ApiError> {
 }
 
 /// Lookup client by identifier (public or hashed)
-/// GET /api/clients/lookup?identifier=<identifier>
+/// GET /api/clients/lookup?identifier=<identifier>&pubkey=<pubkey>
 #[axum::debug_handler]
 pub async fn lookup_client(
     State(state): State<AppState>,
     Query(query): Query<LookupClientQuery>,
 ) -> Result<Json<ClientLookupResponse>, ApiError> {
-    tracing::debug!("Client lookup: {}", query.identifier);
+    tracing::debug!(
+        "Client lookup: identifier={:?}, pubkey={:?}",
+        query.identifier,
+        query.pubkey
+    );
 
-    // Try public identifier first (non-hashed, user-friendly)
-    let client = Client::find_by_public_identifier(
+    let client = Client::resolve_client(
         state.db.as_ref(),
         Some(state.redis_pool.clone()),
-        &query.identifier,
+        query.pubkey.as_deref(),
+        query.identifier.as_deref(),
+        None, // client_identifier is never passed from the query
     )
-    .await?;
-
-    // If not found, try as hashed identifier
-    let client = if client.is_none() {
-        Client::find_by_identifier(state.db.as_ref(), Some(state.redis_pool), &query.identifier)
-            .await?
-    } else {
-        client
-    };
+    .await
+    .map_err(ApiError::from)?;
 
     Ok(Json(ClientLookupResponse {
         success: client.is_some(),
@@ -150,7 +152,7 @@ pub async fn health_check() -> Json<serde_json::Value> {
 /// GET /api/clients/me
 #[axum::debug_handler]
 pub async fn get_current_client(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     AuthenticatedClient(client): AuthenticatedClient,
 ) -> Json<ClientPublic> {
     Json(client)
@@ -186,13 +188,9 @@ pub async fn deactivate_client(
     State(state): State<AppState>,
     AuthenticatedClient(client): AuthenticatedClient,
 ) -> Result<Json<SuccessResponse>, ApiError> {
-    Client::deactivate(
-        state.db.as_ref(),
-        Some(&state.redis_pool),
-        client.id,
-        client.identifier.as_deref(),
-    )
-    .await?;
+    Client::deactivate(state.db.as_ref(), Some(&state.redis_pool), client.id)
+        .await
+        .map_err(ApiError::from)?; // map your VaultlessError to ApiError
 
     tracing::info!("Client {} deactivated", client.id);
 

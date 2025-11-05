@@ -14,10 +14,10 @@ CREATE TABLE IF NOT EXISTS clients (
     
     -- ONLY store hash for lookup (NEVER raw identifier)
     -- Client-side generated: hash(public_key) or hash(device_fingerprint)
-    client_identifier_hash VARCHAR(64) NOT NULL UNIQUE, -- SHA-256 hash
+    client_identifier_hash VARCHAR(64) UNIQUE, -- SHA-256 hash
     
-    -- Optional: Public key for signature verification (E2EE/authentication)
-    public_key TEXT, -- Ed25519, secp256k1, or P-256 public key (flexible format)
+    -- Public key for signature verification (E2EE/authentication)
+    public_key TEXT UNIQUE, -- Ed25519, secp256k1, or P-256 public key (flexible format)
 
     -- Ephemeral session management (30-day rolling sessions)
     session_token_hash VARCHAR(64), -- SHA-256 hash of session token
