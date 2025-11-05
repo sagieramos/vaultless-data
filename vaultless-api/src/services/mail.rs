@@ -1,8 +1,8 @@
 use deadpool_redis::Pool;
 use redis::AsyncCommands;
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailJob {
@@ -17,9 +17,17 @@ pub struct EmailJob {
 }
 
 impl EmailJob {
-    pub fn new(to: impl Into<String>, subject: impl Into<String>, body: impl Into<String>, max_retries: u8) -> Self {
+    pub fn new(
+        to: impl Into<String>,
+        subject: impl Into<String>,
+        body: impl Into<String>,
+        max_retries: u8,
+    ) -> Self {
         let id = Uuid::new_v4().to_string();
-        let created_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         Self {
             id,
             to: to.into(),
@@ -37,6 +45,6 @@ pub async fn enqueue_email(pool: &Pool, job: &EmailJob) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let payload = serde_json::to_string(job)?;
     // LPUSH into the main queue; worker uses BRPOP
-    let _ : () = conn.lpush("email_queue", payload).await?;
+    let _: () = conn.lpush("email_queue", payload).await?;
     Ok(())
 }

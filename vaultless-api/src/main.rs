@@ -1,5 +1,6 @@
 // api/src/main.rs
-use axum::{middleware as axum_middleware, routing::get, Router};
+use axum::extract::State;
+use axum::{Router, middleware as axum_middleware, routing::get};
 use deadpool_redis::Config as RedisConfig;
 use sqlx::postgres::PgPoolOptions;
 use std::{net::SocketAddr, time::Duration};
@@ -10,7 +11,6 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use axum::extract::State;
 
 mod config;
 mod handlers;
@@ -29,9 +29,7 @@ fn init_tracing(level: &str) {
     let level = level.parse().unwrap_or(tracing::Level::INFO);
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()),
-        )
+        .with(tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()))
         .init();
 }
 
@@ -149,8 +147,6 @@ async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response:
     }
 }
 
-
-
 //----------------------------------------------------
 // Graceful shutdown signal
 //----------------------------------------------------
@@ -163,7 +159,7 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm =
             signal(SignalKind::terminate()).expect("failed to install signal handler");
         sigterm.recv().await;

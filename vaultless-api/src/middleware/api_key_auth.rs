@@ -50,14 +50,11 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
     // Look up in database (with core-level Redis caching)
     let api_key_record = ApiKey::find_by_hash(&db_pool, Some(state.redis_pool.clone()), key_hash)
         .await
-        .map_err(|e| ApiError::from(e))?;
+        .map_err(ApiError::from)?;
 
     // Validate key is usable (e.g., active, not expired)
     api_key_record
-        .validate(
-            db_pool.as_ref(),
-            Some(state.redis_pool.clone()),
-        )
+        .validate(db_pool.as_ref(), Some(state.redis_pool.clone()))
         .await
         .map_err(ApiError::from)?;
 

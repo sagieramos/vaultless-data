@@ -2,7 +2,6 @@
 use axum::{
     Json,
     extract::{Query, State},
-    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
@@ -11,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::middleware::api_key_auth::AuthenticatedApiKey;
 
 use crate::middleware::error::ApiError;
-use crate::services::analytics::{AnalyticsDashboard, AnalyticsService, TimeSeriesDataPoint};
+use crate::services::analytics::{AnalyticsService, TimeSeriesDataPoint};
 use crate::state::AppState;
 use vaultless_core::SubscriptionTier;
 

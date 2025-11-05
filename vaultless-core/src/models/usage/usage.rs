@@ -457,7 +457,7 @@ where
 
     let key_hash = crypto::hash_content(api_key.as_bytes());
 
-    let api_key = ApiKey:: find_by_hash_sync(exec.clone(), Some(redis_pool), key_hash).await?;
+    let api_key = ApiKey::find_by_hash_sync(exec.clone(), Some(redis_pool), key_hash).await?;
 
     let aggregate = sqlx::query_as::<_, UsageAggregate>(
         r#"
@@ -799,7 +799,7 @@ async fn flush_redis_to_pg(
     }
 
     // Check if flusher is falling behind
-    if duration.as_secs() > (config.flush_interval_secs / 2) as u64 {
+    if duration.as_secs() > (config.flush_interval_secs / 2) {
         warn!(
             duration_secs = duration.as_secs(),
             flush_interval = config.flush_interval_secs,

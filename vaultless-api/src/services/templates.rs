@@ -1,4 +1,4 @@
-use tera::{Tera, Context};
+use tera::{Context, Tera};
 
 pub fn render_verify(tera: &Tera, verify_url: &str) -> anyhow::Result<String> {
     let mut ctx = Context::new();

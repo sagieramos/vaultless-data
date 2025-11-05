@@ -6,7 +6,6 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 use vaultless_core::getrandom;

@@ -2,8 +2,8 @@ use std::fmt;
 use thiserror::Error;
 
 use axum::{
-    http::{header, StatusCode},
     Json,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde_json::json;
@@ -93,10 +93,10 @@ impl IntoResponse for ApiError {
         };
 
         // Add error code header if present
-        if let Some(code) = self.error_code {
-            if let Ok(header_value) = code.parse() {
-                response.headers_mut().insert(header::WARNING, header_value);
-            }
+        if let Some(code) = self.error_code
+            && let Ok(header_value) = code.parse()
+        {
+            response.headers_mut().insert(header::WARNING, header_value);
         }
 
         #[cfg(feature = "tracing")]

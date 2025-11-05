@@ -361,7 +361,7 @@ impl InstantMessage {
         }
         // Pub/Sub
         let _: () = conn
-            .publish(&format!("read:{}", msg_id), reader_client_id.to_string())
+            .publish(format!("read:{}", msg_id), reader_client_id.to_string())
             .await?;
         info!(
             msg_id = %msg_id,
@@ -401,17 +401,16 @@ impl InstantMessage {
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
         // Rebuild with race condition protection if empty
-        if total == 0 {
-            if let Err(e) = self
+        if total == 0
+            && let Err(e) = self
                 .rebuild_inbox_safe(&mut conn, recipient_client_id)
                 .await
-            {
-                warn!(
-                    recipient = %recipient_client_id,
-                    error = %e,
-                    "Failed to rebuild inbox - continuing with empty inbox"
-                );
-            }
+        {
+            warn!(
+                recipient = %recipient_client_id,
+                error = %e,
+                "Failed to rebuild inbox - continuing with empty inbox"
+            );
         }
         // Fetch message IDs from inbox
         let msg_id_strs: Vec<String> = conn
@@ -531,8 +530,7 @@ impl InstantMessage {
         let self_clone = self.clone();
         // Parallel SQL fallback for cache misses (fetches DB fields only; non-DB fields default/None)
         if !fallback_ids.is_empty() {
-            let chunk_size =
-                (fallback_ids.len() + SQL_FALLBACK_PARALLELISM - 1) / SQL_FALLBACK_PARALLELISM;
+            let chunk_size = fallback_ids.len().div_ceil(SQL_FALLBACK_PARALLELISM);
             let chunks = fallback_ids.chunks(chunk_size);
             let mut handles = Vec::new();
             for chunk in chunks {
@@ -888,19 +886,17 @@ impl InstantMessage {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        if !buffer.is_empty() {
-                            if let Err(e) = flush_batch(&db_pool, &redis_pool, &mut buffer).await {
+                        if !buffer.is_empty()
+                            && let Err(e) = flush_batch(&db_pool, &redis_pool, &mut buffer).await {
                                 error!(error = %e, "Flush batch failed");
                             }
-                        }
                     }
                     Some(msg) = rx.recv() => {
                         buffer.push(msg);
-                        if buffer.len() >= MAX_BATCH_SIZE {
-                            if let Err(e) = flush_batch(&db_pool, &redis_pool, &mut buffer).await {
+                        if buffer.len() >= MAX_BATCH_SIZE
+                            && let Err(e) = flush_batch(&db_pool, &redis_pool, &mut buffer).await {
                                 error!(error = %e, "Immediate flush failed");
                             }
-                        }
                     }
                     else => break,
                 }
@@ -925,19 +921,17 @@ impl InstantMessage {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        if !buffer.is_empty() {
-                            if let Err(e) = delete_batch(&db_pool, &redis_pool, &mut buffer).await {
+                        if !buffer.is_empty()
+                            && let Err(e) = delete_batch(&db_pool, &redis_pool, &mut buffer).await {
                                 error!(error = %e, "Delete batch failed");
                             }
-                        }
                     }
                     Some(task) = rx.recv() => {
                         buffer.push(task);
-                        if buffer.len() >= MAX_DELETE_BATCH {
-                            if let Err(e) = delete_batch(&db_pool, &redis_pool, &mut buffer).await {
+                        if buffer.len() >= MAX_DELETE_BATCH
+                            && let Err(e) = delete_batch(&db_pool, &redis_pool, &mut buffer).await {
                                 error!(error = %e, "Immediate delete batch failed");
                             }
-                        }
                     }
                     else => break,
                 }
@@ -1153,7 +1147,7 @@ async fn flush_batch(
         return Ok(());
     }
     let start = Utc::now();
-    let to_insert = buffer.drain(..).collect::<Vec<_>>();
+    let to_insert = std::mem::take(buffer);
     let mut tx = db_pool.begin().await?;
     let mut qb = QueryBuilder::<Postgres>::new(
         r#"
@@ -1196,22 +1190,22 @@ async fn flush_batch(
     let mut rconn = redis_pool.get().await?;
     for msg in &to_insert {
         let pending_key = instant_pending_read_key(msg.id);
-        if let Ok(Some(data)) = rconn.get_del::<_, Option<String>>(&pending_key).await {
-            if let Ok(pending) = serde_json::from_str::<PendingRead>(&data) {
-                let _ = sqlx::query(
-                    r#"
+        if let Ok(Some(data)) = rconn.get_del::<_, Option<String>>(&pending_key).await
+            && let Ok(pending) = serde_json::from_str::<PendingRead>(&data)
+        {
+            let _ = sqlx::query(
+                r#"
                     INSERT INTO p2p_read_receipts (id, message_id, client_id, read_at)
                     VALUES ($1, $2, $3, $4)
                     ON CONFLICT DO NOTHING
                     "#,
-                )
-                .bind(Uuid::new_v4())
-                .bind(msg.id)
-                .bind(pending.reader_client_id)
-                .bind(pending.read_at)
-                .execute(db_pool)
-                .await;
-            }
+            )
+            .bind(Uuid::new_v4())
+            .bind(msg.id)
+            .bind(pending.reader_client_id)
+            .bind(pending.read_at)
+            .execute(db_pool)
+            .await;
         }
     }
     // Clean Redis (non-DB fields like signature stay in Redis until DEL)

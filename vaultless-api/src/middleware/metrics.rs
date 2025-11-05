@@ -27,7 +27,9 @@ pub static HTTP_REQUEST_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
             "http_request_duration_seconds",
             "HTTP request duration in seconds",
         )
-        .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ]),
         &["method", "path"],
     )
     .expect("Failed to create HTTP_REQUEST_DURATION_SECONDS metric");
@@ -111,7 +113,10 @@ fn is_id_like(s: &str) -> bool {
     }
 
     // Long alphanumeric strings (likely IDs)
-    if s.len() > 20 && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if s.len() > 20
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return true;
     }
 
@@ -176,10 +181,7 @@ mod tests {
             normalize_path("/users/550e8400-e29b-41d4-a716-446655440000"),
             "/users/:id"
         );
-        assert_eq!(
-            normalize_path("/items/abc123def456ghi789jkl"),
-            "/items/:id"
-        );
+        assert_eq!(normalize_path("/items/abc123def456ghi789jkl"), "/items/:id");
         assert_eq!(normalize_path("/api/status"), "/api/status");
     }
 

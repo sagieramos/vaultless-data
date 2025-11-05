@@ -124,7 +124,6 @@ pub fn verify_signature(data: &[u8], signature: &str, public_key: &str) -> Resul
     Ok(())
 }
 
-
 /// Sign data and include the data in the response
 pub fn sign_with_data(data: &[u8], private_key: &[u8; PRIVATE_KEY_SIZE]) -> Result<SignedData> {
     let mut signed = sign_data(data, private_key)?;

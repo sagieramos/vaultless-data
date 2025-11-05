@@ -11,7 +11,7 @@ pub use api_key::{ApiKey, CreateApiKey};
 pub use billing::*;
 pub use client::{
     AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
-    RegisterClientRequest, RegisterClientResponse, 
+    RegisterClientRequest, RegisterClientResponse,
 };
 pub use message::*;
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};

@@ -32,7 +32,7 @@ pub fn analytics_routes(state: AppState) -> Router<AppState> {
         .route("/overview", get(get_usage_overview))
         .route("/tier", get(get_tier_info))
         // POST route for data export (Requires #[axum::debug_handler] on the function)
-        .route("/export", post(export_analytics)) 
+        .route("/export", post(export_analytics))
         // -------------------------------
         // Middleware stack (Applies to all routes defined above)
         // -------------------------------

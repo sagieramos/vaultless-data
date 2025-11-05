@@ -134,13 +134,12 @@ async fn update_last_used(pool: sqlx::PgPool, redis: Option<Arc<RedisPoolType>>,
     }
 
     // --- 2. Database Update (Conditional Execution) ---
-    if proceed_with_db_write {
-        if let Err(e) = sqlx::query!("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", id)
+    if proceed_with_db_write
+        && let Err(e) = sqlx::query!("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", id)
             .execute(&pool)
             .await
-        {
-            tracing::error!(api_key_id = %id, error = %e, "Failed to update last_used_at");
-        }
+    {
+        tracing::error!(api_key_id = %id, error = %e, "Failed to update last_used_at");
     }
 }
 
@@ -211,23 +210,21 @@ impl ApiKey {
         let cache_key = cache_key_by_hash(&key_hash);
 
         // --- 1. Redis Cache Lookup ---
-        if let Some(redis_read) = &redis {
-            if let Ok(mut conn) = redis_read.get().await {
-                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-                    if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
-                        // Fire-and-forget with pool clone
-                        let pool_clone = pool.clone();
-                        let redis_clone = redis.clone();
-                        let id = api_key.id;
+        if let Some(redis_read) = &redis
+            && let Ok(mut conn) = redis_read.get().await
+            && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
+            && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
+        {
+            // Fire-and-forget with pool clone
+            let pool_clone = pool.clone();
+            let redis_clone = redis.clone();
+            let id = api_key.id;
 
-                        tokio::spawn(async move {
-                            update_last_used(pool_clone, redis_clone, id).await;
-                        });
+            tokio::spawn(async move {
+                update_last_used(pool_clone, redis_clone, id).await;
+            });
 
-                        return Ok(api_key);
-                    }
-                }
-            }
+            return Ok(api_key);
         }
 
         // --- 2. Database Fallback ---
@@ -255,19 +252,18 @@ impl ApiKey {
         });
 
         // --- 3. Cache Write ---
-        if let Some(redis) = redis {
-            if let Ok(serialized) = serde_json::to_string(&api_key) {
-                tokio::spawn(async move {
-                    if let Ok(mut conn) = redis.get().await {
-                        if let Err(e) = conn
-                            .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
-                            .await
-                        {
-                            error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
-                        }
-                    }
-                });
-            }
+        if let Some(redis) = redis
+            && let Ok(serialized) = serde_json::to_string(&api_key)
+        {
+            tokio::spawn(async move {
+                if let Ok(mut conn) = redis.get().await
+                    && let Err(e) = conn
+                        .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
+                        .await
+                {
+                    error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
+                }
+            });
         }
 
         Ok(api_key)
@@ -287,14 +283,12 @@ impl ApiKey {
         let cache_key = cache_key_by_hash(&key_hash);
 
         // --- 1. Redis Cache Lookup ---
-        if let Some(redis_read) = &redis {
-            if let Ok(mut conn) = redis_read.get().await {
-                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-                    if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
-                        return Ok(api_key);
-                    }
-                }
-            }
+        if let Some(redis_read) = &redis
+            && let Ok(mut conn) = redis_read.get().await
+            && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
+            && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
+        {
+            return Ok(api_key);
         }
 
         // --- 2. Database Fallback ---
@@ -313,19 +307,18 @@ impl ApiKey {
         .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
 
         // --- 3. Cache Write (fire-and-forget, if Redis available) ---
-        if let Some(redis) = redis {
-            if let Ok(serialized) = serde_json::to_string(&api_key) {
-                tokio::spawn(async move {
-                    if let Ok(mut conn) = redis.get().await {
-                        if let Err(e) = conn
-                            .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
-                            .await
-                        {
-                            error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
-                        }
-                    }
-                });
-            }
+        if let Some(redis) = redis
+            && let Ok(serialized) = serde_json::to_string(&api_key)
+        {
+            tokio::spawn(async move {
+                if let Ok(mut conn) = redis.get().await
+                    && let Err(e) = conn
+                        .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
+                        .await
+                {
+                    error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
+                }
+            });
         }
 
         Ok(api_key)
@@ -353,12 +346,11 @@ impl ApiKey {
         if let Some(redis) = &redis {
             let cache_key = cache_key_by_id(id);
 
-            if let Ok(mut conn) = redis.get().await {
-                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-                    if let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json) {
-                        return Ok(api_key);
-                    }
-                }
+            if let Ok(mut conn) = redis.get().await
+                && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
+                && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
+            {
+                return Ok(api_key);
             }
         }
 
@@ -502,10 +494,10 @@ impl ApiKey {
         }
 
         // 2. Check for expiry date
-        if let Some(expires_at) = self.expires_at {
-            if expires_at < Utc::now() {
-                return Err(VaultlessError::ApiKeyExpired);
-            }
+        if let Some(expires_at) = self.expires_at
+            && expires_at < Utc::now()
+        {
+            return Err(VaultlessError::ApiKeyExpired);
         }
 
         // 3. Perform the ASYNCHRONOUS Quota Check
@@ -704,17 +696,17 @@ impl ApiKey {
         let mut current_count: Option<i64> = None;
 
         // 2. Try to get the REAL-TIME count from Redis
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                // Get the count. It will be None if the key doesn't exist.
-                current_count = conn
-                    .get::<_, Option<i64>>(&month_key)
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::error!(error = %e, "Redis GET failed during quota check.");
-                        None
-                    });
-            }
+        if let Some(redis_pool) = &redis
+            && let Ok(mut conn) = redis_pool.get().await
+        {
+            // Get the count. It will be None if the key doesn't exist.
+            current_count = conn
+                .get::<_, Option<i64>>(&month_key)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "Redis GET failed during quota check.");
+                    None
+                });
         }
 
         // 3. Check the count if found in Redis (fast path)

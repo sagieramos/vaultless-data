@@ -1,8 +1,8 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Transaction};
 use sqlx::{FromRow, postgres::PgPool};
+use sqlx::{Postgres, Transaction};
 use std::net::IpAddr;
 use uuid::Uuid;
 

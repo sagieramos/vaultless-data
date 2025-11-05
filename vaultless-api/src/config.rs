@@ -77,8 +77,7 @@ impl Config {
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
             },
             cache: CacheConfig {
-                url: env::var("CACHE_URL")
-                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+                url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
                 max_pool_size: env::var("CACHE_MAX_POOL_SIZE")
                     .ok()
                     .and_then(|s| s.parse().ok()),

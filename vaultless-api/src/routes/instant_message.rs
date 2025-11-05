@@ -1,9 +1,9 @@
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 
-use crate::{handlers::instant_message::*, AppState};
+use crate::{AppState, handlers::instant_message::*};
 
 pub fn message_routes() -> Router<AppState> {
     Router::new()

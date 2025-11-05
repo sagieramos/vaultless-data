@@ -47,7 +47,7 @@ pub const MINIMAL_CLIENT_FIELDS: &str = "
 pub struct Client {
     pub id: Uuid,
     pub identifier: Option<String>,
-    pub client_identifier_hash: String,
+    pub client_identifier_hash: Option<String>,
     pub public_key: Option<String>,
     pub session_token_hash: Option<String>,
     pub session_expires_at: Option<DateTime<Utc>>,
@@ -274,7 +274,7 @@ impl Client {
 
         // --- Generate session token ---
         let token = crypto::generate_secure_token::<32>()?;
-        let session_token = BASE64.encode(&token);
+        let session_token = BASE64.encode(token);
         let session_token_hash = crypto::hash_content(&token);
         let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
@@ -351,13 +351,11 @@ impl Client {
             ));
         }
 
-        let is_new_session = client
-            .session_expires_at
-            .map_or(true, |exp| exp < Utc::now());
+        let is_new_session = client.session_expires_at.is_none_or(|exp| exp < Utc::now());
 
         let (session_token, expires_at) = if is_new_session {
             let token = crypto::generate_secure_token::<32>()?;
-            let session_token = BASE64.encode(&token);
+            let session_token = BASE64.encode(token);
             let session_token_hash = crypto::hash_content(&token);
             let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
@@ -410,15 +408,13 @@ impl Client {
         let cache_key = cache_client_session_key(&session_token_hash);
 
         // --- 1. Redis Cache Lookup ---
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-                    if let Ok(public_client) = serde_json::from_str::<ClientPublic>(&cached_json) {
-                        tracing::debug!("Cache hit for client session");
-                        return Ok(public_client);
-                    }
-                }
-            }
+        if let Some(redis_pool) = &redis
+            && let Ok(mut conn) = redis_pool.get().await
+            && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
+            && let Ok(public_client) = serde_json::from_str::<ClientPublic>(&cached_json)
+        {
+            tracing::debug!("Cache hit for client session");
+            return Ok(public_client);
         }
 
         // --- 2. Database Lookup ---
@@ -438,19 +434,18 @@ impl Client {
         let public_client = ClientPublic::from(&client);
 
         // --- 3. Write-Back to Redis ---
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                if let Some(expiry) = client.session_expires_at {
-                    let ttl_secs = (expiry - Utc::now()).num_seconds().max(0);
-                    if ttl_secs > 0 {
-                        let serialized = serde_json::to_string(&public_client)?;
-                        if let Err(e) = conn
-                            .set_ex::<_, _, ()>(&cache_key, serialized, ttl_secs as u64)
-                            .await
-                        {
-                            tracing::warn!("Redis cache write failed: {}", e);
-                        }
-                    }
+        if let Some(redis_pool) = &redis
+            && let Ok(mut conn) = redis_pool.get().await
+            && let Some(expiry) = client.session_expires_at
+        {
+            let ttl_secs = (expiry - Utc::now()).num_seconds().max(0);
+            if ttl_secs > 0 {
+                let serialized = serde_json::to_string(&public_client)?;
+                if let Err(e) = conn
+                    .set_ex::<_, _, ()>(&cache_key, serialized, ttl_secs as u64)
+                    .await
+                {
+                    tracing::warn!("Redis cache write failed: {}", e);
                 }
             }
         }
@@ -520,37 +515,39 @@ impl Client {
             .await?;
 
         // --- 3. Invalidate Redis caches (all possible keys) ---
-        if let Some(redis_pool) = redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                let mut keys_to_delete = Vec::new();
+        if let Some(redis_pool) = redis
+            && let Ok(mut conn) = redis_pool.get().await
+        {
+            let mut keys_to_delete = Vec::new();
 
-                // Canonical client data key
-                keys_to_delete.push(cache_key!("client", "id", client.id));
+            // Canonical client data key
+            keys_to_delete.push(cache_key!("client", "id", client.id));
 
-                // Alias keys (if they exist)
-                if let Some(ref pk) = client.public_key {
-                    keys_to_delete.push(cache_key!("client", "alias", "public_key", pk));
-                }
-                if let Some(ref idf) = client.identifier {
-                    keys_to_delete.push(cache_key!("client", "alias", "identifier", idf));
-                }
+            // Alias keys (if they exist)
+            if let Some(ref pk) = client.public_key {
+                keys_to_delete.push(cache_key!("client", "alias", "public_key", pk));
+            }
+            if let Some(ref idf) = client.identifier {
+                keys_to_delete.push(cache_key!("client", "alias", "identifier", idf));
+            }
+            if let Some(ref cid_hash) = client.client_identifier_hash {
                 keys_to_delete.push(cache_key!(
                     "client",
                     "alias",
                     "client_identifier_hash",
-                    &client.client_identifier_hash
+                    cid_hash
                 ));
+            }
 
-                // Session key (if exists)
-                if let Some(ref session_hash) = client.session_token_hash {
-                    keys_to_delete.push(cache_client_session_key(session_hash));
-                }
+            // Session key (if exists)
+            if let Some(ref session_hash) = client.session_token_hash {
+                keys_to_delete.push(cache_client_session_key(session_hash));
+            }
 
-                // Delete all keys
-                for key in keys_to_delete {
-                    let _ = conn.del::<_, ()>(&key).await;
-                    tracing::debug!("Invalidated cache key: {}", key);
-                }
+            // Delete all keys
+            for key in keys_to_delete {
+                let _ = conn.del::<_, ()>(&key).await;
+                tracing::debug!("Invalidated cache key: {}", key);
             }
         }
 
@@ -599,10 +596,10 @@ impl Client {
         let session_hash = crypto::hash_content(&token_bytes);
         let cache_key = cache_client_session_key(&session_hash);
 
-        if let Ok(mut conn) = redis.get().await {
-            if conn.del::<_, ()>(&cache_key).await.is_ok() {
-                tracing::debug!("Invalidated session cache: {}", cache_key);
-            }
+        if let Ok(mut conn) = redis.get().await
+            && conn.del::<_, ()>(&cache_key).await.is_ok()
+        {
+            tracing::debug!("Invalidated session cache: {}", cache_key);
         }
 
         Ok(())
@@ -640,17 +637,16 @@ impl Client {
             ];
 
             for key in alias_keys.into_iter().flatten() {
-                if let Ok(client_id_str) = conn.get::<_, String>(&key).await {
-                    if let Ok(client_id) = Uuid::parse_str(&client_id_str) {
-                        let client_cache_key = cache_key!("client", "id", client_id);
-                        if let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await {
-                            if let Ok(public_client) =
-                                serde_json::from_str::<ClientPublic>(&cached_json)
-                            {
-                                tracing::debug!("Cache hit for client_id {}", client_id);
-                                return Ok(Some(public_client));
-                            }
-                        }
+                if let Ok(client_id_str) = conn.get::<_, String>(&key).await
+                    && let Ok(client_id) = Uuid::parse_str(&client_id_str)
+                {
+                    let client_cache_key = cache_key!("client", "id", client_id);
+                    if let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await
+                        && let Ok(public_client) =
+                            serde_json::from_str::<ClientPublic>(&cached_json)
+                    {
+                        tracing::debug!("Cache hit for client_id {}", client_id);
+                        return Ok(Some(public_client));
                     }
                 }
             }
@@ -734,16 +730,18 @@ impl Client {
             }
 
             // Alias: client_identifier_hash
-            let cid_hash = &client.client_identifier_hash;
-            pipe.cmd("SETEX")
-                .arg(cache_key!(
-                    "client",
-                    "alias",
-                    "client_identifier_hash",
-                    cid_hash
-                ))
-                .arg(ttl_secs)
-                .arg(client.id.to_string());
+            if let Some(ref cid_hash_value) = client.client_identifier_hash {
+                // Inside this block, `cid_hash_value` has type &String (which implements ToString)
+                pipe.cmd("SETEX")
+                    .arg(cache_key!(
+                        "client",
+                        "alias",
+                        "client_identifier_hash",
+                        cid_hash_value
+                    ))
+                    .arg(ttl_secs)
+                    .arg(client.id.to_string());
+            }
 
             // Execute the pipeline atomically
             if let Err(e) = pipe.query_async::<()>(&mut conn).await {
