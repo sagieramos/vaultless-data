@@ -1,6 +1,8 @@
 pub mod analytics;
 pub mod health;
 pub mod message;
+pub mod client;
+pub mod instant_message;
 
 //pub mod proof;
 pub mod user_auth;

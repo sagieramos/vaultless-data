@@ -44,7 +44,7 @@ pub type RedisPoolType = RedisPool;
 const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 
 /// Default Redis key TTL for metric hashes (2 hours)
-const DEFAULT_METRIC_TTL_SECS: i64 = 7200;
+const DEFAULT_METRIC_TTL_SECS: u64 = 7200;
 
 /// Default flush interval in seconds
 const DEFAULT_FLUSH_INTERVAL_SECS: u64 = 300; // 5 minutes
@@ -65,7 +65,7 @@ const REDIS_OPERATION_TIMEOUT_SECS: u64 = 30;
 #[derive(Clone, Debug)]
 pub struct MetricsConfig {
     pub max_batch_size: usize,
-    pub metric_ttl_secs: i64,
+    pub metric_ttl_secs: u64,
     pub flush_interval_secs: u64,
     pub redis_operation_timeout_secs: u64,
 }
@@ -232,7 +232,7 @@ async fn hincr_many<C>(
     conn: &mut C,
     key: &MetricKey,
     fields: &[(&str, i64)],
-    metric_ttl_secs: i64,
+    metric_ttl_secs: u64,
 ) -> Result<()>
 where
     C: AsyncCommands + Send + Unpin,
@@ -247,7 +247,7 @@ where
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
     }
 
-    conn.expire::<_, ()>(key.as_str(), metric_ttl_secs)
+    conn.expire::<_, ()>(key.as_str(), metric_ttl_secs as i64)
         .await
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 

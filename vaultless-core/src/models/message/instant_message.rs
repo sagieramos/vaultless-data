@@ -5,7 +5,6 @@ use crate::models::usage::{
     increment_proof_verified_pool,
 };
 use crate::cache_key;
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::RedisResult;
@@ -100,21 +99,21 @@ struct Envelope<'a> {
 pub struct Message {
     pub id: Uuid,
     pub ciphertext: String,
-    pub nonce: Uuid,                  // Fixed: uuid per schema
-    pub content_type: Option<String>, // Aligned: varchar(100), default handled in INSERT
-    pub content_size_bytes: i32,      // Fixed: integer per schema (i64 → i32 for bind)
-    pub api_key_id: Uuid,             // Fixed: non-optional per schema
+    pub nonce: Uuid,                  
+    pub content_type: Option<String>, 
+    pub content_size_bytes: i32,      
+    pub api_key_id: Uuid,             
     pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,          // Added: required NOT NULL
-    pub accessed_at: Option<DateTime<Utc>>, // Added: for alignment (nullable)
-    pub access_count: i32,                  // Added: integer NOT NULL DEFAULT 0
+    pub expires_at: DateTime<Utc>,          
+    pub accessed_at: Option<DateTime<Utc>>, 
+    pub access_count: i32,                 
     pub is_delivered: bool,
     pub delivered_at: Option<DateTime<Utc>>,
-    pub max_access_count: Option<i32>, // Added: integer (nullable)
+    pub max_access_count: Option<i32>, 
     pub require_proof_verification: bool,
     pub sender_client_id: Uuid,
     pub recipient_client_id: Uuid,
-    pub group_id: Option<Uuid>, // Added: for groups (nullable, None for P2P)
+    pub group_id: Option<Uuid>, 
     pub is_group_message: bool,
     // Non-schema fields (stored in Redis JSON only; not persisted to DB)
     pub signature: String,

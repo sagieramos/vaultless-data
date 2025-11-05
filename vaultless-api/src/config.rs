@@ -1,3 +1,4 @@
+// vaultless-api/src/config.rs
 use serde::Deserialize;
 use std::env;
 
@@ -13,8 +14,12 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
-    /*  pub rate_limit: RateLimitConfig, */
     pub cache: CacheConfig,
+    // Metrics configuration (optional with defaults)
+    pub metrics_max_batch_size: Option<usize>,
+    pub metrics_ttl_secs: Option<u64>,
+    pub metrics_flush_interval_secs: Option<u64>,
+    pub metrics_redis_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,11 +40,6 @@ pub struct SecurityConfig {
     pub api_key_salt: String,
     pub admin_api_key: String,
 }
-
-/* #[derive(Debug, Clone, Deserialize)]
-pub struct RateLimitConfig {
-    pub requests_per_minute: u32,
-} */
 
 /// Dragonfly/Redis cache configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -77,7 +77,8 @@ impl Config {
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
             },
             cache: CacheConfig {
-                url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+                url: env::var("CACHE_URL")
+                    .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
                 max_pool_size: env::var("CACHE_MAX_POOL_SIZE")
                     .ok()
                     .and_then(|s| s.parse().ok()),
@@ -85,6 +86,19 @@ impl Config {
                     .unwrap_or_else(|_| "3600".to_string())
                     .parse()?,
             },
+            // Metrics configuration (optional)
+            metrics_max_batch_size: env::var("METRICS_MAX_BATCH_SIZE")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            metrics_ttl_secs: env::var("METRICS_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            metrics_flush_interval_secs: env::var("METRICS_FLUSH_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            metrics_redis_timeout_secs: env::var("METRICS_REDIS_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
         };
 
         // Validate critical config
@@ -130,6 +144,10 @@ mod tests {
                 max_pool_size: Some(5),
                 default_ttl: 3600,
             },
+            metrics_max_batch_size: Some(1000),
+            metrics_ttl_secs: Some(2592000),
+            metrics_flush_interval_secs: Some(60),
+            metrics_redis_timeout_secs: Some(5),
         };
 
         assert_eq!(config.bind_address(), "127.0.0.1:3000");

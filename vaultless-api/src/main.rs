@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     //----------------------------------------------------
     // 4. Build AppState
     //----------------------------------------------------
-    let app_state = AppState::new(db.clone(), redis_pool.clone(), config.clone());
+    let app_state = AppState::new(db.clone(), redis_pool.clone(), config.clone())?;
 
     //----------------------------------------------------
     // 5. Routers
