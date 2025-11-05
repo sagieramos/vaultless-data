@@ -97,6 +97,9 @@ pub enum VaultlessError {
 
     #[error("Configuration error: {0}")]
     Config(String),
+
+    #[error("Serialization error: {0}")]
+    Serialization(String),
 }
 
 pub type Result<T> = std::result::Result<T, VaultlessError>;
@@ -122,6 +125,7 @@ impl VaultlessError {
                 | VaultlessError::Duplicate(_)
                 | VaultlessError::Conflict(_)
                 | VaultlessError::Timeout(_) // Timeout can be a client error in some contexts
+                | VaultlessError::Serialization(_)
         )
     }
 
@@ -142,7 +146,8 @@ impl VaultlessError {
             VaultlessError::Duplicate(_) | VaultlessError::Conflict(_) => 409,
             VaultlessError::MessageExpired => 410,
             VaultlessError::MessageAccessLimitReached => 410,
-            VaultlessError::Timeout(_) => 408, // 408 Request Timeout
+            VaultlessError::Timeout(_) => 408,
+            VaultlessError::Serialization(_) => 500,
             _ => 500,
         }
     }

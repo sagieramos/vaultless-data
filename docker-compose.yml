@@ -25,6 +25,8 @@ services:
       --bind 0.0.0.0
       --logtostderr
       --dir /data
+      --maxmemory 512mb
+      --proactor_threads 2
     volumes:
       - dragonfly_data:/data
     restart: unless-stopped

@@ -2,7 +2,7 @@ use crate::cache_key;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Script};
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, Postgres};
 use std::sync::Arc;
@@ -23,6 +23,25 @@ const IDENTIFIER_TTL_SECS: u64 = 600; // 10 minutes
 // =============================================================================
 // Models
 // =============================================================================
+
+pub const MINIMAL_CLIENT_FIELDS: &str = "
+    id,
+    identifier,
+    client_identifier_hash,
+    public_key,
+    session_token_hash,
+    session_expires_at,
+    allow_anonymous_messages,
+    require_proof_verification,
+    is_active,
+    created_at,
+    updated_at,
+    last_seen_at,
+    last_message_at,
+    developer_id,
+    api_key_id,
+    metadata
+";
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Client {
@@ -46,6 +65,7 @@ pub struct Client {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientPublic {
+    #[serde(skip_serializing)]
     pub id: Uuid,
     pub identifier: Option<String>,
     pub public_key: Option<String>,
@@ -74,8 +94,7 @@ impl From<Client> for ClientPublic {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct RegisterClientRequest {
     /// Public key or device fingerprint (client-side hash input)
-    #[validate(length(min = 32, max = 1024))]
-    pub client_identifier: String,
+    pub client_identifier: Option<String>,
 
     /// Optional: public key for signature verification (E2EE)
     #[validate(length(min = 32, max = 1024))]
@@ -87,10 +106,26 @@ pub struct RegisterClientRequest {
 
     /// Optional: encrypted metadata (device info, version, etc.)
     pub metadata: Option<serde_json::Value>,
+
+    /// Optional: signature proving ownership of the provided public_key.
+    /// When present, server will verify signature against `signed_payload`.
+    #[validate(length(min = 16, max = 2048))]
+    pub signature: Option<String>,
+
+    /// Optional: arbitrary payload that was signed (recommended: client_identifier or timestamp)
+    pub signed_payload: Option<String>,
+
+    /// Optional: nonce for replay protection — server will check Redis for reuse.
+    #[validate(length(min = 8, max = 128))]
+    pub nonce: Option<String>,
+
+    /// Optional: UTC timestamp seconds for freshness checks (optional but recommended)
+    pub timestamp: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterClientResponse {
+    #[serde(skip_serializing)]
     pub client_id: Uuid,
     pub session_token: String,
     pub expires_at: DateTime<Utc>,
@@ -123,11 +158,6 @@ pub fn cache_client_session_key(session_hash: &str) -> String {
     cache_key!("client", "session", session_hash)
 }
 
-// Cache key for looking up a client by their public identifier (like short ID)
-pub fn cache_client_identifier_key(identifier: &str) -> String {
-    cache_key!("client", "identifier", identifier)
-}
-
 // =============================================================================
 // Implementation
 // =============================================================================
@@ -139,40 +169,136 @@ impl Client {
         input: RegisterClientRequest,
         developer_id: Option<Uuid>,
         api_key_id: Option<Uuid>,
+        redis: Option<Arc<RedisPool>>,
     ) -> Result<RegisterClientResponse>
     where
         E: Executor<'c, Database = Postgres>,
     {
+        // Validate basic struct constraints first (e.g., field lengths)
         input
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
-        let client_identifier_hash = crypto::hash_content(input.client_identifier.as_bytes());
+        // --- Enforce mandatory fields ---
+        // We check for all required fields first and unwrap them or return an error.
+        let pubkey = input
+            .public_key
+            .ok_or_else(|| VaultlessError::Validation("public_key is required.".to_string()))?;
+
+        let signature = input
+            .signature
+            .ok_or_else(|| VaultlessError::Validation("signature is required.".to_string()))?;
+
+        let payload = input
+            .signed_payload
+            .ok_or_else(|| VaultlessError::Validation("signed_payload is required.".to_string()))?;
+
+        // --- Signature Verification (Now Mandatory) ---
+        tracing::debug!("Verifying registration signature...");
+        match crate::crypto::verify_signature(payload.as_bytes(), &signature, &pubkey) {
+            Ok(()) => tracing::debug!("✅ Signature verification passed"),
+            Err(e) => {
+                tracing::warn!("❌ Signature verification failed: {:?}", e);
+                return Err(VaultlessError::Validation(
+                    "Signature verification failed".into(),
+                ));
+            }
+        }
+
+        // --- Nonce replay protection (if nonce present and redis provided) ---
+        if let (Some(nonce), Some(redis_pool)) = (input.nonce.as_ref(), &redis) {
+            let nonce_key = cache_key!("client", "register_nonce", nonce);
+
+            if let Ok(mut conn) = redis_pool.get().await {
+                const NONCE_SCRIPT: &str = r#"
+                local key = KEYS[1]
+                local ttl = tonumber(ARGV[1])
+                local ok = redis.call('SET', key, '1', 'NX', 'EX', ttl)
+                if ok then
+                    return 1
+                else
+                    return 0
+                end
+            "#;
+                let script = Script::new(NONCE_SCRIPT);
+                let script_result: redis::RedisResult<i32> = script
+                    .key(&nonce_key)
+                    .arg(IDENTIFIER_TTL_SECS)
+                    .invoke_async(&mut conn)
+                    .await;
+
+                match script_result {
+                    Ok(1) => {
+                        tracing::debug!("Nonce reserved in redis for key {}", nonce_key);
+                    }
+                    Ok(0) => {
+                        return Err(VaultlessError::Validation("Nonce already used".into()));
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "Unexpected redis script result for nonce key {}: {}",
+                            nonce_key,
+                            other
+                        );
+                        return Err(VaultlessError::Validation(
+                            "Nonce check failed due to unexpected redis response".into(),
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Redis error while checking nonce with script: {}", e);
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "Could not acquire redis connection for nonce check; continuing without replay protection"
+                );
+            }
+        }
+
+        // --- Optional: compute timestamp freshness check (if timestamp present) ---
+        if let Some(ts) = input.timestamp {
+            let now_unix = Utc::now().timestamp();
+            let skew_allowed = 60; // 5 minutes allowed drift
+            if (ts - now_unix).abs() > skew_allowed {
+                return Err(VaultlessError::Validation(
+                    "Timestamp is outside allowed time window".into(),
+                ));
+            }
+        }
+
+        // --- Optional client_identifier hash ---
+        let client_identifier_hash = input
+            .client_identifier
+            .as_ref()
+            .map(|ci| crypto::hash_content(ci.as_bytes()));
+
+        // --- Generate session token ---
         let token = crypto::generate_secure_token::<32>()?;
         let session_token = BASE64.encode(&token);
         let session_token_hash = crypto::hash_content(&token);
         let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
+        // --- Insert into database ---
         let client = sqlx::query_as::<_, Client>(
             r#"
-        INSERT INTO clients (
-            identifier,
-            client_identifier_hash,
-            public_key,
-            session_token_hash,
-            session_expires_at,
-            metadata,
-            developer_id,
-            api_key_id,
-            last_seen_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-        RETURNING *
-        "#,
+    INSERT INTO clients (
+        identifier,
+        client_identifier_hash,
+        public_key,
+        session_token_hash,
+        session_expires_at,
+        metadata,
+        developer_id,
+        api_key_id,
+        last_seen_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    RETURNING *
+    "#,
         )
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
-        .bind(&input.public_key)
+        .bind(&pubkey)
         .bind(&session_token_hash)
         .bind(session_expires_at)
         .bind(&input.metadata)
@@ -186,6 +312,13 @@ impl Client {
             }
             _ => VaultlessError::Database(e),
         })?;
+
+        // --- Post-insert: cache canonical and aliases in Redis (if present) ---
+        // This logic remains correct as it reads from the `client` struct
+        // --- Post-insert: cache canonical and aliases in Redis (if present) ---
+        if let Some(redis_pool) = &redis {
+            let _ = Self::cache_to_redis(redis_pool, &client).await;
+        }
 
         Ok(RegisterClientResponse {
             client_id: client.id,
@@ -325,117 +458,6 @@ impl Client {
         Ok(public_client)
     }
 
-    /// Lookup client by plaintext identifier (hashed internally)
-    pub async fn find_by_identifier<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPool>>,
-        client_identifier: &str,
-    ) -> Result<Option<ClientPublic>>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        let hash = crypto::hash_content(client_identifier.as_bytes());
-        let cache_key = cache_client_identifier_key(client_identifier);
-
-        // --- 1. Redis Cache Lookup ---
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-                    if let Ok(public_client) = serde_json::from_str::<ClientPublic>(&cached_json) {
-                        tracing::debug!("Cache hit for client identifier: {}", client_identifier);
-                        return Ok(Some(public_client));
-                    }
-                }
-            }
-        }
-
-        // --- 2. Database Lookup ---
-        let client = sqlx::query_as::<_, Client>(
-            r#"SELECT * FROM clients WHERE client_identifier_hash = $1"#,
-        )
-        .bind(&hash)
-        .fetch_optional(exec)
-        .await?;
-
-        // --- 3. Write-Back to Redis ---
-        if let (Some(redis_pool), Some(client)) = (&redis, &client) {
-            if let Ok(mut conn) = redis_pool.get().await {
-                if client.is_active {
-                    if let Ok(serialized) = serde_json::to_string(&ClientPublic::from(client)) {
-                        if let Err(e) = conn
-                            .set_ex::<_, _, ()>(&cache_key, serialized, IDENTIFIER_TTL_SECS)
-                            .await
-                        {
-                            tracing::warn!("Redis cache write failed for {}: {:?}", cache_key, e);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(client.map(ClientPublic::from))
-    }
-
-    /// Lookup client by their public short identifier (non-secret, shareable)
-    pub async fn find_by_public_identifier<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPool>>,
-        identifier: &str,
-    ) -> Result<Option<ClientPublic>>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        let cache_key = cache_client_identifier_key(identifier);
-
-        // --- 1. Redis Cache Lookup ---
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
-                    if let Ok(public_client) = serde_json::from_str::<ClientPublic>(&cached_json) {
-                        tracing::debug!("Cache hit for public identifier: {}", identifier);
-                        return Ok(Some(public_client));
-                    }
-                }
-            }
-        }
-
-        // --- 2. Database Lookup ---
-        let client = sqlx::query_as::<_, Client>(
-            r#"SELECT * FROM clients WHERE identifier = $1 AND is_active = TRUE"#,
-        )
-        .bind(identifier)
-        .fetch_optional(exec)
-        .await?;
-
-        // --- 3. Write-Back to Redis ---
-        if let (Some(redis_pool), Some(client)) = (&redis, &client) {
-            if let Ok(mut conn) = redis_pool.get().await {
-                if let Ok(serialized) = serde_json::to_string(&ClientPublic::from(client)) {
-                    if let Err(e) = conn
-                        .set_ex::<_, _, ()>(&cache_key, serialized, IDENTIFIER_TTL_SECS)
-                        .await
-                    {
-                        tracing::warn!("Redis cache write failed for {}: {:?}", cache_key, e);
-                    }
-                }
-            }
-        }
-
-        Ok(client.map(ClientPublic::from))
-    }
-
-    /// Mark client as recently active
-    pub async fn update_last_seen<'c, E>(exec: E, client_id: Uuid) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        sqlx::query("UPDATE clients SET last_seen_at = NOW() WHERE id = $1")
-            .bind(client_id)
-            .execute(exec)
-            .await?;
-        Ok(())
-    }
-
     /// Log out a client by clearing session
     pub async fn revoke_session<'c, E>(
         exec: E,
@@ -480,24 +502,59 @@ impl Client {
         exec: E,
         redis: Option<&Arc<RedisPool>>,
         client_id: Uuid,
-        identifier: Option<&str>,
     ) -> Result<()>
     where
-        E: Executor<'c, Database = Postgres>,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
+        // --- 1. Fetch client data before deactivation (for cache invalidation) ---
+        let client = sqlx::query_as::<_, Client>("SELECT * FROM clients WHERE id = $1")
+            .bind(client_id)
+            .fetch_optional(exec.clone())
+            .await?
+            .ok_or_else(|| VaultlessError::NotFound("Client not found".into()))?;
+
+        // --- 2. Deactivate in database ---
         sqlx::query("UPDATE clients SET is_active = FALSE WHERE id = $1")
             .bind(client_id)
             .execute(exec)
             .await?;
 
-        // --- Invalidate Redis Cache ---
-        if let (Some(redis), Some(identifier)) = (redis, identifier) {
-            let cache_key = cache_client_identifier_key(identifier);
-            if let Ok(mut conn) = redis.get().await {
-                let _ = conn.del::<_, ()>(&cache_key).await.ok();
-                tracing::debug!("Deactivated client cache for identifier {}", identifier);
+        // --- 3. Invalidate Redis caches (all possible keys) ---
+        if let Some(redis_pool) = redis {
+            if let Ok(mut conn) = redis_pool.get().await {
+                let mut keys_to_delete = Vec::new();
+
+                // Canonical client data key
+                keys_to_delete.push(cache_key!("client", "id", client.id));
+
+                // Alias keys (if they exist)
+                if let Some(ref pk) = client.public_key {
+                    keys_to_delete.push(cache_key!("client", "alias", "public_key", pk));
+                }
+                if let Some(ref idf) = client.identifier {
+                    keys_to_delete.push(cache_key!("client", "alias", "identifier", idf));
+                }
+                keys_to_delete.push(cache_key!(
+                    "client",
+                    "alias",
+                    "client_identifier_hash",
+                    &client.client_identifier_hash
+                ));
+
+                // Session key (if exists)
+                if let Some(ref session_hash) = client.session_token_hash {
+                    keys_to_delete.push(cache_client_session_key(session_hash));
+                }
+
+                // Delete all keys
+                for key in keys_to_delete {
+                    let _ = conn.del::<_, ()>(&key).await;
+                    tracing::debug!("Invalidated cache key: {}", key);
+                }
             }
         }
+
+        tracing::info!(client_id = %client_id, "Client deactivated successfully");
 
         Ok(())
     }
@@ -550,19 +607,151 @@ impl Client {
 
         Ok(())
     }
-    /// Invalidate cached client identifier (after identifier update or deactivation)
-    pub async fn invalidate_client_identifier_cache(
-        redis: &Arc<RedisPool>,
-        identifier: &str,
-    ) -> Result<()> {
-        let cache_key = cache_client_identifier_key(identifier);
 
-        if let Ok(mut conn) = redis.get().await {
-            if conn.del::<_, ()>(&cache_key).await.is_ok() {
-                tracing::debug!("Invalidated identifier cache: {}", cache_key);
+    pub async fn resolve_client<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPool>>,
+        public_key: Option<&str>,
+        identifier: Option<&str>,
+        client_identifier: Option<&str>,
+    ) -> Result<Option<ClientPublic>>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        if public_key.is_none() && identifier.is_none() && client_identifier.is_none() {
+            return Err(VaultlessError::Validation(
+                "At least one of public_key, identifier, or client_identifier must be provided"
+                    .into(),
+            ));
+        }
+
+        let client_identifier_hash =
+            client_identifier.map(|cid| crypto::hash_content(cid.as_bytes()));
+
+        // --- 1. Check Redis alias keys ---
+        if let Some(redis_pool) = &redis {
+            let mut conn = redis_pool.get().await?;
+            let alias_keys = vec![
+                public_key.map(|pk| cache_key!("client", "alias", "public_key", pk)),
+                identifier.map(|idf| cache_key!("client", "alias", "identifier", idf)),
+                client_identifier_hash
+                    .as_ref()
+                    .map(|h| cache_key!("client", "alias", "client_identifier_hash", h)),
+            ];
+
+            for key in alias_keys.into_iter().flatten() {
+                if let Ok(client_id_str) = conn.get::<_, String>(&key).await {
+                    if let Ok(client_id) = Uuid::parse_str(&client_id_str) {
+                        let client_cache_key = cache_key!("client", "id", client_id);
+                        if let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await {
+                            if let Ok(public_client) =
+                                serde_json::from_str::<ClientPublic>(&cached_json)
+                            {
+                                tracing::debug!("Cache hit for client_id {}", client_id);
+                                return Ok(Some(public_client));
+                            }
+                        }
+                    }
+                }
             }
         }
 
+        // --- 2. Database Lookup (minimal fields) ---
+        let client = if let Some(pk) = public_key {
+            sqlx::query_as::<_, Client>(&format!(
+                "SELECT {} FROM clients WHERE public_key = $1 AND is_active = TRUE",
+                MINIMAL_CLIENT_FIELDS
+            ))
+            .bind(pk)
+            .fetch_optional(exec)
+            .await?
+        } else if let Some(idf) = identifier {
+            sqlx::query_as::<_, Client>(&format!(
+                "SELECT {} FROM clients WHERE identifier = $1 AND is_active = TRUE",
+                MINIMAL_CLIENT_FIELDS
+            ))
+            .bind(idf)
+            .fetch_optional(exec)
+            .await?
+        } else if let Some(cid_hash) = &client_identifier_hash {
+            sqlx::query_as::<_, Client>(&format!(
+                "SELECT {} FROM clients WHERE client_identifier_hash = $1 AND is_active = TRUE",
+                MINIMAL_CLIENT_FIELDS
+            ))
+            .bind(cid_hash)
+            .fetch_optional(exec)
+            .await?
+        } else {
+            None
+        };
+
+        let client = match client {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let public_client = ClientPublic::from(&client);
+
+        // --- 3. Cache aliases + canonical client ---
+
+        if let Some(redis_pool) = &redis {
+            let _ = Self::cache_to_redis(redis_pool, &client).await;
+        }
+
+        Ok(Some(public_client))
+    }
+
+    async fn cache_to_redis(redis_pool: &Arc<RedisPool>, client: &Client) -> Result<()> {
+        if let Ok(mut conn) = redis_pool.get().await {
+            let ttl_secs = 24 * 60 * 60; // 24 hours
+            let client_pub = ClientPublic::from(client);
+
+            let serialized = serde_json::to_string(&client_pub)
+                .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
+
+            let mut pipe = redis::pipe();
+            let client_id_key = cache_key!("client", "id", client.id);
+
+            // Canonical client cache
+            pipe.cmd("SETEX")
+                .arg(&client_id_key)
+                .arg(ttl_secs)
+                .arg(&serialized);
+
+            // Alias: public_key
+            if let Some(ref pk) = client.public_key {
+                pipe.cmd("SETEX")
+                    .arg(cache_key!("client", "alias", "public_key", pk))
+                    .arg(ttl_secs)
+                    .arg(client.id.to_string());
+            }
+
+            // Alias: identifier
+            if let Some(ref idf) = client.identifier {
+                pipe.cmd("SETEX")
+                    .arg(cache_key!("client", "alias", "identifier", idf))
+                    .arg(ttl_secs)
+                    .arg(client.id.to_string());
+            }
+
+            // Alias: client_identifier_hash
+            let cid_hash = &client.client_identifier_hash;
+            pipe.cmd("SETEX")
+                .arg(cache_key!(
+                    "client",
+                    "alias",
+                    "client_identifier_hash",
+                    cid_hash
+                ))
+                .arg(ttl_secs)
+                .arg(client.id.to_string());
+
+            // Execute the pipeline atomically
+            if let Err(e) = pipe.query_async::<()>(&mut conn).await {
+                tracing::warn!("Redis pipeline write failed: {}", e);
+            } else {
+                tracing::debug!("Client cached successfully in Redis");
+            }
+        }
         Ok(())
     }
 }

@@ -1,10 +1,10 @@
+use crate::cache_key;
 use crate::crypto::verify_signature;
 use crate::error::{Result, VaultlessError};
 use crate::models::usage::{
     MetricsConfig, increment_message_received_pool, increment_message_sent_pool,
     increment_proof_verified_pool,
 };
-use crate::cache_key;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::RedisResult;
@@ -12,7 +12,6 @@ use redis::{AsyncCommands, pipe};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool, Postgres, query_as, query_builder::QueryBuilder};
 use std::{
-    env,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -99,21 +98,21 @@ struct Envelope<'a> {
 pub struct Message {
     pub id: Uuid,
     pub ciphertext: String,
-    pub nonce: Uuid,                  
-    pub content_type: Option<String>, 
-    pub content_size_bytes: i32,      
-    pub api_key_id: Uuid,             
+    pub nonce: Uuid,
+    pub content_type: Option<String>,
+    pub content_size_bytes: i32,
+    pub api_key_id: Uuid,
     pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,          
-    pub accessed_at: Option<DateTime<Utc>>, 
-    pub access_count: i32,                 
+    pub expires_at: DateTime<Utc>,
+    pub accessed_at: Option<DateTime<Utc>>,
+    pub access_count: i32,
     pub is_delivered: bool,
     pub delivered_at: Option<DateTime<Utc>>,
-    pub max_access_count: Option<i32>, 
+    pub max_access_count: Option<i32>,
     pub require_proof_verification: bool,
     pub sender_client_id: Uuid,
     pub recipient_client_id: Uuid,
-    pub group_id: Option<Uuid>, 
+    pub group_id: Option<Uuid>,
     pub is_group_message: bool,
     // Non-schema fields (stored in Redis JSON only; not persisted to DB)
     pub signature: String,
@@ -208,9 +207,9 @@ impl InstantMessage {
         sender_client_id: Uuid,
         recipient_client_id: Uuid,
         ciphertext: String,
-        nonce: Uuid,            
+        nonce: Uuid,
         content_size_bytes: i32,
-        api_key_id: Uuid,        
+        api_key_id: Uuid,
         signature: String,
         envelope_public_key: String,
         require_proof_verification: bool,
