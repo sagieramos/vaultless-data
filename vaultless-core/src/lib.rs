@@ -15,7 +15,7 @@ pub use models::{
     billing::*,
     client::{
         AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
-        ClientPublic, RegisterClientRequest, RegisterClientResponse,
+        RegisterClientRequest, RegisterClientResponse,
     },
     client_token::*,
     message::*,

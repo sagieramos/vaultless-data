@@ -17,7 +17,7 @@ use crate::error::{Result, VaultlessError};
 // =============================================================================
 
 const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
-const CHALLENGE_EXPIRY_SECONDS: i64 = 300; // 5 minutes
+const CHALLENGE_EXPIRY_SECONDS: u64 = 300; // 5 minutes
 const IDENTIFIER_TTL_SECS: u64 = 600; // 10 minutes
 
 // =============================================================================
@@ -45,50 +45,31 @@ pub const MINIMAL_CLIENT_FIELDS: &str = "
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Client {
+    #[serde(skip_serializing)]
     pub id: Uuid,
     pub identifier: Option<String>,
+    #[serde(skip_serializing)]
     pub client_identifier_hash: Option<String>,
     pub public_key: Option<String>,
+    #[serde(skip_serializing)]
     pub session_token_hash: Option<String>,
+     #[serde(skip_serializing)]
     pub session_expires_at: Option<DateTime<Utc>>,
     pub allow_anonymous_messages: bool,
     pub require_proof_verification: bool,
     pub is_active: bool,
+    #[serde(skip_serializing)]
     pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing)]
     pub updated_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub last_message_at: Option<DateTime<Utc>>,
-    pub metadata: Option<serde_json::Value>,
-    pub developer_id: Option<Uuid>,
-    pub api_key_id: Option<Uuid>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ClientPublic {
     #[serde(skip_serializing)]
-    pub id: Uuid,
-    pub identifier: Option<String>,
-    pub public_key: Option<String>,
-    pub allow_anonymous_messages: bool,
-    pub require_proof_verification: bool,
-    pub is_active: bool,
-    pub last_seen_at: Option<DateTime<Utc>>,
-    pub last_message_at: Option<DateTime<Utc>>,
-}
-
-impl From<Client> for ClientPublic {
-    fn from(c: Client) -> Self {
-        Self {
-            id: c.id,
-            identifier: c.identifier,
-            public_key: c.public_key,
-            allow_anonymous_messages: c.allow_anonymous_messages,
-            require_proof_verification: c.require_proof_verification,
-            is_active: c.is_active,
-            last_seen_at: c.last_seen_at,
-            last_message_at: c.last_message_at,
-        }
-    }
+    pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing)]
+    pub developer_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub api_key_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -131,16 +112,27 @@ pub struct RegisterClientResponse {
     pub expires_at: DateTime<Utc>,
 }
 
+// =============================================================================
+// MODIFICATION 1: Added `challenge` field
+// =============================================================================
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AuthenticateClientRequest {
-    pub client_identifier: String,
+    pub client_identifier_hash: Option<String>,
+    pub identifier: Option<String>,
+    pub public_key: Option<String>,
 
-    /// Optional: signed challenge for enhanced security
-    pub challenge_signature: Option<String>,
+    /// The original Base64-encoded challenge string received from the server.
+    #[validate(length(min = 32))]
+    pub challenge: String,
+
+    /// The Base64-encoded signature of the `challenge`.
+    #[validate(length(min = 32))]
+    pub challenge_signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticateClientResponse {
+    #[serde(skip_serializing)]
     pub client_id: Uuid,
     pub session_token: String,
     pub expires_at: DateTime<Utc>,
@@ -156,6 +148,11 @@ pub struct AuthenticationChallenge {
 // Cache key for looking up a client by session token hash
 pub fn cache_client_session_key(session_hash: &str) -> String {
     cache_key!("client", "session", session_hash)
+}
+
+// Cache key for storing a temporary authentication challenge
+pub fn cache_auth_challenge_key(challenge_hash: &str) -> String {
+    cache_key!("auth_challenge", challenge_hash)
 }
 
 // =============================================================================
@@ -180,7 +177,6 @@ impl Client {
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         // --- Enforce mandatory fields ---
-        // We check for all required fields first and unwrap them or return an error.
         let pubkey = input
             .public_key
             .ok_or_else(|| VaultlessError::Validation("public_key is required.".to_string()))?;
@@ -314,8 +310,6 @@ impl Client {
         })?;
 
         // --- Post-insert: cache canonical and aliases in Redis (if present) ---
-        // This logic remains correct as it reads from the `client` struct
-        // --- Post-insert: cache canonical and aliases in Redis (if present) ---
         if let Some(redis_pool) = &redis {
             let _ = Self::cache_to_redis(redis_pool, &client).await;
         }
@@ -327,68 +321,127 @@ impl Client {
         })
     }
 
+    // =============================================================================
+    // MODIFICATION 2: `authenticate` function updated
+    // - Added `redis` parameter
+    // - Added challenge consumption (GETDEL)
+    // - Fixed `verify_signature` call
+    // - Added old session cache invalidation
+    // =============================================================================
     /// Authenticate client by hashed identifier
     pub async fn authenticate<'c, E>(
         exec: E,
+        redis: Arc<RedisPool>,
         input: AuthenticateClientRequest,
     ) -> Result<AuthenticateClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        let client_identifier_hash = crypto::hash_content(input.client_identifier.as_bytes());
+        // --- 1. Atomically check and consume the challenge from Redis ---
+        let challenge_hash = crypto::hash_content(input.challenge.as_bytes());
+        let cache_key = cache_auth_challenge_key(&challenge_hash);
+        let mut conn = redis.get().await?;
 
-        let client = sqlx::query_as::<_, Client>(
-            r#"SELECT * FROM clients WHERE client_identifier_hash = $1"#,
-        )
-        .bind(&client_identifier_hash)
-        .fetch_optional(exec.clone())
-        .await?
+        // Use GETDEL: Get the value and delete the key atomically.
+        // If it returns None (null), the key didn't exist (invalid, expired, or replayed).
+        let challenge_check: Option<i32> = conn.get_del(&cache_key).await?;
+
+        if challenge_check.is_none() {
+            tracing::warn!(
+                "Authentication failed: invalid or expired challenge. Key: {}",
+                cache_key
+            );
+            return Err(VaultlessError::Unauthorized(
+                "Invalid or expired challenge".into(),
+            ));
+        }
+
+        // --- 2. Ensure at least one identifier is provided ---
+        if input.client_identifier_hash.is_none()
+            && input.identifier.is_none()
+            && input.public_key.is_none()
+        {
+            return Err(VaultlessError::Validation(
+                "Provide at least one of client_identifier_hash, identifier, or public_key".into(),
+            ));
+        }
+
+        // --- 3. Attempt to find the client ---
+        let client = if let Some(ref hash) = input.client_identifier_hash {
+            sqlx::query_as::<_, Client>(
+                r#"SELECT * FROM clients WHERE client_identifier_hash = $1 AND is_active = TRUE"#,
+            )
+            .bind(hash)
+            .fetch_optional(exec.clone())
+            .await?
+        } else if let Some(ref idf) = input.identifier {
+            sqlx::query_as::<_, Client>(
+                r#"SELECT * FROM clients WHERE identifier = $1 AND is_active = TRUE"#,
+            )
+            .bind(idf)
+            .fetch_optional(exec.clone())
+            .await?
+        } else if let Some(ref pk) = input.public_key {
+            sqlx::query_as::<_, Client>(
+                r#"SELECT * FROM clients WHERE public_key = $1 AND is_active = TRUE"#,
+            )
+            .bind(pk)
+            .fetch_optional(exec.clone())
+            .await?
+        } else {
+            None
+        }
         .ok_or_else(|| VaultlessError::NotFound("Client not found".to_string()))?;
 
+        // --- 4. Check if client is active ---
         if !client.is_active {
             return Err(VaultlessError::Unauthorized(
                 "Client is deactivated".to_string(),
             ));
         }
 
-        let is_new_session = client.session_expires_at.is_none_or(|exp| exp < Utc::now());
+        // --- 5. Verify the signed challenge ---
+        // We verify the *original challenge string* against the signature.
+        if !client.verify_signature(&input.challenge, &input.challenge_signature)? {
+            return Err(VaultlessError::Unauthorized(
+                "Invalid challenge signature".into(),
+            ));
+        }
 
-        let (session_token, expires_at) = if is_new_session {
-            let token = crypto::generate_secure_token::<32>()?;
-            let session_token = BASE64.encode(token);
-            let session_token_hash = crypto::hash_content(&token);
-            let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
+        // --- 6. Generate new session token (always fresh, no expiry check) ---
+        let old_session_hash = client.session_token_hash.clone(); // For cache invalidation
+        let token = crypto::generate_secure_token::<32>()?;
+        let session_token = BASE64.encode(token);
+        let session_token_hash = crypto::hash_content(&token);
+        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
-            sqlx::query(
-                r#"
-                UPDATE clients
-                SET session_token_hash = $1,
-                    session_expires_at = $2,
-                    last_seen_at = NOW()
-                WHERE id = $3
-                "#,
-            )
-            .bind(&session_token_hash)
-            .bind(expires_at)
-            .bind(client.id)
-            .execute(exec)
-            .await?;
+        sqlx::query(
+            r#"
+        UPDATE clients
+        SET session_token_hash = $1,
+            session_expires_at = $2,
+            last_seen_at = NOW()
+        WHERE id = $3
+        "#,
+        )
+        .bind(&session_token_hash)
+        .bind(expires_at)
+        .bind(client.id)
+        .execute(exec)
+        .await?;
 
-            (session_token, expires_at)
-        } else {
-            sqlx::query("UPDATE clients SET last_seen_at = NOW() WHERE id = $1")
-                .bind(client.id)
-                .execute(exec)
-                .await?;
-
-            (String::new(), client.session_expires_at.unwrap())
-        };
+        // --- IMPROVEMENT: Invalidate old session key from cache ---
+        if let Some(old_hash) = old_session_hash {
+            let old_cache_key = cache_client_session_key(&old_hash);
+            let _ = conn.del::<_, ()>(&old_cache_key).await;
+            tracing::debug!("Invalidated old session cache key: {}", old_cache_key);
+        }
 
         Ok(AuthenticateClientResponse {
             client_id: client.id,
             session_token,
             expires_at,
-            is_new_session,
+            is_new_session: true,
         })
     }
 
@@ -397,7 +450,7 @@ impl Client {
         exec: E,
         redis: Option<Arc<RedisPool>>,
         session_token: &str,
-    ) -> Result<ClientPublic>
+    ) -> Result<Client>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -411,10 +464,10 @@ impl Client {
         if let Some(redis_pool) = &redis
             && let Ok(mut conn) = redis_pool.get().await
             && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
-            && let Ok(public_client) = serde_json::from_str::<ClientPublic>(&cached_json)
+            && let Ok(cached_client) = serde_json::from_str::<Client>(&cached_json)
         {
             tracing::debug!("Cache hit for client session");
-            return Ok(public_client);
+            return Ok(cached_client);
         }
 
         // --- 2. Database Lookup ---
@@ -431,16 +484,16 @@ impl Client {
         .await?
         .ok_or_else(|| VaultlessError::Unauthorized("Invalid or expired session".to_string()))?;
 
-        let public_client = ClientPublic::from(&client);
+        let client_clone = client.clone();
 
         // --- 3. Write-Back to Redis ---
         if let Some(redis_pool) = &redis
             && let Ok(mut conn) = redis_pool.get().await
-            && let Some(expiry) = client.session_expires_at
+            && let Some(expiry) = client_clone.session_expires_at
         {
             let ttl_secs = (expiry - Utc::now()).num_seconds().max(0);
             if ttl_secs > 0 {
-                let serialized = serde_json::to_string(&public_client)?;
+                let serialized = serde_json::to_string(&client_clone)?;
                 if let Err(e) = conn
                     .set_ex::<_, _, ()>(&cache_key, serialized, ttl_secs as u64)
                     .await
@@ -450,7 +503,7 @@ impl Client {
             }
         }
 
-        Ok(public_client)
+        Ok(client_clone)
     }
 
     /// Log out a client by clearing session
@@ -556,12 +609,31 @@ impl Client {
         Ok(())
     }
 
-    /// Generate a temporary authentication challenge (5 min)
-    pub fn generate_challenge() -> Result<AuthenticationChallenge> {
+    // =============================================================================
+    // MODIFICATION 3: Renamed and implemented `generate_and_cache_challenge`
+    // =============================================================================
+    /// Generate a temporary authentication challenge, cache its hash, and return it.
+    pub async fn generate_and_cache_challenge(
+        redis: Arc<RedisPool>,
+    ) -> Result<AuthenticationChallenge> {
         let raw_bytes: [u8; 32] = crypto::generate_secure_token::<32>()?;
+        let challenge_string = BASE64.encode(raw_bytes);
+        let expires_at = Utc::now() + Duration::seconds(CHALLENGE_EXPIRY_SECONDS as i64);
+
+        // Hash the challenge for storage
+        let challenge_hash = crypto::hash_content(challenge_string.as_bytes());
+        let cache_key = cache_auth_challenge_key(&challenge_hash);
+
+        // Get connection and cache it
+        let mut conn = redis.get().await?;
+        conn.set_ex::<_, _, ()>(&cache_key, "1", CHALLENGE_EXPIRY_SECONDS)
+            .await?;
+
+        tracing::debug!("Cached new auth challenge. Key: {}", cache_key);
+
         Ok(AuthenticationChallenge {
-            challenge: BASE64.encode(raw_bytes),
-            expires_at: Utc::now() + Duration::seconds(CHALLENGE_EXPIRY_SECONDS),
+            challenge: challenge_string, // Return the *original* string
+            expires_at,
         })
     }
 
@@ -611,7 +683,7 @@ impl Client {
         public_key: Option<&str>,
         identifier: Option<&str>,
         client_identifier: Option<&str>,
-    ) -> Result<Option<ClientPublic>>
+    ) -> Result<Option<Client>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -642,11 +714,10 @@ impl Client {
                 {
                     let client_cache_key = cache_key!("client", "id", client_id);
                     if let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await
-                        && let Ok(public_client) =
-                            serde_json::from_str::<ClientPublic>(&cached_json)
+                        && let Ok(cached_client) = serde_json::from_str::<Client>(&cached_json)
                     {
                         tracing::debug!("Cache hit for client_id {}", client_id);
-                        return Ok(Some(public_client));
+                        return Ok(Some(cached_client));
                     }
                 }
             }
@@ -685,23 +756,20 @@ impl Client {
             Some(c) => c,
             None => return Ok(None),
         };
-        let public_client = ClientPublic::from(&client);
 
         // --- 3. Cache aliases + canonical client ---
-
         if let Some(redis_pool) = &redis {
             let _ = Self::cache_to_redis(redis_pool, &client).await;
         }
 
-        Ok(Some(public_client))
+        Ok(Some(client))
     }
 
     async fn cache_to_redis(redis_pool: &Arc<RedisPool>, client: &Client) -> Result<()> {
         if let Ok(mut conn) = redis_pool.get().await {
             let ttl_secs = 24 * 60 * 60; // 24 hours
-            let client_pub = ClientPublic::from(client);
 
-            let serialized = serde_json::to_string(&client_pub)
+            let serialized = serde_json::to_string(&client)
                 .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
             let mut pipe = redis::pipe();
@@ -731,7 +799,6 @@ impl Client {
 
             // Alias: client_identifier_hash
             if let Some(ref cid_hash_value) = client.client_identifier_hash {
-                // Inside this block, `cid_hash_value` has type &String (which implements ToString)
                 pipe.cmd("SETEX")
                     .arg(cache_key!(
                         "client",
@@ -751,20 +818,5 @@ impl Client {
             }
         }
         Ok(())
-    }
-}
-
-impl From<&Client> for ClientPublic {
-    fn from(c: &Client) -> Self {
-        Self {
-            id: c.id,
-            identifier: c.identifier.clone(),
-            public_key: c.public_key.clone(),
-            allow_anonymous_messages: c.allow_anonymous_messages,
-            require_proof_verification: c.require_proof_verification,
-            is_active: c.is_active,
-            last_seen_at: c.last_seen_at,
-            last_message_at: c.last_message_at,
-        }
     }
 }

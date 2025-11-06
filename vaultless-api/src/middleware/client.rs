@@ -1,11 +1,11 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::{Client, ClientPublic};
+use vaultless_core::Client;
 
 /// Extractor for authenticated clients
 /// Usage: `async fn handler(AuthenticatedClient(client): AuthenticatedClient)`
-pub struct AuthenticatedClient(pub ClientPublic);
+pub struct AuthenticatedClient(pub Client);
 
 impl<S> FromRequestParts<S> for AuthenticatedClient
 where
@@ -47,7 +47,7 @@ where
 
 /// Extractor with token included (for logout operations)
 pub struct AuthenticatedClientWithToken {
-    pub client: ClientPublic,
+    pub client: Client,
     pub token: String,
 }
 
@@ -90,7 +90,7 @@ where
 }
 
 /// Optional extractor - doesn't fail if no auth header present
-pub struct OptionalAuthenticatedClient(pub Option<ClientPublic>);
+pub struct OptionalAuthenticatedClient(pub Option<Client>);
 
 impl<S> FromRequestParts<S> for OptionalAuthenticatedClient
 where
