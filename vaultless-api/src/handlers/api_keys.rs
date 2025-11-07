@@ -90,7 +90,7 @@ pub async fn create_api_key(
     // Hash the key for storage
     let key_hash = vaultless_core::crypto::hash_content(api_key_string.as_bytes());
     // Key prefix for display (first 8 chars after vlt_live_)
-    let key_prefix = format!("vlt_live_{}", &key_suffix[..8]);
+    let key_prefix = format!("vlt_live_{}", &key_suffix[..12]);
     // Create API key in database
     let tier = payload.tier.unwrap_or(SubscriptionTier::Free);
     let api_key = ApiKey::create(

@@ -1,8 +1,8 @@
 use crate::{
-    handlers::user_auth::*,
+    handlers::user::*,
     middleware::{
         rate_limit::{rate_limit_by_api_key, rate_limit_by_ip},
-        user_auth::require_user_auth,
+        user::require_user_auth,
     },
     state::AppState,
 };

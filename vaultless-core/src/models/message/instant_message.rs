@@ -115,7 +115,7 @@ pub struct Message {
     pub group_id: Option<Uuid>,
     pub is_group_message: bool,
     // Non-schema fields (stored in Redis JSON only; not persisted to DB)
-    pub signature: String,
+    pub signature: Option<String>,
     pub envelope_public_key: String,
     pub file_id: Option<Uuid>,
 }
@@ -210,7 +210,7 @@ impl InstantMessage {
         nonce: Uuid,
         content_size_bytes: i32,
         api_key_id: Uuid,
-        signature: String,
+        signature: Option<String>,
         envelope_public_key: String,
         require_proof_verification: bool,
     ) -> Result<Uuid> {
@@ -445,7 +445,7 @@ impl InstantMessage {
             if let Some(data) = data_opt {
                 match serde_json::from_str::<Message>(&data) {
                     Ok(mut msg) => {
-                        // CRITICAL: Verify signature BEFORE any state changes (conditional on require_proof_verification)
+                        // Verify signature BEFORE any state changes (conditional on require_proof_verification)
                         if !self.verify_envelope_soft(&msg).await {
                             error!(
                                 msg_id = %msg_id,
@@ -679,8 +679,12 @@ impl InstantMessage {
             created_at: &msg.created_at,
             require_proof_verification: msg.require_proof_verification,
         };
+        let Some(signature_str) = msg.signature.as_deref() else {
+            tracing::error!("Message signature is missing but required for verification.");
+            return false;
+        };
         match serde_json::to_vec(&envelope) {
-            Ok(bytes) => match verify_signature(&bytes, &msg.signature, &msg.envelope_public_key) {
+            Ok(bytes) => match verify_signature(&bytes, signature_str, &msg.envelope_public_key) {
                 Ok(()) => {
                     if let Err(e) = increment_proof_verified_pool(
                         &self.redis_pool,
@@ -1036,7 +1040,11 @@ async fn verify_envelope_soft_static(
     config: &MetricsConfig, // Passed in for metrics configuration
 ) -> bool {
     // 1. Check if verification is required
-    if !msg.require_proof_verification || msg.signature.is_empty() {
+    let Some(signature_str) = msg.signature.as_deref() else {
+        tracing::error!("Message signature is missing but required for verification.");
+        return false;
+    };
+    if !msg.require_proof_verification || signature_str.is_empty() {
         return true;
     }
     // 2. Build the envelope struct for serialization
@@ -1052,9 +1060,8 @@ async fn verify_envelope_soft_static(
     };
     // 3. Serialize and verify the signature
     if let Ok(bytes) = serde_json::to_vec(&envelope) {
-        if verify_signature(&bytes, &msg.signature, &msg.envelope_public_key).is_ok() {
+        if verify_signature(&bytes, &signature_str, &msg.envelope_public_key).is_ok() {
             // Signature SUCCESSFUL. Call the proof verified metrics function.
-            // We use explicit error handling (if let Err) to avoid propagating the error (no '?').
             if let Err(e) = increment_proof_verified_pool(redis_pool, msg.api_key_id, config).await
             {
                 // Log the metrics failure, but the core verification is still valid.

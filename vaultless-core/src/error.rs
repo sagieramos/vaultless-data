@@ -32,6 +32,11 @@ pub enum VaultlessError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    // ⭐ ADDED MISSING VARIANT HERE ⭐
+    #[error("Missing required field: {0}")]
+    MissingRequiredField(String),
+    // ⭐ END ADDED MISSING VARIANT ⭐
+
     // =========================================================================
     // Authentication / Authorization errors
     // =========================================================================
@@ -111,6 +116,7 @@ impl VaultlessError {
             VaultlessError::Validation(_)
                 | VaultlessError::BadRequest(_)
                 | VaultlessError::InvalidInput(_)
+                | VaultlessError::MissingRequiredField(_) // ⭐ ADDED HERE ⭐
                 | VaultlessError::Unauthorized(_)
                 | VaultlessError::EmailNotVerified(_)
                 | VaultlessError::Forbidden(_)
@@ -142,12 +148,13 @@ impl VaultlessError {
             VaultlessError::RateLimitExceeded => 429,
             VaultlessError::Validation(_)
             | VaultlessError::BadRequest(_)
-            | VaultlessError::InvalidInput(_) => 400,
+            | VaultlessError::InvalidInput(_)
+            | VaultlessError::MissingRequiredField(_) => 400,
             VaultlessError::Duplicate(_) | VaultlessError::Conflict(_) => 409,
             VaultlessError::MessageExpired => 410,
             VaultlessError::MessageAccessLimitReached => 410,
             VaultlessError::Timeout(_) => 408,
-            VaultlessError::Serialization(_) => 500,
+            VaultlessError::Serialization(_) => 500, // Typically 400 if it's external JSON, but 500 is fine if it's internal
             _ => 500,
         }
     }
@@ -171,9 +178,15 @@ impl From<RedisError> for VaultlessError {
     }
 }
 
-// And add this implementation:
+/// Converts a serde_json::Error. If the error is due to an IO error, it's Internal;
+/// otherwise, it's treated as a BadRequest.
 impl From<SerdeJsonError> for VaultlessError {
     fn from(e: SerdeJsonError) -> Self {
-        VaultlessError::Internal(format!("Serialization error: {}", e))
+        if e.is_io() {
+            VaultlessError::Internal(format!("Serialization IO error: {}", e))
+        } else {
+            // Treat user-provided invalid JSON (parsing error) as a client error (400)
+            VaultlessError::BadRequest(format!("Invalid JSON format: {}", e))
+        }
     }
 }

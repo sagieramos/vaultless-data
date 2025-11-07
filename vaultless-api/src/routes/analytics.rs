@@ -2,7 +2,7 @@ use crate::{
     handlers::analytics::*,
     middleware::{
         rate_limit::rate_limit_endpoint,
-        user_auth::{require_api_key_ownership, require_user_auth},
+        user::{require_api_key_ownership, require_user_auth},
     },
     state::AppState,
 };
@@ -22,7 +22,7 @@ pub fn analytics_routes(state: AppState) -> Router<AppState> {
         .finish()
         .unwrap();
 
-    let analytics_router = Router::new()
+    Router::new()
         // GET routes for fetching data
         .route("/dashboard", get(get_dashboard))
         .route("/usage/timeseries", get(get_usage_timeseries))
@@ -52,8 +52,5 @@ pub fn analytics_routes(state: AppState) -> Router<AppState> {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_endpoint,
-        ));
-
-    // Nest the fully configured router under the /analytics prefix
-    Router::new().nest("/analytics", analytics_router)
+        ))
 }

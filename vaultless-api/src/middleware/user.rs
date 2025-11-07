@@ -16,6 +16,56 @@ use crate::{
 
 use crate::config::AuthHeader;
 
+use axum::{
+    extract::{FromRequestParts},
+    http::request::Parts,
+};
+
+use std::sync::Arc;
+
+/// Extractor for authenticated user session
+pub struct AuthenticatedUser(pub SessionData);
+
+impl<S> FromRequestParts<S> for AuthenticatedUser
+where
+    S: Send + Sync,
+    AppState: axum::extract::FromRef<S>,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        // Extract Authorization header
+        let headers = &parts.headers;
+        let auth_header = headers
+            .get("Authorization")
+            .ok_or_else(|| ApiError::unauthorized("Missing Authorization header"))?
+            .to_str()
+            .map_err(|_| ApiError::unauthorized("Invalid Authorization header"))?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err(ApiError::unauthorized(
+                "Invalid Authorization format. Expected: Bearer <token>",
+            ));
+        }
+
+        let token = auth_header.trim_start_matches("Bearer ").trim();
+
+        if token.is_empty() {
+            return Err(ApiError::unauthorized("Empty bearer token"));
+        }
+
+        // Get TokenService from app state
+        let app_state: AppState = axum::extract::FromRef::from_ref(state);
+        let token_service = TokenService::new(app_state.db.clone(), app_state.redis_pool);
+
+        // Verify token and get session
+        let session = token_service.verify_access_token(token).await?;
+
+        Ok(AuthenticatedUser(session))
+    }
+}
+
+
 /// Extract Bearer token from Authorization header
 fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     let auth_header = headers

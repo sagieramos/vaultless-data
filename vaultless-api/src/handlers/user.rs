@@ -4,13 +4,14 @@ use axum::{
     extract::{ConnectInfo, State},
     http::StatusCode,
 };
+use serde_json::json;
 use std::net::SocketAddr;
 use validator::Validate;
 use vaultless_core::models::user::User;
 
 use crate::{
-    middleware::error::ApiError,
-    services::token::{SessionData, TokenService},
+    middleware::{error::ApiError, user::AuthenticatedUser},
+    services::token::{TokenService},
     state::AppState,
 };
 
@@ -163,21 +164,19 @@ pub async fn resend_verification_email(
     State(state): State<AppState>,
     Json(req): Json<ResendVerificationRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let user = User::resend_verification_token(&state.db, &req.email)
+    let (email, token) = User::resend_verification_token(&state.db, &req.email)
         .await
         .map_err(ApiError::from)?;
 
     // TODO: send email notification using your email service
     tracing::info!(
-        user_id = %user.id,
-        email = %user.email,
-        // secure: do not log url in production logs
-        verification_url = "GET /verify-email?token=[redacted]"
+        email = %email,
+        token = %token
     );
 
     Ok(Json(serde_json::json!({
         "message": "Verification email resent successfully",
-        "email": user.email,
+        "email": email,
     })))
 }
 
@@ -207,7 +206,7 @@ pub async fn refresh_token(
 
 pub async fn logout(
     State(state): State<AppState>,
-    session: SessionData,
+    AuthenticatedUser(session): AuthenticatedUser
 ) -> Result<Json<LogoutResponse>, ApiError> {
     let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
@@ -237,38 +236,26 @@ pub async fn logout(
 pub async fn verify_email_get(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    match params.get("token") {
-        Some(token) => match User::verify_email(&state.db, token).await {
-            Ok(user) => {
-                tracing::info!(
-                    user_id = %user.id,
-                    email = %user.email,
-                    "Email verified successfully via GET"
-                );
-                (
-                    StatusCode::OK,
-                    Html(format!(
-                        "<h2>Email verified successfully for {}</h2>",
-                        user.email
-                    )),
-                )
-            }
-            Err(err) => {
-                tracing::warn!("Email verification failed: {:?}", err);
-                (
-                    StatusCode::BAD_REQUEST,
-                    Html("<h2>Invalid or expired verification link.</h2>".to_string()),
-                )
-            }
-        },
-        None => (
-            StatusCode::BAD_REQUEST,
-            Html("<h2>Missing verification token.</h2>".to_string()),
-        ),
-    }
-}
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = params
+        .get("token")
+        .ok_or_else(|| ApiError::bad_request("Missing verification token"))?;
 
+    let user = User::verify_email(&state.db, token)
+        .await
+        .map_err(ApiError::from)?;
+
+    tracing::info!(
+        user_id = %user.id,
+        email = %user.email,
+        "Email verified successfully via GET"
+    );
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": format!("Email verified successfully for {}", user.email),
+    })))
+}
 /// ============================================================================
 /// POST HANDLER (For API / Mobile clients)
 /// ============================================================================
@@ -368,7 +355,7 @@ pub async fn reset_password(
 
 pub async fn get_current_user(
     State(state): State<AppState>,
-    session: SessionData,
+    AuthenticatedUser(session): AuthenticatedUser,
 ) -> Result<Json<CurrentUserResponse>, ApiError> {
     let user_id = session
         .user_id

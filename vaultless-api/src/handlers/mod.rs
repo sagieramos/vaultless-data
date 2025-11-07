@@ -4,6 +4,6 @@ pub mod api_keys;
 pub mod client;
 pub mod dto;
 pub mod instant_message;
-pub mod user_auth;
+pub mod user;
 // pub mod proofs;
 // Re-export message handlers

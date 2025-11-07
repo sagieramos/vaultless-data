@@ -9,6 +9,7 @@ use validator::Validate;
 
 use crate::middleware::error::ApiError;
 use crate::{AppState, middleware::client::AuthenticatedClient};
+use vaultless_core::models::Client;
 use vaultless_core::models::instant_message::{Message, ReadReceipt};
 
 // =============================================================================
@@ -17,9 +18,8 @@ use vaultless_core::models::instant_message::{Message, ReadReceipt};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct SendMessageRequest {
-    /// Recipient client ID
-    pub recipient_client_id: Uuid,
-
+    pub recipient_identifier: Option<String>,
+    pub recipient_pubkey: Option<String>,
     /// Encrypted message content (base64 or hex)
     #[validate(length(min = 1, max = 1048576))] // 1MB max
     pub ciphertext: String,
@@ -27,20 +27,9 @@ pub struct SendMessageRequest {
     /// Nonce for encryption
     pub nonce: Uuid,
 
-    /// Size of the original content in bytes
-    #[validate(range(min = 1, max = 10485760))] // 10MB max
-    pub content_size_bytes: i32,
-
-    /// API key ID for rate limiting and quotas
-    pub api_key_id: Uuid,
-
     /// Ed25519/P-256 signature of envelope
     #[validate(length(min = 64, max = 256))]
-    pub signature: String,
-
-    /// Public key used for signature verification
-    #[validate(length(min = 32, max = 256))]
-    pub envelope_public_key: String,
+    pub signature: Option<String>,
 
     /// Whether to require proof verification
     pub require_proof_verification: bool,
@@ -50,12 +39,6 @@ pub struct SendMessageRequest {
 pub struct FetchMessagesQuery {
     /// Optional limit (defaults to service max)
     pub limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MarkReadRequest {
-    /// Message ID to mark as read
-    pub message_id: Uuid,
 }
 
 // =============================================================================
@@ -72,43 +55,8 @@ pub struct SendMessageResponse {
 #[derive(Debug, Serialize)]
 pub struct FetchMessagesResponse {
     pub success: bool,
-    pub messages: Vec<MessagePublic>,
+    pub messages: Vec<Message>,
     pub count: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct MessagePublic {
-    pub id: Uuid,
-    pub ciphertext: String,
-    pub nonce: Uuid,
-    pub content_type: Option<String>,
-    pub content_size_bytes: i32,
-    pub created_at: String,
-    pub expires_at: String,
-    pub sender_client_id: Uuid,
-    pub recipient_client_id: Uuid,
-    pub is_group_message: bool,
-    pub signature: String,
-    pub envelope_public_key: String,
-}
-
-impl From<Message> for MessagePublic {
-    fn from(msg: Message) -> Self {
-        Self {
-            id: msg.id,
-            ciphertext: msg.ciphertext,
-            nonce: msg.nonce,
-            content_type: msg.content_type,
-            content_size_bytes: msg.content_size_bytes,
-            created_at: msg.created_at.to_rfc3339(),
-            expires_at: msg.expires_at.to_rfc3339(),
-            sender_client_id: msg.sender_client_id,
-            recipient_client_id: msg.recipient_client_id,
-            is_group_message: msg.is_group_message,
-            signature: msg.signature,
-            envelope_public_key: msg.envelope_public_key,
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -120,27 +68,8 @@ pub struct MarkReadResponse {
 #[derive(Debug, Serialize)]
 pub struct ReadReceiptsResponse {
     pub success: bool,
-    pub receipts: Vec<ReadReceiptPublic>,
+    pub receipts: Vec<ReadReceipt>,
     pub count: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ReadReceiptPublic {
-    pub id: Uuid,
-    pub message_id: Uuid,
-    pub client_id: Uuid,
-    pub read_at: String,
-}
-
-impl From<ReadReceipt> for ReadReceiptPublic {
-    fn from(receipt: ReadReceipt) -> Self {
-        Self {
-            id: receipt.id,
-            message_id: receipt.message_id,
-            client_id: receipt.client_id,
-            read_at: receipt.read_at.to_rfc3339(),
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -154,54 +83,67 @@ pub struct HealthStatusResponse {
 // =============================================================================
 
 /// Send an instant message (P2P)
-/// POST /api/messages/send
+/// POST /api/messages/send#
 #[axum::debug_handler]
 pub async fn send_message(
     State(state): State<AppState>,
-    AuthenticatedClient(client): AuthenticatedClient,
-    Json(input): Json<SendMessageRequest>,
+    AuthenticatedClient(sender): AuthenticatedClient,
+    Json(mut input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
+    // --- 1. Compute content size server-side ---
+    let content_size_bytes = input.ciphertext.as_bytes().len() as i32;
+
     // Validate input
     input
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()).with_code("VALIDATION_ERROR"))?;
 
+    // --- 2. Resolve recipient ---
+    let recipient = Client::resolve_client(
+        &*state.db,
+        Some(state.redis_pool.clone()),
+        input.recipient_pubkey.as_deref(), // public key takes priority
+        input.recipient_identifier.as_deref(),
+        None,
+    )
+    .await?
+    .ok_or_else(|| ApiError::not_found("Recipient client not found"))?;
+
+    let sender_pubkey = recipient.public_key.ok_or_else(|| {
+        tracing::error!("Sender public key not found in database");
+        ApiError::bad_request("Sender public key not found")
+    })?;
+
     tracing::info!(
-        sender = %client.id,
-        recipient = %input.recipient_client_id,
-        size = input.content_size_bytes,
+        sender = %sender.id,
+        recipient = %recipient.id,
+        size = content_size_bytes,
         "Sending instant message"
     );
 
-    // Send message through InstantMessage service
+    // --- 3. Send message ---
     let message_id = state
         .instant_message
         .send_instant_message(
-            client.id,
-            input.recipient_client_id,
-            input.ciphertext,
+            sender.id,
+            recipient.id,
+            input.ciphertext.clone(),
             input.nonce,
-            input.content_size_bytes,
-            input.api_key_id,
-            input.signature,
-            input.envelope_public_key,
+            content_size_bytes,
+            sender.id,
+            input.signature.clone(),
+            sender_pubkey,
             input.require_proof_verification,
         )
         .await
         .map_err(|e| {
             tracing::error!(
-                sender = %client.id,
+                sender = %sender.id,
                 error = %e,
                 "Failed to send message"
             );
             ApiError::from(e)
         })?;
-
-    tracing::info!(
-        message_id = %message_id,
-        sender = %client.id,
-        "Message sent successfully"
-    );
 
     Ok(Json(SendMessageResponse {
         success: true,
@@ -235,7 +177,6 @@ pub async fn fetch_inbox(
         })?;
 
     let count = messages.len();
-    let public_messages: Vec<MessagePublic> = messages.into_iter().map(Into::into).collect();
 
     tracing::info!(
         recipient = %client.id,
@@ -245,7 +186,7 @@ pub async fn fetch_inbox(
 
     Ok(Json(FetchMessagesResponse {
         success: true,
-        messages: public_messages,
+        messages,
         count,
     }))
 }
@@ -318,11 +259,10 @@ pub async fn get_read_receipts(
         })?;
 
     let count = receipts.len();
-    let public_receipts: Vec<ReadReceiptPublic> = receipts.into_iter().map(Into::into).collect();
 
     Ok(Json(ReadReceiptsResponse {
         success: true,
-        receipts: public_receipts,
+        receipts,
         count,
     }))
 }
