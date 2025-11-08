@@ -9,8 +9,11 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::crypto;
-use crate::error::{Result, VaultlessError};
+use crate::{
+    crypto,
+    error::{Result, VaultlessError},
+    models::Application,
+};
 
 // =============================================================================
 // Constants
@@ -53,7 +56,7 @@ pub struct Client {
     pub public_key: Option<String>,
     #[serde(skip_serializing)]
     pub session_token_hash: Option<String>,
-     #[serde(skip_serializing)]
+    #[serde(skip_serializing)]
     pub session_expires_at: Option<DateTime<Utc>>,
     pub allow_anonymous_messages: bool,
     pub require_proof_verification: bool,
@@ -70,6 +73,8 @@ pub struct Client {
     pub developer_id: Option<Uuid>,
     #[serde(skip_serializing)]
     pub api_key_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub application_id: Option<Uuid>, // NEW: Links client to the application they registered through
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -112,9 +117,6 @@ pub struct RegisterClientResponse {
     pub expires_at: DateTime<Utc>,
 }
 
-// =============================================================================
-// MODIFICATION 1: Added `challenge` field
-// =============================================================================
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AuthenticateClientRequest {
     pub client_identifier_hash: Option<String>,
@@ -160,23 +162,45 @@ pub fn cache_auth_challenge_key(challenge_hash: &str) -> String {
 // =============================================================================
 
 impl Client {
-    /// Register new client (idempotent via unique hash)
+    /// Register new client with application support (idempotent via unique hash)
     pub async fn register<'c, E>(
         exec: E,
-        input: RegisterClientRequest,
-        developer_id: Option<Uuid>,
-        api_key_id: Option<Uuid>,
         redis: Option<Arc<RedisPool>>,
+        input: RegisterClientRequest,
+        publishable_key: String,
     ) -> Result<RegisterClientResponse>
     where
-        E: Executor<'c, Database = Postgres>,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
-        // Validate basic struct constraints first (e.g., field lengths)
+        // --- Step 1: Look up application by publishable key ---
+        let app =
+            Application::find_by_publishable_key(exec.clone(), redis.clone(), &publishable_key)
+                .await
+                .map_err(|e| {
+                    tracing::warn!("Invalid publishable key: {}", publishable_key);
+                    VaultlessError::Unauthorized(format!("Invalid publishable key: {}", e))
+                })?;
+
+        // Verify application is active
+        if !app.is_active {
+            return Err(VaultlessError::Unauthorized(
+                "Application is deactivated".into(),
+            ));
+        }
+
+        tracing::debug!(
+            application_id = %app.id,
+            application_name = %app.name,
+            developer_id = %app.user_id,
+            "Client registering through application"
+        );
+
+        // --- Step 2: Validate basic struct constraints ---
         input
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
-        // --- Enforce mandatory fields ---
+        // --- Step 3: Enforce mandatory fields ---
         let pubkey = input
             .public_key
             .ok_or_else(|| VaultlessError::Validation("public_key is required.".to_string()))?;
@@ -189,7 +213,7 @@ impl Client {
             .signed_payload
             .ok_or_else(|| VaultlessError::Validation("signed_payload is required.".to_string()))?;
 
-        // --- Signature Verification (Now Mandatory) ---
+        // --- Step 4: Signature Verification (Mandatory) ---
         tracing::debug!("Verifying registration signature...");
         match crate::crypto::verify_signature(payload.as_bytes(), &signature, &pubkey) {
             Ok(()) => tracing::debug!("✅ Signature verification passed"),
@@ -201,7 +225,7 @@ impl Client {
             }
         }
 
-        // --- Nonce replay protection (if nonce present and redis provided) ---
+        // --- Step 5: Nonce replay protection ---
         if let (Some(nonce), Some(redis_pool)) = (input.nonce.as_ref(), &redis) {
             let nonce_key = cache_key!("client", "register_nonce", nonce);
 
@@ -251,10 +275,10 @@ impl Client {
             }
         }
 
-        // --- Optional: compute timestamp freshness check (if timestamp present) ---
+        // --- Step 6: Timestamp freshness check ---
         if let Some(ts) = input.timestamp {
             let now_unix = Utc::now().timestamp();
-            let skew_allowed = 60; // 5 minutes allowed drift
+            let skew_allowed = 300; // 5 minutes allowed drift
             if (ts - now_unix).abs() > skew_allowed {
                 return Err(VaultlessError::Validation(
                     "Timestamp is outside allowed time window".into(),
@@ -262,35 +286,36 @@ impl Client {
             }
         }
 
-        // --- Optional client_identifier hash ---
+        // --- Step 7: Compute client_identifier hash ---
         let client_identifier_hash = input
             .client_identifier
             .as_ref()
             .map(|ci| crypto::hash_content(ci.as_bytes()));
 
-        // --- Generate session token ---
+        // --- Step 8: Generate session token ---
         let token = crypto::generate_secure_token::<32>()?;
         let session_token = BASE64.encode(token);
         let session_token_hash = crypto::hash_content(&token);
         let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
-        // --- Insert into database ---
+        // --- Step 9: Insert into database with application references ---
         let client = sqlx::query_as::<_, Client>(
             r#"
-    INSERT INTO clients (
-        identifier,
-        client_identifier_hash,
-        public_key,
-        session_token_hash,
-        session_expires_at,
-        metadata,
-        developer_id,
-        api_key_id,
-        last_seen_at
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-    RETURNING *
-    "#,
+            INSERT INTO clients (
+                identifier,
+                client_identifier_hash,
+                public_key,
+                session_token_hash,
+                session_expires_at,
+                metadata,
+                developer_id,
+                api_key_id,
+                application_id,
+                last_seen_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            RETURNING *
+            "#,
         )
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
@@ -298,8 +323,9 @@ impl Client {
         .bind(&session_token_hash)
         .bind(session_expires_at)
         .bind(&input.metadata)
-        .bind(developer_id)
-        .bind(api_key_id)
+        .bind(app.user_id) // developer_id from application
+        .bind(app.secret_key_id) // api_key_id for billing/metrics
+        .bind(app.id) // application_id (NEW)
         .fetch_one(exec)
         .await
         .map_err(|e| match e {
@@ -309,7 +335,14 @@ impl Client {
             _ => VaultlessError::Database(e),
         })?;
 
-        // --- Post-insert: cache canonical and aliases in Redis (if present) ---
+        tracing::info!(
+            client_id = %client.id,
+            application_id = %app.id,
+            developer_id = %app.user_id,
+            "Client registered successfully"
+        );
+
+        // --- Step 10: Cache canonical and aliases in Redis ---
         if let Some(redis_pool) = &redis {
             let _ = Self::cache_to_redis(redis_pool, &client).await;
         }
@@ -321,13 +354,6 @@ impl Client {
         })
     }
 
-    // =============================================================================
-    // MODIFICATION 2: `authenticate` function updated
-    // - Added `redis` parameter
-    // - Added challenge consumption (GETDEL)
-    // - Fixed `verify_signature` call
-    // - Added old session cache invalidation
-    // =============================================================================
     /// Authenticate client by hashed identifier
     pub async fn authenticate<'c, E>(
         exec: E,
@@ -430,7 +456,7 @@ impl Client {
         .execute(exec)
         .await?;
 
-        // --- IMPROVEMENT: Invalidate old session key from cache ---
+        // --- Invalidate old session key from cache ---
         if let Some(old_hash) = old_session_hash {
             let old_cache_key = cache_client_session_key(&old_hash);
             let _ = conn.del::<_, ()>(&old_cache_key).await;
@@ -609,9 +635,6 @@ impl Client {
         Ok(())
     }
 
-    // =============================================================================
-    // MODIFICATION 3: Renamed and implemented `generate_and_cache_challenge`
-    // =============================================================================
     /// Generate a temporary authentication challenge, cache its hash, and return it.
     pub async fn generate_and_cache_challenge(
         redis: Arc<RedisPool>,

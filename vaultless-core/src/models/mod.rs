@@ -6,6 +6,7 @@ pub mod message;
 pub mod proof;
 pub mod usage;
 pub mod user;
+pub mod application;
 
 pub use api_key::{ApiKey, CreateApiKey};
 pub use billing::*;
@@ -17,3 +18,4 @@ pub use message::*;
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use usage::*;
 pub use user::{LoginAttempt, RefreshToken, User, UserSession};
+pub use application::{Application, CreateApplication};

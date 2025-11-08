@@ -292,7 +292,7 @@ CREATE TABLE api_keys (
     
     -- API key data
     key_hash VARCHAR(64) NOT NULL UNIQUE,               -- SHA-256 hash of the API key
-    key_prefix VARCHAR(8) NOT NULL,                    -- First 8 chars for identification (vlt_xxxxx...)
+    key_prefix VARCHAR(32) NOT NULL,                    -- First 8 chars for identification (vlt_xxxxx...)
     
     -- Subscription & Billing
     tier subscription_tier NOT NULL DEFAULT 'free',

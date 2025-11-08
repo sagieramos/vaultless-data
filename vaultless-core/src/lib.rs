@@ -12,6 +12,7 @@ pub use types::SubscriptionTier;
 pub use models::{
     ApiKey, CreateApiKey, CreateProof, Message, MessageProof, ProofVerificationResult,
     RefreshToken, User, UserSession, VerifyProofRequest,
+    application::{Application, CreateApplication},
     billing::*,
     client::{
         AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,

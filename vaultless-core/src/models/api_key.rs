@@ -26,7 +26,7 @@ const API_KEY_CACHE_TTL: u64 = 600; // 10 minutes
 const LAST_USED_WRITE_TTL: u64 = 300;
 const QUOTA_CACHE_TTL_SECONDS: u64 = 31 * 24 * 60 * 60; // ~31 days
 
-const PROJECTION: &str = "id, user_id, key_prefix, tier, monthly_message_quota, message_retention_seconds, description, scopes, is_active, created_at, expires_at, last_used_at, rate_limit_per_minute";
+const PROJECTION: &str = "id, user_id, key_prefix, key_hash, tier, monthly_message_quota, message_retention_seconds, description, scopes, is_active, created_at, expires_at, last_used_at, rate_limit_per_minute";
 
 // =============================================================================
 // Models
@@ -37,7 +37,8 @@ pub struct ApiKey {
     pub id: Uuid,
     pub user_id: Uuid,
     pub key_prefix: String,
-    // Note: key_hash is present in the DB but often omitted here for public safety reasons.
+    #[serde(skip_serializing)]
+    pub key_hash: String,
     pub tier: SubscriptionTier,
     pub monthly_message_quota: i32,
     pub message_retention_seconds: i32,
@@ -98,7 +99,10 @@ pub fn cache_key_last_used_write(id: Uuid) -> String {
     cache_key!("api_key", "last_used_write", id)
 }
 
-async fn update_last_used(pool: sqlx::PgPool, redis: Option<Arc<RedisPoolType>>, id: Uuid) {
+async fn update_last_used<'c, E>(exec: E, redis: Option<Arc<RedisPoolType>>, id: Uuid)
+where
+    E: Executor<'c, Database = Postgres> + Clone,
+{
     let month_key = cache_key_last_used_write(id);
     let mut proceed_with_db_write = true;
 
@@ -136,7 +140,7 @@ async fn update_last_used(pool: sqlx::PgPool, redis: Option<Arc<RedisPoolType>>,
     // --- 2. Database Update (Conditional Execution) ---
     if proceed_with_db_write
         && let Err(e) = sqlx::query!("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", id)
-            .execute(&pool)
+            .execute(exec)
             .await
     {
         tracing::error!(api_key_id = %id, error = %e, "Failed to update last_used_at");
@@ -202,11 +206,14 @@ impl ApiKey {
     }
 
     /// Finds API key by hash with Redis caching (TTL 10min) and rate-limited last_used_at update.
-    pub async fn find_by_hash(
-        pool: &sqlx::PgPool,
+    pub async fn find_by_hash<'c, E>(
+        exec: E,
         redis: Option<Arc<RedisPoolType>>,
         key_hash: String,
-    ) -> Result<ApiKey> {
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+    {
         let cache_key = cache_key_by_hash(&key_hash);
 
         // --- 1. Redis Cache Lookup ---
@@ -216,7 +223,7 @@ impl ApiKey {
             && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
         {
             // Fire-and-forget with pool clone
-            let pool_clone = pool.clone();
+            let pool_clone = exec.clone();
             let redis_clone = redis.clone();
             let id = api_key.id;
 
@@ -238,17 +245,16 @@ impl ApiKey {
             PROJECTION
         ))
         .bind(&key_hash)
-        .fetch_optional(pool)
+        .fetch_optional(exec.clone())
         .await?
         .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
 
         // Spawn background update
-        let pool_clone = pool.clone();
         let redis_clone = redis.clone();
         let id = api_key.id;
 
         tokio::spawn(async move {
-            update_last_used(pool_clone, redis_clone, id).await;
+            update_last_used(exec, redis_clone, id).await;
         });
 
         // --- 3. Cache Write ---
@@ -324,13 +330,16 @@ impl ApiKey {
         Ok(api_key)
     }
     /// Finds API key by full key (hashed internally) with caching and last_used_at update.
-    pub async fn find_by_api_key(
-        pool: &sqlx::PgPool,
+    pub async fn find_by_api_key<'c, E>(
+        exec: E,
         redis: Option<Arc<RedisPoolType>>,
         api_key: String,
-    ) -> Result<ApiKey> {
+    ) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+    {
         let key_hash = crate::crypto::hash_content(api_key.as_bytes());
-        Self::find_by_hash(pool, redis, key_hash).await
+        Self::find_by_hash(exec, redis, key_hash).await
     }
 
     /// Finds API key by ID with caching.
@@ -788,7 +797,7 @@ impl ApiKey {
     }
 
     /// Invalidate all caches for an API key (ID, Hash, and Quota)
-    async fn invalidate_cache(redis: Option<Arc<RedisPoolType>>, id: Uuid, key_hash: String) {
+    pub async fn invalidate_cache(redis: Option<Arc<RedisPoolType>>, id: Uuid, key_hash: String) {
         if let Some(redis) = redis {
             tokio::spawn(async move {
                 if let Ok(mut conn) = redis.get().await {

@@ -321,3 +321,5 @@ pub async fn get_usage_trends(pool: &PgPool, api_key_id: Uuid) -> Result<UsageTr
         trend: trend.to_string(),
     })
 }
+
+
