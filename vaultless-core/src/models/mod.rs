@@ -1,4 +1,5 @@
 pub mod api_key;
+pub mod app_model;
 pub mod billing;
 pub mod client;
 pub mod client_token;
@@ -6,9 +7,12 @@ pub mod message;
 pub mod proof;
 pub mod usage;
 pub mod user;
-pub mod application;
 
 pub use api_key::{ApiKey, CreateApiKey};
+pub use app_model::dto::{
+    Application, ApplicationValidation, ApplicationWithTier, CreateApplication,
+    CreateApplicationResponse,
+};
 pub use billing::*;
 pub use client::{
     AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
@@ -18,4 +22,3 @@ pub use message::*;
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use usage::*;
 pub use user::{LoginAttempt, RefreshToken, User, UserSession};
-pub use application::{Application, CreateApplication};

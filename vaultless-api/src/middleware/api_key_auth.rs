@@ -42,19 +42,13 @@ pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey,
 
     let key_hash = crypto::hash_content(api_key.as_bytes());
 
-    // --- FIX: Clone the owned DB pool value ---
-    let db_pool = state.db.clone();
-
-    // The Redis pool is already being handled correctly with an Arc wrapper.
-
-    // Look up in database (with core-level Redis caching)
-    let api_key_record = ApiKey::find_by_hash(&db_pool, Some(state.redis_pool.clone()), key_hash)
+    let api_key_record = ApiKey::find_by_hash(state.db.as_ref(), Some(state.redis_pool.clone()), key_hash)
         .await
         .map_err(ApiError::from)?;
 
     // Validate key is usable (e.g., active, not expired)
     api_key_record
-        .validate(db_pool.as_ref(), Some(state.redis_pool.clone()))
+        .validate(state.db.as_ref(), Some(state.redis_pool.clone()))
         .await
         .map_err(ApiError::from)?;
 

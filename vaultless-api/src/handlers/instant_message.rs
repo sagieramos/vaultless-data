@@ -88,7 +88,7 @@ pub struct HealthStatusResponse {
 pub async fn send_message(
     State(state): State<AppState>,
     AuthenticatedClient(sender): AuthenticatedClient,
-    Json(mut input): Json<SendMessageRequest>,
+    Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Compute content size server-side ---
     let content_size_bytes = input.ciphertext.as_bytes().len() as i32;

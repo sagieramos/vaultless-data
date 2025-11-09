@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     middleware::{
-        client::{AuthenticatedClient, AuthenticatedClientWithToken},
+        client::{AuthenticatedClient, AuthenticatedClientWithToken, XPublishableKey},
         error::ApiError,
     },
     state::AppState,
 };
 use vaultless_core::{
-    Application, AuthenticateClientRequest, AuthenticateClientResponse, Client,
+    AuthenticateClientRequest, AuthenticateClientResponse, Client,
     RegisterClientRequest, RegisterClientResponse,
 };
 
@@ -56,22 +56,19 @@ pub struct ChallengeResponse {
 #[axum::debug_handler]
 pub async fn register_client(
     State(state): State<AppState>,
-    TypedHeader(publishable_key): TypedHeader<XPublishableKey>, 
+    XPublishableKey(publishable_key): XPublishableKey,
     Json(input): Json<RegisterClientRequest>,
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
     tracing::info!("Client registration attempt");
-
-    let app = Application::find_by_publishable_key(
-        state.db.as_ref(), // Changes from &state.db to state.db.as_ref()
-        Some(state.redis.clone()),
-        &publishable_key.0,
-    )
-    .await?;
-
     // Call secure register with Redis (for nonce & caching)
-    let response = Client::register(state.db.as_ref(), Some(state.redis_pool.clone()), input)
-        .await
-        .map_err(ApiError::from)?;
+    let response = Client::register(
+        state.db.as_ref(),
+        Some(state.redis_pool.clone()),
+        input,
+        publishable_key,
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     tracing::info!("Client registered successfully: {}", response.client_id);
 
@@ -247,27 +244,4 @@ pub async fn deactivate_client(
         success: true,
         message: "Client deactivated successfully".to_string(),
     }))
-}
-
-// Custom header extractor
-#[derive(Debug, Clone)]
-pub struct XPublishableKey(pub String);
-
-impl<S> axum::extract::FromRequestParts<S> for XPublishableKey
-where
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        parts
-            .headers
-            .get("X-Publishable-Key")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| XPublishableKey(s.to_string()))
-            .ok_or_else(|| ApiError::unauthorized("X-Publishable-Key header required".into()))
-    }
 }

@@ -12,7 +12,7 @@ use validator::Validate;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
-    models::Application,
+    models::app_model::dto::Application,
 };
 
 // =============================================================================

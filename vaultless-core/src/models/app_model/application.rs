@@ -1,3 +1,8 @@
+use super::dto::*;
+use crate::crypto;
+use crate::error::{Result, VaultlessError};
+use crate::models::{ApiKey, CreateApiKey};
+use crate::types::SubscriptionTier;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
@@ -7,80 +12,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::cache_key;
-use crate::crypto;
-use crate::error::{Result, VaultlessError};
-use crate::models::{ApiKey, CreateApiKey};
-use crate::types::SubscriptionTier;
-
 const APPLICATION_CACHE_TTL: u64 = 600; // 10 minutes
-
-// =============================================================================
-// Models
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Application {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub secret_key_id: Uuid,
-    pub publishable_key: String,
-    pub publishable_key_prefix: String,
-    pub bundle_id: Option<String>,
-    pub platform: Option<String>,
-    pub webhook_url: Option<String>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Validate, Deserialize)]
-pub struct CreateApplication {
-    pub user_id: Uuid,
-
-    #[validate(length(min = 1, max = 255))]
-    pub name: String,
-
-    #[validate(length(max = 1000))]
-    pub description: Option<String>,
-
-    pub tier: SubscriptionTier,
-
-    #[validate(length(max = 255))]
-    pub bundle_id: Option<String>,
-
-    #[validate(length(max = 50))]
-    pub platform: Option<String>,
-
-    #[validate(url)]
-    pub webhook_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CreateApplicationResponse {
-    pub application: Application,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret_key: Option<String>, // Only returned once at creation
-    pub publishable_key: String,
-}
-
-// =============================================================================
-// Cache Keys
-// =============================================================================
-
-pub fn cache_key_by_publishable_key(pk: &str) -> String {
-    cache_key!("app", "pk", pk)
-}
-
-pub fn cache_key_by_id(id: Uuid) -> String {
-    cache_key!("app", "id", id)
-}
-
-// =============================================================================
-// Implementation
-// =============================================================================
 
 impl Application {
     /// Create a new application with secret and publishable keys
@@ -215,16 +147,47 @@ impl Application {
     }
 
     /// Find application by ID
-    pub async fn find_by_id<'c, E>(exec: E, id: Uuid) -> Result<Application>
+    pub async fn find_by_id<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPool>>,
+        id: Uuid,
+    ) -> Result<Application>
     where
         E: Executor<'c, Database = Postgres>,
     {
+        let cache_key = cache_key_by_id(id);
+
+        // Try cache
+        if let Some(redis_pool) = &redis {
+            if let Ok(mut conn) = redis_pool.get().await {
+                if let Ok(cached_json) = conn.get::<_, String>(&cache_key).await {
+                    if let Ok(app) = serde_json::from_str::<Application>(&cached_json) {
+                        return Ok(app);
+                    }
+                }
+            }
+        }
+
         // Database lookup
         let app = sqlx::query_as::<_, Application>(r#"SELECT * FROM applications WHERE id = $1"#)
             .bind(id)
             .fetch_optional(exec)
             .await?
             .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
+
+        // Cache it
+        if let Some(redis_pool) = redis {
+            if let Ok(serialized) = serde_json::to_string(&app) {
+                tokio::spawn(async move {
+                    if let Ok(mut conn) = redis_pool.get().await {
+                        let _ = conn
+                            .set_ex::<_, _, ()>(&cache_key, serialized, APPLICATION_CACHE_TTL)
+                            .await;
+                    }
+                });
+            }
+        }
+
         Ok(app)
     }
 
@@ -252,15 +215,19 @@ impl Application {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
+        let app = Self::find_by_id(exec.clone(), redis.clone(), id).await?;
         sqlx::query("UPDATE applications SET is_active = false WHERE id = $1")
             .bind(id)
             .execute(exec.clone())
             .await?;
 
-        // Fetch for cache invalidation
-        let app = Self::find_by_id(exec.clone(), id).await?;
-        let api = ApiKey::find_by_id(exec, redis.clone(), app.secret_key_id).await?;
-        ApiKey::invalidate_cache(redis, app.secret_key_id, api.key_hash).await;
+        Self::invalidate_cache(redis.clone(), &app).await;
+
+        let app = Self::find_by_id(exec.clone(), redis.clone(), id).await?;
+        if let Ok(api_key) = ApiKey::find_by_id(exec, redis.clone(), app.secret_key_id).await {
+            ApiKey::invalidate_cache(redis, app.secret_key_id, api_key.key_hash).await;
+        }
+
         Ok(())
     }
 
@@ -301,7 +268,7 @@ impl Application {
         E: Executor<'c, Database = Postgres> + Clone,
     {
         // 1. Get the application to find the secret_key_id
-        let app = Self::find_by_id(exec.clone(), application_id).await?;
+        let app = Self::find_by_id(exec.clone(), redis.clone(), application_id).await?;
 
         // 2. Update the underlying secret API key's tier
         let updated_api_key =
@@ -401,7 +368,7 @@ impl Application {
             tokio::spawn(async move {
                 if let Ok(mut conn) = redis_pool.get().await {
                     let id_key = cache_key_by_id(app_id);
-                    let pk_key = cache_key_by_publishable_key(&publishable_key); 
+                    let pk_key = cache_key_by_publishable_key(&publishable_key);
 
                     let _ = conn.del::<_, ()>(&id_key).await;
                     let _ = conn.del::<_, ()>(&pk_key).await;
@@ -411,34 +378,26 @@ impl Application {
             });
         }
     }
+
+    pub async fn exists_by_publishable_key<'c, E>(exec: E, publishable_key: &str) -> Result<bool>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let exists: bool = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM applications
+                WHERE publishable_key = $1 AND is_active = true
+            )
+            "#,
+        )
+        .bind(publishable_key)
+        .fetch_one(exec)
+        .await?;
+
+        Ok(exists)
+    }
 }
-
-/// Application with denormalized tier information from api_keys
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct ApplicationWithTier {
-    // All Application fields
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub secret_key_id: Uuid,
-    pub publishable_key: String,
-    pub publishable_key_prefix: String,
-    pub bundle_id: Option<String>,
-    pub platform: Option<String>,
-    pub webhook_url: Option<String>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-
-    // Tier information from api_keys JOIN
-    pub tier: SubscriptionTier,
-    pub monthly_message_quota: i32,
-    pub rate_limit_per_minute: i32,
-    pub message_retention_seconds: i32,
-    pub api_key_active: bool,
-}
-
 impl ApplicationWithTier {
     /// Check if both application and API key are active
     pub fn is_fully_active(&self) -> bool {

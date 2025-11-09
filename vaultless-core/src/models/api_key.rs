@@ -212,7 +212,7 @@ impl ApiKey {
         key_hash: String,
     ) -> Result<ApiKey>
     where
-        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
         let cache_key = cache_key_by_hash(&key_hash);
 
@@ -222,15 +222,6 @@ impl ApiKey {
             && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
             && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
         {
-            // Fire-and-forget with pool clone
-            let pool_clone = exec.clone();
-            let redis_clone = redis.clone();
-            let id = api_key.id;
-
-            tokio::spawn(async move {
-                update_last_used(pool_clone, redis_clone, id).await;
-            });
-
             return Ok(api_key);
         }
 
@@ -248,14 +239,6 @@ impl ApiKey {
         .fetch_optional(exec.clone())
         .await?
         .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
-
-        // Spawn background update
-        let redis_clone = redis.clone();
-        let id = api_key.id;
-
-        tokio::spawn(async move {
-            update_last_used(exec, redis_clone, id).await;
-        });
 
         // --- 3. Cache Write ---
         if let Some(redis) = redis
@@ -699,33 +682,41 @@ impl ApiKey {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // Get the key name
-        let month_key = quota_cache_key(api_key_id);
+        let count = Self::get_monthly_usage(exec, redis, api_key_id).await?;
+        Ok(count < quota)
+    }
 
+    pub async fn get_monthly_usage<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPoolType>>,
+        api_key_id: Uuid,
+    ) -> Result<i64>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let month_key = quota_cache_key(api_key_id);
         let mut current_count: Option<i64> = None;
 
-        // 2. Try to get the REAL-TIME count from Redis
+        // 1. Try to get the REAL-TIME count from Redis
         if let Some(redis_pool) = &redis
             && let Ok(mut conn) = redis_pool.get().await
         {
-            // Get the count. It will be None if the key doesn't exist.
             current_count = conn
                 .get::<_, Option<i64>>(&month_key)
                 .await
                 .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Redis GET failed during quota check.");
+                    tracing::error!(error = %e, "Redis GET failed during usage check.");
                     None
                 });
         }
 
-        // 3. Check the count if found in Redis (fast path)
+        // 2. Fast path: found in Redis
         if let Some(count) = current_count {
-            return Ok(count < quota);
+            return Ok(count);
         }
 
-        // 4. FALLBACK: Key not in Redis (e.g., first message of month, or Redis restart)
-        // We run the slow query ONCE to re-populate the counter.
-        info!(api_key_id = %api_key_id, "Re-populating quota cache from database");
+        // 3. FALLBACK: Query database and repopulate cache
+        info!(api_key_id = %api_key_id, "Re-populating usage cache from database");
         let count: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*) 
@@ -738,7 +729,7 @@ impl ApiKey {
         .fetch_one(exec)
         .await?;
 
-        // 5. Update the cache with the correct count and a long TTL
+        // 4. Update the cache with the correct count and a long TTL
         if let Some(redis_pool) = redis {
             let month_key_clone = month_key.clone();
             tokio::spawn(async move {
@@ -750,14 +741,14 @@ impl ApiKey {
                             error!(
                                 cache_key = %month_key_clone,
                                 error = %e,
-                                "Failed to set re-populated quota key"
+                                "Failed to set re-populated usage key"
                             );
                         });
                 }
             });
         }
 
-        Ok(count < quota)
+        Ok(count)
     }
 
     /// Increments the monthly quota usage counter in Redis (approximate).

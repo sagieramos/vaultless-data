@@ -10,14 +10,27 @@ pub use types::SubscriptionTier;
 
 // Re-export models
 pub use models::{
-    ApiKey, CreateApiKey, CreateProof, Message, MessageProof, ProofVerificationResult,
-    RefreshToken, User, UserSession, VerifyProofRequest,
-    application::{Application, CreateApplication},
+    ApiKey,
+    CreateApiKey,
+    CreateProof,
+    Message,
+    MessageProof,
+    ProofVerificationResult,
+    RefreshToken,
+    User,
+    UserSession,
+    VerifyProofRequest,
+    app_model::dto::{
+        Application, ApplicationValidation, ApplicationWithTier, CreateApplication,
+        CreateApplicationResponse,
+    },
+    // application::{Application, CreateApplication},
     billing::*,
     client::{
         AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
         RegisterClientRequest, RegisterClientResponse,
     },
+
     client_token::*,
     message::*,
     message::{InstantMessage, P2PFile, ReadReceipt, instant_message},

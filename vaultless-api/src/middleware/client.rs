@@ -1,7 +1,7 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::Client;
+use vaultless_core::{Client, Application};
 
 /// Extractor for authenticated clients
 /// Usage: `async fn handler(AuthenticatedClient(client): AuthenticatedClient)`
@@ -42,6 +42,64 @@ where
             })?;
 
         Ok(AuthenticatedClient(client))
+    }
+}
+
+
+// Validated Application Extractor (Recommended)
+
+#[derive(Debug, Clone)]
+pub struct ValidatedApplication(pub Application);
+
+impl<S> FromRequestParts<S> for ValidatedApplication
+where
+    S: Send + Sync,
+    AppState: axum::extract::FromRef<S>,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let publishable_key = parts
+            .headers
+            .get("X-Publishable-Key")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                ApiError::unauthorized("Missing X-Publishable-Key header")
+                    .with_code("MISSING_PUBLISHABLE_KEY")
+            })?;
+
+        if !publishable_key.starts_with("pk_") {
+            return Err(
+                ApiError::unauthorized("Invalid publishable key format")
+                    .with_code("INVALID_PUBLISHABLE_KEY_FORMAT")
+            );
+        }
+
+        let app_state: AppState = axum::extract::FromRef::from_ref(state);
+
+        let app = Application::find_by_publishable_key(
+            &*app_state.db,
+            Some(app_state.redis_pool.clone()),
+            publishable_key,
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!("Publishable key validation failed: {}", e);
+            ApiError::unauthorized("Invalid or inactive publishable key")
+                .with_code("INVALID_PUBLISHABLE_KEY")
+        })?;
+
+        if !app.is_active {
+            return Err(
+                ApiError::unauthorized("Application is deactivated")
+                    .with_code("APPLICATION_INACTIVE")
+            );
+        }
+
+        Ok(ValidatedApplication(app))
     }
 }
 
@@ -126,5 +184,40 @@ where
                 Ok(OptionalAuthenticatedClient(None))
             }
         }
+    }
+}
+
+// Simple Publishable Key Extractor
+#[derive(Debug, Clone)]
+pub struct XPublishableKey(pub String);
+
+impl<S> FromRequestParts<S> for XPublishableKey
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let publishable_key = parts
+            .headers
+            .get("X-Publishable-Key")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                ApiError::unauthorized("Missing X-Publishable-Key header")
+                    .with_code("MISSING_PUBLISHABLE_KEY")
+            })?;
+
+        // Basic validation
+        if !publishable_key.starts_with("pk_") {
+            return Err(
+                ApiError::unauthorized("Invalid publishable key format")
+                    .with_code("INVALID_PUBLISHABLE_KEY_FORMAT")
+            );
+        }
+
+        Ok(XPublishableKey(publishable_key.to_string()))
     }
 }
