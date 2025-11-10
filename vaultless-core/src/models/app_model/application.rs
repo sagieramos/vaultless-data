@@ -398,6 +398,7 @@ impl Application {
         Ok(exists)
     }
 }
+
 impl ApplicationWithTier {
     /// Check if both application and API key are active
     pub fn is_fully_active(&self) -> bool {

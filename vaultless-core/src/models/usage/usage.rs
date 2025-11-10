@@ -14,8 +14,14 @@
 //! - Graceful shutdown with final flush
 //! - Health metrics and monitoring
 
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Timelike, Utc};
+use crate::{
+    cache_key, crypto,
+    error::{Result, VaultlessError},
+    models::{ApiKey, Application},
+};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveDateTime, Timelike, Utc};
 use deadpool_redis::Pool as RedisPool;
+use once_cell::sync::Lazy;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, PgPool, Postgres, query_builder::QueryBuilder};
@@ -27,11 +33,6 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 use uuid::Uuid;
-
-use crate::crypto;
-use crate::error::{Result, VaultlessError};
-use crate::models::ApiKey;
-use crate::models::api_key::quota_cache_key;
 
 // =============================================================================
 // Type Aliases & Constants
@@ -50,7 +51,7 @@ const DEFAULT_METRIC_TTL_SECS: u64 = 7200;
 const DEFAULT_FLUSH_INTERVAL_SECS: u64 = 300; // 5 minutes
 
 /// Set name for tracking active metric keys
-const ACTIVE_KEYS_SET: &str = "metric:active_keys";
+pub static ACTIVE_KEYS_SET: Lazy<String> = Lazy::new(|| cache_key!("metric", "active_keys"));
 
 /// Field name to mark a key as being processed
 const PROCESSING_FLAG: &str = "_processing";
@@ -148,8 +149,9 @@ impl MetricKey {
             ));
         }
 
-        Ok(Self(format!(
-            "metric:hash:{}:{}",
+        Ok(Self(cache_key!(
+            "metric",
+            "hash",
             api_key_id,
             period_start.format("%Y%m%d%H")
         )))
@@ -160,14 +162,20 @@ impl MetricKey {
     }
 
     pub fn parse(&self) -> Option<(Uuid, DateTime<Utc>)> {
-        let parts: Vec<&str> = self.0.strip_prefix("metric:hash:")?.split(':').collect();
+        // Build the prefix using the macro
+        let prefix = cache_key!("metric", "hash");
+
+        // Strip the prefix and split the remaining string by ':'
+        let parts: Vec<&str> = self.0.strip_prefix(&prefix)?.split(':').collect();
         if parts.len() != 2 {
             return None;
         }
 
+        // Parse UUID
         let uuid = Uuid::parse_str(parts[0]).ok()?;
-        let timestamp_str = parts[1];
 
+        // Parse timestamp string in the format YYYYMMDDHH
+        let timestamp_str = parts[1];
         if timestamp_str.len() != 10 {
             return None;
         }
@@ -177,11 +185,8 @@ impl MetricKey {
         let day: u32 = timestamp_str[6..8].parse().ok()?;
         let hour: u32 = timestamp_str[8..10].parse().ok()?;
 
-        let naive = NaiveDateTime::parse_from_str(
-            &format!("{:04}-{:02}-{:02} {:02}:00:00", year, month, day, hour),
-            "%Y-%m-%d %H:%M:%S",
-        )
-        .ok()?;
+        // Construct NaiveDateTime directly
+        let naive = NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, 0, 0)?;
 
         Some((uuid, naive.and_utc()))
     }
@@ -191,7 +196,9 @@ impl TryFrom<String> for MetricKey {
     type Error = VaultlessError;
 
     fn try_from(s: String) -> Result<Self> {
-        if !s.starts_with("metric:hash:") {
+        let prefix = cache_key!("metric", "hash");
+
+        if !s.starts_with(&prefix) {
             return Err(VaultlessError::InvalidInput(
                 "Invalid metric key format".into(),
             ));
@@ -237,7 +244,7 @@ async fn hincr_many<C>(
 where
     C: AsyncCommands + Send + Unpin,
 {
-    conn.sadd::<_, _, ()>(ACTIVE_KEYS_SET, key.as_str())
+    conn.sadd::<_, _, ()>(ACTIVE_KEYS_SET.as_str(), key.as_str())
         .await
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
@@ -270,7 +277,7 @@ where
     }
 
     // --- START: logic for real-time quota ---
-    let monthly_key = quota_cache_key(api_key_id);
+    let monthly_key = ApiKey::quota_cache_key(api_key_id);
     // Set a ~31 day TTL. Redis will auto-delete the key after a month of inactivity.
     let ttl_seconds: i64 = 31 * 24 * 60 * 60;
 
@@ -441,47 +448,6 @@ pub struct UsageAggregate {
     pub total_estimated_cost_cents: i64,
 }
 
-pub async fn get_aggregate_by_api_key<'c, E>(
-    exec: E,
-    redis_pool: Arc<RedisPoolType>,
-    api_key: &str,
-) -> Result<UsageAggregate>
-where
-    E: Executor<'static, Database = Postgres> + Clone + Send + Sync + 'static,
-{
-    if api_key.is_empty() || api_key.len() > 256 {
-        return Err(VaultlessError::InvalidInput(
-            "Invalid key hash length".into(),
-        ));
-    }
-
-    let key_hash = crypto::hash_content(api_key.as_bytes());
-
-    let api_key = ApiKey::find_by_hash_sync(exec.clone(), Some(redis_pool), key_hash).await?;
-
-    let aggregate = sqlx::query_as::<_, UsageAggregate>(
-        r#"
-        SELECT 
-            COALESCE(SUM(messages_sent), 0) AS total_messages_sent,
-            COALESCE(SUM(messages_received), 0) AS total_messages_received,
-            COALESCE(SUM(proofs_verified), 0) AS total_proofs_verified,
-            COALESCE(SUM(total_bytes_stored), 0) AS total_bytes_stored,
-            COALESCE(SUM(total_bytes_sent), 0) AS total_bytes_sent,
-            COALESCE(SUM(total_bytes_received), 0) AS total_bytes_received,
-            COALESCE(SUM(rate_limit_hits), 0) AS total_rate_limit_hits,
-            COALESCE(SUM(estimated_cost_cents), 0) AS total_estimated_cost_cents
-        FROM usage_metrics
-        WHERE api_key_id = $1
-        "#,
-    )
-    .bind(api_key.id)
-    .fetch_one(exec)
-    .await
-    .map_err(VaultlessError::from)?;
-
-    Ok(aggregate)
-}
-
 pub async fn get_aggregate_by_application_id<'c, E>(
     exec: E,
     application_id: Uuid,
@@ -580,7 +546,7 @@ pub fn start_redis_flusher(
 ) -> (tokio::task::JoinHandle<()>, Arc<Notify>) {
     let shutdown = Arc::new(Notify::new());
     let shutdown_clone = Arc::clone(&shutdown);
-
+    
     let handle = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(config.flush_interval_secs));
 
@@ -641,7 +607,7 @@ async fn recover_orphaned_keys(
         let (next_cursor, keys): (u64, Vec<String>) = tokio::time::timeout(
             Duration::from_secs(config.redis_operation_timeout_secs),
             redis::cmd("SSCAN")
-                .arg(ACTIVE_KEYS_SET)
+                .arg(ACTIVE_KEYS_SET.as_str())
                 .arg(cursor)
                 .arg("COUNT")
                 .arg(1000)
@@ -731,7 +697,7 @@ async fn flush_redis_to_pg(
         let (next_cursor, keys): (u64, Vec<String>) = tokio::time::timeout(
             Duration::from_secs(config.redis_operation_timeout_secs),
             redis::cmd("SSCAN")
-                .arg(ACTIVE_KEYS_SET)
+                .arg(ACTIVE_KEYS_SET.as_str())
                 .arg(cursor)
                 .arg("COUNT")
                 .arg(1000)
@@ -944,7 +910,7 @@ async fn flush_batch_to_pg(
     for ((_, _), _, key) in batch.drain(..) {
         if let Err(e) = tokio::time::timeout(
             Duration::from_secs(config.redis_operation_timeout_secs),
-            conn.srem::<_, _, ()>(ACTIVE_KEYS_SET, key.as_str()),
+            conn.srem::<_, _, ()>(ACTIVE_KEYS_SET.as_str(), key.as_str()),
         )
         .await
         {

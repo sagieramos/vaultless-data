@@ -83,27 +83,11 @@ pub struct CreateApiKey {
 // Cache Key Generators
 // =============================================================================
 
-pub fn cache_key_by_hash(key_hash: &str) -> String {
-    cache_key!("api_key", "hash", key_hash)
-}
-
-pub fn cache_key_by_id(id: Uuid) -> String {
-    cache_key!("api_key", "id", id)
-}
-
-pub fn quota_cache_key(api_key_id: Uuid) -> String {
-    cache_key!("quota_count", api_key_id, Utc::now().format("%Y-%m"))
-}
-
-pub fn cache_key_last_used_write(id: Uuid) -> String {
-    cache_key!("api_key", "last_used_write", id)
-}
-
 async fn update_last_used<'c, E>(exec: E, redis: Option<Arc<RedisPoolType>>, id: Uuid)
 where
     E: Executor<'c, Database = Postgres> + Clone,
 {
-    let month_key = cache_key_last_used_write(id);
+    let month_key = super::ApiKey::cache_key_last_used_write(id);
     let mut proceed_with_db_write = true;
 
     // --- 1. Redis Check-and-Set for Rate-Limiting ---
@@ -152,6 +136,22 @@ where
 // =============================================================================
 
 impl ApiKey {
+    pub fn cache_key_by_hash(key_hash: &str) -> String {
+        cache_key!("api_key", "hash", key_hash)
+    }
+
+    pub fn cache_key_by_id(id: Uuid) -> String {
+        cache_key!("api_key", "id", id)
+    }
+
+    pub fn quota_cache_key(api_key_id: Uuid) -> String {
+        cache_key!("quota_count", api_key_id, Utc::now().format("%Y-%m"))
+    }
+
+    pub fn cache_key_last_used_write(id: Uuid) -> String {
+        cache_key!("api_key", "last_used_write", id)
+    }
+
     /// Creates a new API key with tier defaults.
     pub async fn create<'c, E>(executor: E, input: CreateApiKey) -> Result<ApiKey>
     where
@@ -214,7 +214,7 @@ impl ApiKey {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        let cache_key = cache_key_by_hash(&key_hash);
+        let cache_key = Self::cache_key_by_hash(&key_hash);
 
         // --- 1. Redis Cache Lookup ---
         if let Some(redis_read) = &redis
@@ -269,7 +269,7 @@ impl ApiKey {
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let cache_key = cache_key_by_hash(&key_hash);
+        let cache_key = Self::cache_key_by_hash(&key_hash);
 
         // --- 1. Redis Cache Lookup ---
         if let Some(redis_read) = &redis
@@ -336,7 +336,7 @@ impl ApiKey {
     {
         // Try cache if Redis is available
         if let Some(redis) = &redis {
-            let cache_key = cache_key_by_id(id);
+            let cache_key = Self::cache_key_by_id(id);
 
             if let Ok(mut conn) = redis.get().await
                 && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
@@ -361,7 +361,7 @@ impl ApiKey {
 
         // Cache if Redis available
         if let Some(redis) = redis {
-            let cache_key = cache_key_by_id(id);
+            let cache_key = Self::cache_key_by_id(id);
             if let Ok(serialized) = serde_json::to_string(&api_key) {
                 // Simplified clone by moving the Arc into the spawned task
                 tokio::spawn(async move {
@@ -694,7 +694,7 @@ impl ApiKey {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        let month_key = quota_cache_key(api_key_id);
+        let month_key = Self::quota_cache_key(api_key_id);
         let mut current_count: Option<i64> = None;
 
         // 1. Try to get the REAL-TIME count from Redis
@@ -758,7 +758,7 @@ impl ApiKey {
         redis: Option<Arc<RedisPoolType>>,
         api_key_id: Uuid,
     ) -> Result<()> {
-        let month_key = quota_cache_key(api_key_id);
+        let month_key = Self::quota_cache_key(api_key_id);
 
         if let Some(redis_pool) = redis {
             tokio::spawn(async move {
@@ -792,8 +792,8 @@ impl ApiKey {
         if let Some(redis) = redis {
             tokio::spawn(async move {
                 if let Ok(mut conn) = redis.get().await {
-                    let cache_key_id = cache_key_by_id(id);
-                    let cache_key_hash = cache_key_by_hash(&key_hash);
+                    let cache_key_id = Self::cache_key_by_id(id);
+                    let cache_key_hash = Self::cache_key_by_hash(&key_hash);
 
                     // 1. Invalidate API key cache by ID
                     let _: () = conn.del(&cache_key_id).await.unwrap_or_else(|e| {
@@ -814,7 +814,7 @@ impl ApiKey {
                     });
 
                     // 3. Invalidate quota cache
-                    let quota_key = quota_cache_key(id);
+                    let quota_key = Self::quota_cache_key(id);
                     let _: () = conn.del(&quota_key).await.unwrap_or_else(|e| {
                         error!(
                             cache_key = %quota_key,
@@ -844,7 +844,7 @@ mod tests {
         let id = Uuid::new_v4();
         let hash = "test_hash";
 
-        assert_eq!(cache_key_by_hash(hash), "api_key:hash:test_hash");
-        assert_eq!(cache_key_by_id(id), format!("api_key:id:{}", id));
+        assert_eq!(ApiKey::cache_key_by_hash(hash), "api_key:hash:test_hash");
+        assert_eq!(ApiKey::cache_key_by_id(id), format!("api_key:id:{}", id));
     }
 }

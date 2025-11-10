@@ -1,10 +1,17 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::{Client, Application};
+use vaultless_core::{Application, Client};
+
+use axum::{
+    extract::{Request, State},
+    middleware::Next,
+    response::Response,
+};
 
 /// Extractor for authenticated clients
 /// Usage: `async fn handler(AuthenticatedClient(client): AuthenticatedClient)`
+#[derive(Clone)]
 pub struct AuthenticatedClient(pub Client);
 
 impl<S> FromRequestParts<S> for AuthenticatedClient
@@ -45,7 +52,6 @@ where
     }
 }
 
-
 // Validated Application Extractor (Recommended)
 
 #[derive(Debug, Clone)]
@@ -58,10 +64,7 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let publishable_key = parts
             .headers
             .get("X-Publishable-Key")
@@ -72,10 +75,8 @@ where
             })?;
 
         if !publishable_key.starts_with("pk_") {
-            return Err(
-                ApiError::unauthorized("Invalid publishable key format")
-                    .with_code("INVALID_PUBLISHABLE_KEY_FORMAT")
-            );
+            return Err(ApiError::unauthorized("Invalid publishable key format")
+                .with_code("INVALID_PUBLISHABLE_KEY_FORMAT"));
         }
 
         let app_state: AppState = axum::extract::FromRef::from_ref(state);
@@ -93,10 +94,8 @@ where
         })?;
 
         if !app.is_active {
-            return Err(
-                ApiError::unauthorized("Application is deactivated")
-                    .with_code("APPLICATION_INACTIVE")
-            );
+            return Err(ApiError::unauthorized("Application is deactivated")
+                .with_code("APPLICATION_INACTIVE"));
         }
 
         Ok(ValidatedApplication(app))
@@ -197,10 +196,7 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let publishable_key = parts
             .headers
             .get("X-Publishable-Key")
@@ -212,12 +208,43 @@ where
 
         // Basic validation
         if !publishable_key.starts_with("pk_") {
-            return Err(
-                ApiError::unauthorized("Invalid publishable key format")
-                    .with_code("INVALID_PUBLISHABLE_KEY_FORMAT")
-            );
+            return Err(ApiError::unauthorized("Invalid publishable key format")
+                .with_code("INVALID_PUBLISHABLE_KEY_FORMAT"));
         }
 
         Ok(XPublishableKey(publishable_key.to_string()))
     }
+}
+
+pub async fn authenticate_client_middleware(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    // Extract session token from Authorization header
+    let auth_header = req
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::unauthorized("Missing Authorization header").with_code("MISSING_AUTH_HEADER")
+        })?;
+
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        ApiError::unauthorized("Invalid Authorization format. Expected: Bearer <token>")
+            .with_code("INVALID_AUTH_FORMAT")
+    })?;
+
+    // Verify session
+    let client = Client::verify_session(&*state.db, Some(state.redis_pool.clone()), token)
+        .await
+        .map_err(|e| {
+            tracing::warn!("Session verification failed: {}", e);
+            ApiError::from(e)
+        })?;
+
+    // Inject authenticated client into request extensions
+    req.extensions_mut().insert(AuthenticatedClient(client));
+
+    Ok(next.run(req).await)
 }

@@ -1,6 +1,6 @@
 // vaultless-api/src/handlers/instant_message.rs
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
@@ -87,7 +87,7 @@ pub struct HealthStatusResponse {
 #[axum::debug_handler]
 pub async fn send_message(
     State(state): State<AppState>,
-    AuthenticatedClient(sender): AuthenticatedClient,
+    Extension(AuthenticatedClient(sender)): Extension<AuthenticatedClient>,
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Compute content size server-side ---

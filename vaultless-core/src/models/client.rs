@@ -74,7 +74,7 @@ pub struct Client {
     #[serde(skip_serializing)]
     pub api_key_id: Option<Uuid>,
     #[serde(skip_serializing)]
-    pub application_id: Option<Uuid>, // NEW: Links client to the application they registered through
+    pub application_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]

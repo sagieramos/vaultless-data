@@ -4305,6 +4305,7 @@ dependencies = [
  "hmac",
  "ipnetwork 0.21.1",
  "moka",
+ "once_cell",
  "prometheus",
  "rand 0.9.2",
  "redis",

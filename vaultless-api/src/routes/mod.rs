@@ -20,7 +20,7 @@ pub fn build_routes(state: AppState) -> Router {
         .route("/health", get(health::health_check))
         .nest("/auth", user_routes())
         .nest("/api/clients", client::client_routes())
-        .nest("/api/messages", instant_message::message_routes())
+        .nest("/api/messages", instant_message::message_routes(state.clone()))
         .nest("/analytics", analytics_routes(state.clone()))
          .nest("/apis", api_key_routes(state.clone()))
         .with_state(state)

@@ -25,7 +25,7 @@ pub async fn rate_limit_by_api_key(
 
     if !result.allowed {
         // Record violation
-        increment_rate_limit_hit_pool(&state.redis_pool, api_key.id, &MetricsConfig::default());
+        increment_rate_limit_hit_pool(&state.redis_pool, api_key.id, &MetricsConfig::default()).await?;
         if let Err(e) = rate_limiter.record_violation(api_key.id).await {
             tracing::warn!("Failed to record rate limit violation: {}", e);
         }
