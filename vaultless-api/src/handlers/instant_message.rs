@@ -1,4 +1,7 @@
 // vaultless-api/src/handlers/instant_message.rs
+use crate::AppState;
+use crate::middleware::client::AuthenticatedClient;
+use crate::middleware::error::ApiError;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -6,9 +9,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
-
-use crate::middleware::error::ApiError;
-use crate::{AppState, middleware::client::AuthenticatedClient};
 use vaultless_core::models::Client;
 use vaultless_core::models::instant_message::{Message, ReadReceipt};
 
@@ -87,12 +87,12 @@ pub struct HealthStatusResponse {
 #[axum::debug_handler]
 pub async fn send_message(
     State(state): State<AppState>,
-    Extension(AuthenticatedClient(sender)): Extension<AuthenticatedClient>,
+    Extension(sender): Extension<AuthenticatedClient>,
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Compute content size server-side ---
     let content_size_bytes = input.ciphertext.as_bytes().len() as i32;
-
+    
     // Validate input
     input
         .validate()
@@ -115,7 +115,7 @@ pub async fn send_message(
     })?;
 
     tracing::info!(
-        sender = %sender.id,
+        sender = %sender.0.id,
         recipient = %recipient.id,
         size = content_size_bytes,
         "Sending instant message"
@@ -125,12 +125,12 @@ pub async fn send_message(
     let message_id = state
         .instant_message
         .send_instant_message(
-            sender.id,
+            sender.0.id,
             recipient.id,
             input.ciphertext.clone(),
             input.nonce,
             content_size_bytes,
-            sender.id,
+            sender.0.id,
             input.signature.clone(),
             sender_pubkey,
             input.require_proof_verification,
@@ -138,7 +138,7 @@ pub async fn send_message(
         .await
         .map_err(|e| {
             tracing::error!(
-                sender = %sender.id,
+                sender = %sender.0.id,
                 error = %e,
                 "Failed to send message"
             );
@@ -157,19 +157,19 @@ pub async fn send_message(
 #[axum::debug_handler]
 pub async fn fetch_inbox(
     State(state): State<AppState>,
-    AuthenticatedClient(client): AuthenticatedClient,
+    Extension(client): Extension<AuthenticatedClient>,
     Query(_query): Query<FetchMessagesQuery>,
 ) -> Result<Json<FetchMessagesResponse>, ApiError> {
-    tracing::debug!(recipient = %client.id, "Fetching inbox");
+    tracing::debug!(recipient = %client.0.id, "Fetching inbox");
 
     // Fetch messages from InstantMessage service
     let messages = state
         .instant_message
-        .fetch_messages_for_recipient(client.id)
+        .fetch_messages_for_recipient(client.0.id)
         .await
         .map_err(|e| {
             tracing::error!(
-                recipient = %client.id,
+                recipient = %client.0.id,
                 error = %e,
                 "Failed to fetch messages"
             );
@@ -179,7 +179,7 @@ pub async fn fetch_inbox(
     let count = messages.len();
 
     tracing::info!(
-        recipient = %client.id,
+        recipient = %client.0.id,
         count,
         "Fetched messages successfully"
     );
@@ -196,22 +196,22 @@ pub async fn fetch_inbox(
 #[axum::debug_handler]
 pub async fn mark_message_read(
     State(state): State<AppState>,
-    AuthenticatedClient(client): AuthenticatedClient,
+    Extension(client): Extension<AuthenticatedClient>,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<MarkReadResponse>, ApiError> {
     tracing::debug!(
-        reader = %client.id,
+        reader = %client.0.id,
         message_id = %message_id,
         "Marking message as read"
     );
 
     state
         .instant_message
-        .mark_read_instant_message(client.id, message_id)
+        .mark_read_instant_message(client.0.id, message_id)
         .await
         .map_err(|e| {
             tracing::error!(
-                reader = %client.id,
+                reader = %client.0.id,
                 message_id = %message_id,
                 error = %e,
                 "Failed to mark message as read"
@@ -220,7 +220,7 @@ pub async fn mark_message_read(
         })?;
 
     tracing::info!(
-        reader = %client.id,
+        reader = %client.0.id,
         message_id = %message_id,
         "Message marked as read"
     );
@@ -236,11 +236,11 @@ pub async fn mark_message_read(
 #[axum::debug_handler]
 pub async fn get_read_receipts(
     State(state): State<AppState>,
-    AuthenticatedClient(client): AuthenticatedClient,
+    Extension(client): Extension<AuthenticatedClient>,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<ReadReceiptsResponse>, ApiError> {
     tracing::debug!(
-        requester = %client.id,
+        requester = %client.0.id,
         message_id = %message_id,
         "Fetching read receipts"
     );

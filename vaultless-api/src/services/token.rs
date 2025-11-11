@@ -22,7 +22,7 @@ pub struct TokenPair {
 /// Session data stored in Dragonfly
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
-    pub user_id: String,
+    pub user_id: Uuid,
     pub email: String,
     pub scope: Option<String>,
     pub is_admin: bool,
@@ -32,8 +32,8 @@ pub struct SessionData {
 /// Refresh token data stored in Dragonfly
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RefreshTokenCache {
-    user_id: String,
-    token_family: String,
+    user_id: Uuid,
+    token_family: Uuid,
     is_used: bool,
     is_revoked: bool,
     expires_at: i64,
@@ -108,8 +108,8 @@ impl TokenService {
 
         // 1. Store session in Dragonfly (hot path)
         let session_data = SessionData {
-            user_id: user_id.to_string(),
-            email: email.clone(),
+            user_id: user_id,
+            email: email,
             scope: scope.clone(),
             is_admin,
             created_at: now,
@@ -127,8 +127,8 @@ impl TokenService {
 
         // 2. Store refresh token in Dragonfly
         let refresh_cache = RefreshTokenCache {
-            user_id: user_id.to_string(),
-            token_family: token_family.to_string(),
+            user_id: user_id,
+            token_family: token_family,
             is_used: false,
             is_revoked: false,
             expires_at: now + (refresh_ttl_days * 86400),
@@ -217,7 +217,7 @@ impl TokenService {
 
         // Repopulate cache
         let session_data = SessionData {
-            user_id: user.id.to_string(),
+            user_id: user.id,
             email: user.email,
             scope: session_db.scope,
             is_admin: user.is_admin,
@@ -257,12 +257,8 @@ impl TokenService {
             tracing::debug!("Refresh token cache hit");
 
             // Parse user_id from cache
-            let user_id = Uuid::parse_str(&cache_data.user_id)
-                .map_err(|_| ApiError::internal_server_error("Invalid user ID in cached token"))?;
-
-            let token_family = Uuid::parse_str(&cache_data.token_family).map_err(|_| {
-                ApiError::internal_server_error("Invalid token family in cached token")
-            })?;
+            let user_id = cache_data.user_id;
+            let token_family = cache_data.token_family;
 
             (
                 user_id,
@@ -335,8 +331,8 @@ impl TokenService {
 
         // Mark old refresh token as used in cache
         let updated_cache = RefreshTokenCache {
-            user_id: user_id.to_string(),
-            token_family: token_family.to_string(),
+            user_id: user_id,
+            token_family: token_family,
             is_used: true,
             is_revoked: false,
             expires_at: Utc::now().timestamp() + (30 * 86400),
@@ -372,8 +368,8 @@ impl TokenService {
 
         // Store new refresh token in cache
         let new_refresh_cache = RefreshTokenCache {
-            user_id: user_id.to_string(),
-            token_family: token_family.to_string(),
+            user_id: user_id,
+            token_family: token_family,
             is_used: false,
             is_revoked: false,
             expires_at: Utc::now().timestamp() + (30 * 86400),
@@ -392,8 +388,8 @@ impl TokenService {
         let now = Utc::now().timestamp();
 
         let session_data = SessionData {
-            user_id: user.id.to_string(),
-            email: user.email.clone(),
+            user_id: user.id,
+            email: user.email,
             scope: None,
             is_admin: user.is_admin,
             created_at: now,

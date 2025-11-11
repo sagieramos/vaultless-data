@@ -1,12 +1,15 @@
 use super::client::AuthenticatedClient;
 use super::error::ApiError;
 use axum::{
-    extract::{Request, State},
+    Extension,
+    extract::{Path, Request, State},
     middleware::Next,
     response::Response,
 };
+use uuid::Uuid;
+use vaultless_core::models::Application;
 
-use crate::state::AppState;
+use crate::{state::AppState, services::token::SessionData};
 
 use vaultless_core::{ApiKey, get_live_usage};
 
@@ -72,7 +75,7 @@ pub async fn check_quota(
         return Err(ApiError::forbidden(format!(
             // FIX 3: Use the .used and .limit fields from the struct
             "Monthly quota exceeded: {}/{} messages used",
-            quota_status.used, quota_status.limit 
+            quota_status.used, quota_status.limit
         ))
         .with_code("QUOTA_EXCEEDED"));
     }
@@ -92,3 +95,40 @@ pub async fn check_quota(
     // Quota check passed, continue to the handler
     Ok(next.run(req).await)
 }
+
+#[derive(Clone)]
+pub struct OwnedApplication(pub Application);
+
+pub async fn validate_uuid_and_check_ownership(
+    Path(raw_id): Path<String>,
+    Extension(user): Extension<SessionData>,
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    // 1. Validate UUID
+    let app_id = Uuid::parse_str(&raw_id)
+        .map_err(|_| ApiError::bad_request("Invalid application ID"))?;
+
+    // 2. Fetch application
+    let app = Application::find_by_id(&*state.db, Some(state.redis_pool.clone()), app_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    // 3. Ownership check
+    if app.user_id != user.user_id {
+        return Err(ApiError::forbidden("You don't own this application").with_code("NOT_OWNER"));
+    }
+
+    // 4. Optional: ensure active
+    if !app.is_active {
+        return Err(ApiError::forbidden("Application is inactive"));
+    }
+
+    // 5. Attach validated application
+    req.extensions_mut().insert(OwnedApplication(app));
+
+    // 6. Continue request
+    Ok(next.run(req).await)
+}
+

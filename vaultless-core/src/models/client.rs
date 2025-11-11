@@ -74,6 +74,7 @@ pub struct Client {
     #[serde(skip_serializing)]
     pub api_key_id: Option<Uuid>,
     #[serde(skip_serializing)]
+    #[sqlx(skip)]
     pub application_id: Option<Uuid>,
 }
 

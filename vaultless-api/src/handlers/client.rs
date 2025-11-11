@@ -5,17 +5,18 @@ use axum::{
 use chrono::Utc;
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
-
+use axum::extract::Extension;
+use crate::middleware::client::AuthenticatedClient;
 use crate::{
     middleware::{
-        client::{AuthenticatedClient, AuthenticatedClientWithToken, XPublishableKey},
+        client::{AuthenticatedClientWithToken, XPublishableKey},
         error::ApiError,
     },
     state::AppState,
 };
 use vaultless_core::{
-    AuthenticateClientRequest, AuthenticateClientResponse, Client,
-    RegisterClientRequest, RegisterClientResponse,
+    AuthenticateClientRequest, AuthenticateClientResponse, Client, RegisterClientRequest,
+    RegisterClientResponse,
 };
 
 // =============================================================================
@@ -197,10 +198,9 @@ pub async fn health_check() -> Json<serde_json::Value> {
 /// GET /api/clients/me
 #[axum::debug_handler]
 pub async fn get_current_client(
-    State(_state): State<AppState>,
-    AuthenticatedClient(client): AuthenticatedClient,
+    Extension(auth_client): Extension<AuthenticatedClient>
 ) -> Json<Client> {
-    Json(client)
+    Json(auth_client.0)
 }
 
 /// Logout (revoke current session)
@@ -232,7 +232,7 @@ pub async fn logout_client(
 #[axum::debug_handler]
 pub async fn deactivate_client(
     State(state): State<AppState>,
-    AuthenticatedClient(client): AuthenticatedClient,
+    Extension(client): Extension<Client>,
 ) -> Result<Json<SuccessResponse>, ApiError> {
     Client::deactivate(state.db.as_ref(), Some(&state.redis_pool), client.id)
         .await

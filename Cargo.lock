@@ -4269,6 +4269,7 @@ dependencies = [
  "once_cell",
  "prometheus",
  "redis",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",

@@ -125,6 +125,25 @@ pub struct ApplicationWithTier {
     pub api_key_active: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct UpdateApplication {
+    #[validate(length(min = 1, max = 255))]
+    pub name: Option<String>,
+
+    #[validate(length(max = 1000))]
+    pub description: Option<String>,
+
+    #[validate(length(max = 255))]
+    pub bundle_id: Option<String>,
+
+    #[validate(length(max = 50))]
+    pub platform: Option<String>,
+
+    #[validate(url)]
+    pub webhook_url: Option<String>,
+    pub is_active: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateApplicationResponse {
     pub application: Application,

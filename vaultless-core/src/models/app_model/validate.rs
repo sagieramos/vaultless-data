@@ -4,7 +4,6 @@ use crate::models::ApiKey;
 use crate::types::SubscriptionTier;
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;

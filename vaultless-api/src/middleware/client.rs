@@ -9,48 +9,7 @@ use axum::{
     response::Response,
 };
 
-/// Extractor for authenticated clients
-/// Usage: `async fn handler(AuthenticatedClient(client): AuthenticatedClient)`
-#[derive(Clone)]
-pub struct AuthenticatedClient(pub Client);
 
-impl<S> FromRequestParts<S> for AuthenticatedClient
-where
-    S: Send + Sync,
-    AppState: axum::extract::FromRef<S>,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        // Extract session token from Authorization header
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::unauthorized("Missing Authorization header")
-                    .with_code("MISSING_AUTH_HEADER")
-            })?;
-
-        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-            ApiError::unauthorized("Invalid Authorization format. Expected: Bearer <token>")
-                .with_code("INVALID_AUTH_FORMAT")
-        })?;
-
-        // Get app state
-        let app_state: AppState = axum::extract::FromRef::from_ref(state);
-
-        // Verify session (converts VaultlessError to ApiError automatically)
-        let client = Client::verify_session(&*app_state.db, Some(app_state.redis_pool), token)
-            .await
-            .map_err(|e| {
-                tracing::warn!("Session verification failed: {}", e);
-                ApiError::from(e)
-            })?;
-
-        Ok(AuthenticatedClient(client))
-    }
-}
 
 // Validated Application Extractor (Recommended)
 
@@ -216,7 +175,10 @@ where
     }
 }
 
-pub async fn authenticate_client_middleware(
+#[derive(Debug, Clone)]
+pub struct AuthenticatedClient(pub Client);
+
+pub async fn require_authenticated_client(
     State(state): State<AppState>,
     mut req: Request,
     next: Next,

@@ -1,8 +1,6 @@
 // user handlers: registration, login, logout, token refresh, email verification, password reset
 use axum::{
-    Json,
-    extract::{ConnectInfo, State},
-    http::StatusCode,
+    Extension, Json, extract::{ConnectInfo, State}, http::StatusCode
 };
 use serde_json::json;
 use std::net::SocketAddr;
@@ -10,15 +8,12 @@ use validator::Validate;
 use vaultless_core::models::user::User;
 
 use crate::{
-    middleware::{error::ApiError, user::AuthenticatedUser},
-    services::token::{TokenService},
+    middleware::error::ApiError,
+    services::token::{SessionData, TokenService},
     state::AppState,
 };
 
-use axum::{
-    extract::Query,
-    response::{Html, IntoResponse},
-};
+use axum::extract::Query;
 use std::collections::HashMap;
 use vaultless_core::VaultlessError;
 
@@ -206,16 +201,12 @@ pub async fn refresh_token(
 
 pub async fn logout(
     State(state): State<AppState>,
-    AuthenticatedUser(session): AuthenticatedUser
+    Extension(session): Extension<SessionData>,
 ) -> Result<Json<LogoutResponse>, ApiError> {
     let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
     // Revoke all tokens for this user
-    let user_id = session
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
+    let user_id = session.user_id;
     token_service.revoke_all_user_tokens(user_id).await?;
 
     tracing::info!(user_id = %session.user_id, "User logged out");
@@ -355,13 +346,9 @@ pub async fn reset_password(
 
 pub async fn get_current_user(
     State(state): State<AppState>,
-    AuthenticatedUser(session): AuthenticatedUser,
+   Extension(session): Extension<SessionData>,
 ) -> Result<Json<CurrentUserResponse>, ApiError> {
-    let user_id = session
-        .user_id
-        .parse()
-        .map_err(|_| ApiError::internal_server_error("Invalid user ID in session"))?;
-
+    let user_id = session.user_id;
     let user = User::find_by_id(&state.db, user_id)
         .await
         .map_err(ApiError::from)?;

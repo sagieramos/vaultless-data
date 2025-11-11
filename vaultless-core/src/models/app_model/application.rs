@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use sqlx::QueryBuilder;
 use sqlx::{Executor, FromRow, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -359,26 +360,6 @@ impl Application {
         Ok(apps)
     }
 
-    /// Helper to invalidate application cache
-    async fn invalidate_cache(redis: Option<Arc<RedisPool>>, app: &Application) {
-        if let Some(redis_pool) = redis {
-            let app_id = app.id;
-            let publishable_key = app.publishable_key.clone();
-
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis_pool.get().await {
-                    let id_key = cache_key_by_id(app_id);
-                    let pk_key = cache_key_by_publishable_key(&publishable_key);
-
-                    let _ = conn.del::<_, ()>(&id_key).await;
-                    let _ = conn.del::<_, ()>(&pk_key).await;
-
-                    tracing::debug!("Invalidated application cache for {}", app_id);
-                }
-            });
-        }
-    }
-
     pub async fn exists_by_publishable_key<'c, E>(exec: E, publishable_key: &str) -> Result<bool>
     where
         E: Executor<'c, Database = Postgres>,
@@ -396,6 +377,104 @@ impl Application {
         .await?;
 
         Ok(exists)
+    }
+
+    /// Update application metadata fields (safe partial update)
+    pub async fn update<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPool>>,
+        id: Uuid,
+        update: UpdateApplication,
+    ) -> Result<Application>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        // Ensure at least one field is provided
+        if update.name.is_none()
+            && update.description.is_none()
+            && update.bundle_id.is_none()
+            && update.platform.is_none()
+            && update.webhook_url.is_none()
+            && update.is_active.is_none()
+        {
+            return Err(VaultlessError::Validation(
+                "No fields provided for update".into(),
+            ));
+        }
+
+        // Build query dynamically
+        let mut qb = QueryBuilder::new("UPDATE applications SET ");
+        let mut separated = false; // Use `separated` instead of `has_set`
+
+        // --- Dynamic Binding Logic ---
+
+        if let Some(name) = update.name {
+            if separated {
+                qb.push(", ");
+            }
+            qb.push("name = ").push_bind(name);
+            separated = true;
+        }
+
+        if let Some(desc) = update.description {
+            if separated {
+                qb.push(", ");
+            }
+            qb.push("description = ").push_bind(desc);
+            separated = true;
+        }
+
+        if let Some(bundle_id) = update.bundle_id {
+            if separated {
+                qb.push(", ");
+            }
+            qb.push("bundle_id = ").push_bind(bundle_id);
+            separated = true;
+        }
+
+        if let Some(platform) = update.platform {
+            if separated {
+                qb.push(", ");
+            }
+            qb.push("platform = ").push_bind(platform);
+            separated = true;
+        }
+
+        if let Some(webhook_url) = update.webhook_url {
+            if separated {
+                qb.push(", ");
+            }
+            qb.push("webhook_url = ").push_bind(webhook_url);
+            separated = true;
+        }
+
+        if let Some(is_active) = update.is_active {
+            if separated {
+                qb.push(", ");
+            }
+            qb.push("is_active = ").push_bind(is_active);
+            separated = true;
+        }
+
+        // --- End Dynamic Binding Logic ---
+
+        // The update_at field is always set if any change was made (since we passed the initial check)
+        if separated {
+            qb.push(", ");
+        }
+        qb.push("updated_at = now()");
+
+        // WHERE clause
+        qb.push(" WHERE id = ").push_bind(id).push(" RETURNING *");
+
+        // Execute
+        let query = qb.build_query_as::<Application>();
+        let updated_app = query.fetch_one(exec.clone()).await?;
+
+        // Invalidate Redis cache
+        Self::invalidate_cache(redis, &updated_app).await;
+
+        Ok(updated_app)
     }
 }
 

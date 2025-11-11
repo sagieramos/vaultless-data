@@ -10,8 +10,8 @@ pub mod user;
 
 pub use api_key::{ApiKey, CreateApiKey};
 pub use app_model::dto::{
-    Application, ApplicationValidation, ApplicationWithTier, CreateApplication,
-    CreateApplicationResponse,
+    Application, ApplicationHealth, ApplicationValidation, ApplicationWithTier, CreateApplication,
+    CreateApplicationResponse, UpdateApplication,
 };
 pub use billing::*;
 pub use client::{
