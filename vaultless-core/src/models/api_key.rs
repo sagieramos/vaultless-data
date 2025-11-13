@@ -1,32 +1,36 @@
 //! # API Key Model
 //!
-//! Optimized for high-frequency lookups with Redis caching (~100µs hits).
-//! Includes tier-based defaults, quota checks, and cache invalidation hooks.
+//! Database-only model for API Key management.
+//! Includes tier-based defaults and message quota checks directly against the database.
 
+use crate::cache_key;
+use crate::error::{Result, VaultlessError};
+use crate::types::{KeyType, SubscriptionTier}; // Import KeyType
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, Postgres};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{self, error, info};
+use std::time::Duration;
+use tracing::{self, info};
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::error::{Result, VaultlessError};
-use crate::{cache_key, types::SubscriptionTier};
+use crate::models::usage::{
+    MetricKey, 
+    MetricCounters, 
+    REDIS_OPERATION_TIMEOUT_SECS,
+    MetricGranularity
+};
 
 // =============================================================================
-// Type Aliases & Constants
+// Constants
 // =============================================================================
 
-pub type RedisPoolType = RedisPool;
-
-const API_KEY_CACHE_TTL: u64 = 600; // 10 minutes
-const LAST_USED_WRITE_TTL: u64 = 300;
-const QUOTA_CACHE_TTL_SECONDS: u64 = 31 * 24 * 60 * 60; // ~31 days
-
-const PROJECTION: &str = "id, user_id, key_prefix, key_hash, tier, monthly_message_quota, message_retention_seconds, description, scopes, is_active, created_at, expires_at, last_used_at, rate_limit_per_minute";
+// Added key_type, application_id, publishable_key_plaintext
+const PROJECTION: &str = "id, user_id, key_prefix, key_hash, tier, monthly_message_quota, message_retention_seconds, description, scopes, is_active, created_at, expires_at, last_used_at, rate_limit_per_minute, application_id, key_type, publishable_key_plaintext";
 
 // =============================================================================
 // Models
@@ -37,8 +41,10 @@ pub struct ApiKey {
     pub id: Uuid,
     pub user_id: Uuid,
     pub key_prefix: String,
+    // key_hash is now Option<String> in the DB, but mandatory for Secret keys
     #[serde(skip_serializing)]
-    pub key_hash: String,
+    pub key_hash: Option<String>,
+    // Tier is now nullable in the DB, but mandatory for Secret keys
     pub tier: SubscriptionTier,
     pub monthly_message_quota: i32,
     pub message_retention_seconds: i32,
@@ -49,6 +55,49 @@ pub struct ApiKey {
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub rate_limit_per_minute: i32,
+    // New fields
+    pub application_id: Option<Uuid>,
+    pub key_type: KeyType,
+    pub publishable_key_plaintext: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedApiKey {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    // key_prefix, key_hash, publishable_key_plaintext are omitted
+    pub tier: SubscriptionTier,
+    pub monthly_message_quota: i32,
+    pub message_retention_seconds: i32,
+    // description and scopes are omitted
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub rate_limit_per_minute: i32,
+    pub application_id: Option<Uuid>,
+    pub key_type: KeyType,
+}
+
+impl From<&ApiKey> for CachedApiKey {
+    fn from(key: &ApiKey) -> Self {
+        Self {
+            id: key.id,
+            user_id: key.user_id,
+            // key_prefix, key_hash, and publishable_key_plaintext are omitted
+            tier: key.tier,
+            monthly_message_quota: key.monthly_message_quota,
+            message_retention_seconds: key.message_retention_seconds,
+            // description and scopes are omitted
+            is_active: key.is_active,
+            created_at: key.created_at,
+            expires_at: key.expires_at,
+            last_used_at: key.last_used_at,
+            rate_limit_per_minute: key.rate_limit_per_minute,
+            application_id: key.application_id,
+            key_type: key.key_type,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,11 +113,14 @@ pub struct PaginatedApiKeys {
 pub struct CreateApiKey {
     pub user_id: Uuid,
 
-    pub key_hash: String,
+    // Made optional for Publishable keys
+    pub key_hash: Option<String>,
 
+    // Key prefix is mandatory for both
     pub key_prefix: String,
 
-    pub tier: SubscriptionTier,
+    // Made optional for Publishable keys
+    pub tier: Option<SubscriptionTier>,
 
     #[validate(length(max = 255))]
     pub description: Option<String>,
@@ -77,58 +129,17 @@ pub struct CreateApiKey {
     pub scopes: Option<String>,
 
     pub expires_at: Option<DateTime<Utc>>,
+
+    // New fields
+    pub application_id: Option<Uuid>,
+    pub key_type: KeyType,
+    pub publishable_key_plaintext: Option<String>,
 }
 
-// =============================================================================
-// Cache Key Generators
-// =============================================================================
-
-async fn update_last_used<'c, E>(exec: E, redis: Option<Arc<RedisPoolType>>, id: Uuid)
-where
-    E: Executor<'c, Database = Postgres> + Clone,
-{
-    let month_key = super::ApiKey::cache_key_last_used_write(id);
-    let mut proceed_with_db_write = true;
-
-    // --- 1. Redis Check-and-Set for Rate-Limiting ---
-    if let Some(redis_pool) = redis {
-        if let Ok(mut conn) = redis_pool.get().await {
-            let set_result: std::result::Result<Option<String>, redis::RedisError> =
-                redis::cmd("SET")
-                    .arg(&month_key)
-                    .arg(1)
-                    .arg("NX")
-                    .arg("EX")
-                    .arg(LAST_USED_WRITE_TTL)
-                    .query_async(&mut *conn)
-                    .await;
-
-            match set_result {
-                Ok(Some(_)) => {
-                    tracing::debug!(api_key_id = %id, "Performing DB write for last_used_at (rate-limit passed).");
-                }
-                Ok(None) => {
-                    proceed_with_db_write = false;
-                }
-                Err(e) => {
-                    tracing::error!(api_key_id = %id, error = %e, "Redis error during SET NX EX check, proceeding to DB update.");
-                }
-            }
-        } else {
-            tracing::warn!(api_key_id = %id, "Failed to get Redis connection for last_used_at update, proceeding to DB update.");
-        }
-    } else {
-        tracing::debug!(api_key_id = %id, "Redis not available, performing unconditional DB write.");
-    }
-
-    // --- 2. Database Update (Conditional Execution) ---
-    if proceed_with_db_write
-        && let Err(e) = sqlx::query!("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", id)
-            .execute(exec)
-            .await
-    {
-        tracing::error!(api_key_id = %id, error = %e, "Failed to update last_used_at");
-    }
+#[derive(Debug, sqlx::FromRow)]
+struct LinkedKeyData {
+    secret_key_hash: Option<String>,
+    publishable_key_plaintext: Option<String>,
 }
 
 // =============================================================================
@@ -136,23 +147,7 @@ where
 // =============================================================================
 
 impl ApiKey {
-    pub fn cache_key_by_hash(key_hash: &str) -> String {
-        cache_key!("api_key", "hash", key_hash)
-    }
-
-    pub fn cache_key_by_id(id: Uuid) -> String {
-        cache_key!("api_key", "id", id)
-    }
-
-    pub fn quota_cache_key(api_key_id: Uuid) -> String {
-        cache_key!("quota_count", api_key_id, Utc::now().format("%Y-%m"))
-    }
-
-    pub fn cache_key_last_used_write(id: Uuid) -> String {
-        cache_key!("api_key", "last_used_write", id)
-    }
-
-    /// Creates a new API key with tier defaults.
+    /// Creates a new API key with tier defaults (if Secret key).
     pub async fn create<'c, E>(executor: E, input: CreateApiKey) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres>,
@@ -161,7 +156,51 @@ impl ApiKey {
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
-        let tier = input.tier;
+        // Determine defaults based on key type
+        let tier = input.tier.unwrap_or(SubscriptionTier::Free);
+
+        let (monthly_quota, retention_seconds, rate_limit) = match input.key_type {
+            KeyType::Secret => (
+                tier.default_monthly_quota(),
+                tier.default_retention_seconds(),
+                tier.default_rate_limit(),
+            ),
+            // Publishable keys don't enforce these limits, use defaults/zeros
+            // that satisfy the 'valid_quota' check constraint (which is conditional)
+            KeyType::Publishable => (
+                1000,   // Safe default that satisfies > 0 check if key_type changes
+                604800, // Safe default that satisfies > 0 check if key_type changes
+                60,
+            ),
+        };
+
+        // Ensure Secret keys have hash/tier and Publishable keys have plaintext
+        match input.key_type {
+            KeyType::Secret => {
+                if input.key_hash.is_none() || input.tier.is_none() {
+                    return Err(VaultlessError::Validation(
+                        "Secret key must provide hash and tier".to_string(),
+                    ));
+                }
+                if input.publishable_key_plaintext.is_some() {
+                    return Err(VaultlessError::Validation(
+                        "Secret key cannot have plaintext data".to_string(),
+                    ));
+                }
+            }
+            KeyType::Publishable => {
+                if input.publishable_key_plaintext.is_none() {
+                    return Err(VaultlessError::Validation(
+                        "Publishable key must provide plaintext data".to_string(),
+                    ));
+                }
+                if input.key_hash.is_some() {
+                    return Err(VaultlessError::Validation(
+                        "Publishable key cannot have a hash".to_string(),
+                    ));
+                }
+            }
+        }
 
         let api_key = sqlx::query_as::<_, ApiKey>(&format!(
             r#"
@@ -176,23 +215,29 @@ impl ApiKey {
                     scopes,
                     rate_limit_per_minute,
                     expires_at,
-                    is_active
+                    is_active,
+                    application_id, -- New
+                    key_type,       -- New
+                    publishable_key_plaintext -- New
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12, $13)
                 RETURNING {}
                 "#,
             PROJECTION
         ))
         .bind(input.user_id)
-        .bind(&input.key_hash)
+        .bind(&input.key_hash) // Now Option<String>
         .bind(&input.key_prefix)
-        .bind(tier)
-        .bind(tier.default_monthly_quota())
-        .bind(tier.default_retention_seconds())
+        .bind(input.tier) // Now Option<SubscriptionTier>
+        .bind(monthly_quota)
+        .bind(retention_seconds)
         .bind(&input.description)
         .bind(&input.scopes)
-        .bind(tier.default_rate_limit())
+        .bind(rate_limit)
         .bind(input.expires_at)
+        .bind(input.application_id)
+        .bind(input.key_type)
+        .bind(&input.publishable_key_plaintext)
         .fetch_one(executor)
         .await
         .map_err(|e| match e {
@@ -205,32 +250,17 @@ impl ApiKey {
         Ok(api_key)
     }
 
-    /// Finds API key by hash with Redis caching (TTL 10min) and rate-limited last_used_at update.
-    pub async fn find_by_hash<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        key_hash: String,
-    ) -> Result<ApiKey>
+    /// Finds API key by hash (for Secret keys) (Database only).
+    pub async fn find_by_hash<'c, E>(exec: E, key_hash: String) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        let cache_key = Self::cache_key_by_hash(&key_hash);
-
-        // --- 1. Redis Cache Lookup ---
-        if let Some(redis_read) = &redis
-            && let Ok(mut conn) = redis_read.get().await
-            && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
-            && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
-        {
-            return Ok(api_key);
-        }
-
-        // --- 2. Database Fallback ---
-        let api_key = sqlx::query_as::<_, ApiKey>(&format!(
+        // Database Lookup, restricted to Secret key type
+        sqlx::query_as::<_, ApiKey>(&format!(
             r#"
         SELECT {}
         FROM api_keys
-        WHERE key_hash = $1
+        WHERE key_hash = $1 AND key_type = 'secret'
         LIMIT 1
         "#,
             PROJECTION
@@ -238,116 +268,46 @@ impl ApiKey {
         .bind(&key_hash)
         .fetch_optional(exec.clone())
         .await?
-        .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
-
-        // --- 3. Cache Write ---
-        if let Some(redis) = redis
-            && let Ok(serialized) = serde_json::to_string(&api_key)
-        {
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis.get().await
-                    && let Err(e) = conn
-                        .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
-                        .await
-                {
-                    error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
-                }
-            });
-        }
-
-        Ok(api_key)
+        .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))
     }
 
-    /// Finds API key by hash with Redis caching (TTL 10min).
-    /// Synchronous version without background last_used_at update.
-    /// Use this with generic executors or transactions where spawning is not needed.
-    pub async fn find_by_hash_sync<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        key_hash: String,
-    ) -> Result<ApiKey>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        let cache_key = Self::cache_key_by_hash(&key_hash);
-
-        // --- 1. Redis Cache Lookup ---
-        if let Some(redis_read) = &redis
-            && let Ok(mut conn) = redis_read.get().await
-            && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
-            && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
-        {
-            return Ok(api_key);
-        }
-
-        // --- 2. Database Fallback ---
-        let api_key = sqlx::query_as::<_, ApiKey>(&format!(
-            r#"
-        SELECT {}
-        FROM api_keys
-        WHERE key_hash = $1
-        LIMIT 1
-        "#,
-            PROJECTION
-        ))
-        .bind(&key_hash)
-        .fetch_optional(exec)
-        .await?
-        .ok_or_else(|| VaultlessError::NotFound("API key not found".into()))?;
-
-        // --- 3. Cache Write (fire-and-forget, if Redis available) ---
-        if let Some(redis) = redis
-            && let Ok(serialized) = serde_json::to_string(&api_key)
-        {
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis.get().await
-                    && let Err(e) = conn
-                        .set_ex::<_, _, ()>(&cache_key, serialized, API_KEY_CACHE_TTL)
-                        .await
-                {
-                    error!(cache_key = %cache_key, error = %e, "Failed to write API key cache.");
-                }
-            });
-        }
-
-        Ok(api_key)
-    }
-    /// Finds API key by full key (hashed internally) with caching and last_used_at update.
-    pub async fn find_by_api_key<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        api_key: String,
-    ) -> Result<ApiKey>
+    /// Finds API key by full key (hashed internally), restricted to Secret key type.
+    pub async fn find_by_api_key<'c, E>(exec: E, api_key: String) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
     {
         let key_hash = crate::crypto::hash_content(api_key.as_bytes());
-        Self::find_by_hash(exec, redis, key_hash).await
+        Self::find_by_hash(exec, key_hash).await
     }
 
-    /// Finds API key by ID with caching.
-    pub async fn find_by_id<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        id: Uuid,
-    ) -> Result<ApiKey>
+    /// Finds API key by plaintext publishable key, restricted to Publishable key type.
+    pub async fn find_by_publishable_key<'c, E>(exec: E, pk_plaintext: &str) -> Result<ApiKey>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        // Database Lookup, restricted to Publishable key type
+        sqlx::query_as::<_, ApiKey>(&format!(
+            r#"
+        SELECT {}
+        FROM api_keys
+        WHERE publishable_key_plaintext = $1 AND key_type = 'publishable'
+        LIMIT 1
+        "#,
+            PROJECTION
+        ))
+        .bind(pk_plaintext)
+        .fetch_optional(exec.clone())
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Publishable key not found".into()))
+    }
+
+    /// Finds API key by ID (Database only).
+    pub async fn find_by_id<'c, E>(exec: E, id: Uuid) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        // Try cache if Redis is available
-        if let Some(redis) = &redis {
-            let cache_key = Self::cache_key_by_id(id);
-
-            if let Ok(mut conn) = redis.get().await
-                && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
-                && let Ok(api_key) = serde_json::from_str::<ApiKey>(&cached_json)
-            {
-                return Ok(api_key);
-            }
-        }
-
         // Fetch from DB
-        let api_key = sqlx::query_as::<_, ApiKey>(&format!(
+        sqlx::query_as::<_, ApiKey>(&format!(
             r#"
                 SELECT {}
                 FROM api_keys WHERE id = $1
@@ -357,30 +317,7 @@ impl ApiKey {
         .bind(id)
         .fetch_optional(exec)
         .await?
-        .ok_or_else(|| VaultlessError::NotFound("API key not found".to_string()))?;
-
-        // Cache if Redis available
-        if let Some(redis) = redis {
-            let cache_key = Self::cache_key_by_id(id);
-            if let Ok(serialized) = serde_json::to_string(&api_key) {
-                // Simplified clone by moving the Arc into the spawned task
-                tokio::spawn(async move {
-                    if let Ok(mut conn) = redis.get().await {
-                        let _: () = conn
-                            .set_ex(&cache_key, serialized, API_KEY_CACHE_TTL)
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!(
-                                    cache_key = %cache_key,
-                                    error = %e,
-                                    "Failed to set API key cache key"
-                                );
-                            });
-                    }
-                });
-            }
-        }
-        Ok(api_key)
+        .ok_or_else(|| VaultlessError::NotFound("API key not found".to_string()))
     }
 
     /// Lists API keys by owner (paginated with total count).
@@ -432,6 +369,7 @@ impl ApiKey {
     }
 
     /// Lists all API keys (paginated with total count).
+    // ... (This function remains unchanged as it queries all keys)
     pub async fn list<'c, E>(
         exec: E,
         page: Option<i64>,
@@ -475,8 +413,9 @@ impl ApiKey {
         })
     }
 
-    /// Validates active/expiry.
-    pub async fn validate<'c, E>(&self, exec: E, redis: Option<Arc<RedisPoolType>>) -> Result<()>
+    /// Validates active/expiry and checks quota against the database.
+    /// Only Secret keys require quota validation.
+    pub async fn validate<'c, E>(&self, _exec: E, redis_pool: Arc<RedisPool>) -> Result<()>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
@@ -492,39 +431,28 @@ impl ApiKey {
             return Err(VaultlessError::ApiKeyExpired);
         }
 
-        // 3. Perform the ASYNCHRONOUS Quota Check
-        // NOTE: check_quota returns Result<bool>, where 'true' means 'allowed'.
-        // If it returns 'false', we should fail the validation.
-        let quota = self.monthly_message_quota as i64;
-        let is_quota_allowed = Self::check_quota(exec, redis, self.id, quota).await?;
+        // 3. Perform Quota Check (ONLY for Secret Keys)
+        if self.key_type == KeyType::Secret {
+            let quota = self.monthly_message_quota as i64;
+            let is_quota_allowed = Self::check_quota(redis_pool, self.id, quota).await?;
 
-        if !is_quota_allowed {
-            return Err(VaultlessError::QuotaExceeded(
-                "Monthly message quota exceeded.".to_string(),
-            ));
+            if !is_quota_allowed {
+                return Err(VaultlessError::QuotaExceeded(
+                    "Monthly message quota exceeded.".to_string(),
+                ));
+            }
         }
 
         Ok(())
     }
 
-    /// Updates tier with cache invalidation.
-    pub async fn update_tier<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        id: Uuid,
-        new_tier: SubscriptionTier,
-    ) -> Result<ApiKey>
+    /// Updates tier.
+    pub async fn update_tier<'c, E>(exec: E, id: Uuid, new_tier: SubscriptionTier) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // 1. FETCH key_hash BEFORE UPDATE
-        let key_hash: String = sqlx::query_scalar("SELECT key_hash FROM api_keys WHERE id = $1")
-            .bind(id)
-            .fetch_one(exec.clone())
-            .await?;
-
-        // 2. Perform the UPDATE (using the original exec)
-        let api_key = sqlx::query_as::<_, ApiKey>(&format!(
+        // Perform the UPDATE (Tier update is restricted to Secret keys implicitly by the DB check)
+        sqlx::query_as::<_, ApiKey>(&format!(
             r#"
                 UPDATE api_keys 
                 SET 
@@ -532,7 +460,7 @@ impl ApiKey {
                     monthly_message_quota = $3,
                     message_retention_seconds = $4,
                     rate_limit_per_minute = $5
-                WHERE id = $1
+                WHERE id = $1 AND key_type = 'secret'
                 RETURNING {}
                 "#,
             PROJECTION
@@ -543,287 +471,213 @@ impl ApiKey {
         .bind(new_tier.default_retention_seconds())
         .bind(new_tier.default_rate_limit())
         .fetch_one(exec)
-        .await?;
-
-        // 3. Invalidate cache
-        Self::invalidate_cache(redis, id, key_hash).await;
-
-        Ok(api_key)
+        .await
+        .map_err(VaultlessError::Database)
     }
 
-    /// Deactivate key with cache invalidation.
-    pub async fn deactivate<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        id: Uuid,
-    ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // 1. FETCH key_hash BEFORE UPDATE
-        let key_hash: String = sqlx::query_scalar("SELECT key_hash FROM api_keys WHERE id = $1")
-            .bind(id)
-            .fetch_one(exec.clone())
-            .await?;
+    // ... (deactivate, reactivate, update_metadata, delete remain largely the same)
 
-        // 2. Perform the UPDATE (using the original exec)
-        sqlx::query("UPDATE api_keys SET is_active = false WHERE id = $1")
-            .bind(id)
-            .execute(exec)
-            .await?;
-
-        // 3. Invalidate cache
-        Self::invalidate_cache(redis, id, key_hash).await;
-        Ok(())
-    }
-
-    /// Reactivate key with cache invalidation.
-    pub async fn reactivate<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        id: Uuid,
-    ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // 1. FETCH key_hash BEFORE UPDATE
-        let key_hash: String = sqlx::query_scalar("SELECT key_hash FROM api_keys WHERE id = $1")
-            .bind(id)
-            .fetch_one(exec.clone())
-            .await?;
-
-        // 2. Perform the UPDATE (using the original exec)
-        sqlx::query("UPDATE api_keys SET is_active = true WHERE id = $1")
-            .bind(id)
-            .execute(exec)
-            .await?;
-
-        // 3. Invalidate cache
-        Self::invalidate_cache(redis, id, key_hash).await;
-
-        Ok(())
-    }
-
-    /// Update description with cache invalidation.
-    pub async fn update_metadata<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        id: Uuid,
-        description: Option<String>,
-    ) -> Result<ApiKey>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // 1. FETCH key_hash BEFORE UPDATE
-        let key_hash: String = sqlx::query_scalar("SELECT key_hash FROM api_keys WHERE id = $1")
-            .bind(id)
-            .fetch_one(exec.clone())
-            .await?;
-
-        // 2. Perform the UPDATE (using the original exec)
-        let api_key = sqlx::query_as::<_, ApiKey>(&format!(
-            r#"
-                UPDATE api_keys 
-                SET description = COALESCE($2, description)
-                WHERE id = $1
-                RETURNING {}
-                "#,
-            PROJECTION
-        ))
-        .bind(id)
-        .bind(&description)
-        .fetch_one(exec)
-        .await?;
-
-        // 3. Invalidate cache
-        Self::invalidate_cache(redis, id, key_hash).await;
-
-        Ok(api_key)
-    }
-
-    /// Hard delete key with cache invalidation.
-    pub async fn delete<'c, E>(exec: E, redis: Option<Arc<RedisPoolType>>, id: Uuid) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // 1. FETCH key_hash BEFORE DELETE
-        let key_hash: String = sqlx::query_scalar("SELECT key_hash FROM api_keys WHERE id = $1")
-            .bind(id)
-            .fetch_one(exec.clone())
-            .await
-            .map_err(|e| match e {
-                sqlx::Error::RowNotFound => {
-                    VaultlessError::NotFound("API key not found for deletion".to_string())
-                }
-                _ => VaultlessError::Database(e),
-            })?;
-
-        // 2. Perform the DELETE (using the original exec)
-        sqlx::query("DELETE FROM api_keys WHERE id = $1")
-            .bind(id)
-            .execute(exec)
-            .await?;
-
-        // 3. Invalidate cache
-        Self::invalidate_cache(redis, id, key_hash).await;
-
-        Ok(())
-    }
-
-    /// Quota check with caching. Uses provided quota limit (avoids refetch).
-    /// Note: Relies on external increment call (e.g., after message creation) for accuracy.
-    /// Repopulation from DB on cache miss ensures catch-up during Redis downtime.
-    pub async fn check_quota<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
+    /// Quota check (Database only).
+    pub async fn check_quota(
+        redis_pool: Arc<RedisPool>,
         api_key_id: Uuid,
         quota: i64,
-    ) -> Result<bool>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        let count = Self::get_monthly_usage(exec, redis, api_key_id).await?;
+    ) -> Result<bool> {
+        let count = Self::get_monthly_usage(redis_pool, api_key_id).await?;
         Ok(count < quota)
     }
 
-    pub async fn get_monthly_usage<'c, E>(
-        exec: E,
-        redis: Option<Arc<RedisPoolType>>,
-        api_key_id: Uuid,
-    ) -> Result<i64>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
+    /// Generates the dedicated Redis key for real-time monthly quota tracking.
+    /// This key relies on its TTL for monthly expiry.
+    pub fn quota_cache_key(api_key_id: Uuid) -> String {
+        // e.g., "quota:monthly:a854...-e49c"
+        // This is the key that is atomically INCR'd in usage_metrics.rs
+        cache_key!("quota", "monthly", api_key_id)
+    }
+
+    /// Retrieves the current monthly usage count from Redis.
+    /// This count is based on real-time atomic increments performed on message send,
+    /// suitable for quota enforcement of ephemeral data.
+    pub async fn get_monthly_usage(redis_pool: Arc<RedisPool>, api_key_id: Uuid) -> Result<i64> // Assuming Result<i64> is defined
     {
-        let month_key = Self::quota_cache_key(api_key_id);
-        let mut current_count: Option<i64> = None;
+        info!(api_key_id = %api_key_id, "Querying real-time monthly usage count from Redis");
 
-        // 1. Try to get the REAL-TIME count from Redis
-        if let Some(redis_pool) = &redis
-            && let Ok(mut conn) = redis_pool.get().await
-        {
-            current_count = conn
-                .get::<_, Option<i64>>(&month_key)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Redis GET failed during usage check.");
-                    None
-                });
-        }
+        let monthly_key = Self::quota_cache_key(api_key_id);
 
-        // 2. Fast path: found in Redis
-        if let Some(count) = current_count {
-            return Ok(count);
-        }
-
-        // 3. FALLBACK: Query database and repopulate cache
-        info!(api_key_id = %api_key_id, "Re-populating usage cache from database");
-        let count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) 
-            FROM messages 
-            WHERE api_key_id = $1 
-              AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
-            "#,
-        )
-        .bind(api_key_id)
-        .fetch_one(exec)
-        .await?;
-
-        // 4. Update the cache with the correct count and a long TTL
-        if let Some(redis_pool) = redis {
-            let month_key_clone = month_key.clone();
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis_pool.get().await {
-                    let _: () = conn
-                        .set_ex(&month_key_clone, count, QUOTA_CACHE_TTL_SECONDS)
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!(
-                                cache_key = %month_key_clone,
-                                error = %e,
-                                "Failed to set re-populated usage key"
-                            );
-                        });
-                }
-            });
-        }
+        let count: i64 = match redis_pool.get().await {
+            Ok(mut conn) => {
+                // GET the counter value. If the key doesn't exist (e.g., first message of the month),
+                // Redis returns 0 (None in Rust context, handled by unwrap_or).
+                conn.get::<_, Option<i64>>(&monthly_key)
+                    .await
+                    .map_err(|e| VaultlessError::Internal(e.to_string()))?
+                    .unwrap_or(0)
+            }
+            Err(e) => {
+                tracing::error!("Redis connection error during quota check: {}", e);
+                // Fail the operation if Redis is unavailable, as usage cannot be reliably verified.
+                return Err(VaultlessError::Internal(format!(
+                    "Redis usage check failed: {}",
+                    e
+                )));
+            }
+        };
 
         Ok(count)
     }
 
-    /// Increments the monthly quota usage counter in Redis (approximate).
-    /// Call this after successfully creating a message to track usage.
-    /// Falls back gracefully; repopulation in check_quota handles downtime.
-    pub async fn increment_monthly_usage<'c>(
-        redis: Option<Arc<RedisPoolType>>,
-        api_key_id: Uuid,
-    ) -> Result<()> {
-        let month_key = Self::quota_cache_key(api_key_id);
+    /// Fetches the necessary key data (SK hash and PK plaintext) linked to an
+    /// application ID for the sole purpose of invalidating Redis cache keys.
+    pub async fn get_linked_key_data_for_cache_invalidation<'c, E>(
+        exec: E,
+        app_id: Uuid,
+    ) -> Result<(Option<String>, String)>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // This query finds the hash of the Secret Key and the plaintext of
+        // the Publishable Key associated with the given application ID.
+        // We assume only one Secret Key and one Publishable Key per application.
+        let data = sqlx::query_as::<_, LinkedKeyData>(
+            r#"
+            SELECT 
+                MAX(CASE WHEN key_type = 'secret' THEN key_hash END) AS secret_key_hash,
+                MAX(CASE WHEN key_type = 'publishable' THEN publishable_key_plaintext END) AS publishable_key_plaintext
+            FROM api_keys
+            WHERE application_id = $1
+            "#,
+        )
+        .bind(app_id)
+        .fetch_one(exec)
+        .await
+        .map_err(VaultlessError::Database)?;
 
-        if let Some(redis_pool) = redis {
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis_pool.get().await {
-                    // INCR always (sets to 1 if new)
-                    let new_count: i64 = conn.incr(&month_key, 1i64).await.unwrap_or_else(|e| {
-                        error!(cache_key = %month_key, error = %e, "Failed to increment quota in Redis");
-                        0
-                    });
+        // The Publishable Key plaintext should *always* exist if the application was created successfully.
+        let pk_plaintext = data.publishable_key_plaintext.ok_or_else(|| {
+            VaultlessError::Internal(format!(
+                "Could not find Publishable Key for application ID: {}",
+                app_id
+            ))
+        })?;
 
-                    // Ensure long TTL
-                    let _: () = conn
-                        .expire(&month_key, QUOTA_CACHE_TTL_SECONDS as i64)
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!(cache_key = %month_key, error = %e, "Failed to set quota TTL");
-                        });
-
-                    tracing::debug!(api_key_id = %api_key_id, new_count, "Quota usage incremented");
-                }
-            });
-        } else {
-            tracing::warn!(api_key_id = %api_key_id, "Redis unavailable during quota increment; relying on DB repopulation");
-        }
-
-        Ok(())
+        // Return (SK Hash, PK Plaintext)
+        Ok((data.secret_key_hash, pk_plaintext))
     }
 
-    /// Invalidate all caches for an API key (ID, Hash, and Quota)
-    pub async fn invalidate_cache(redis: Option<Arc<RedisPoolType>>, id: Uuid, key_hash: String) {
-        if let Some(redis) = redis {
-            tokio::spawn(async move {
-                if let Ok(mut conn) = redis.get().await {
-                    let cache_key_id = Self::cache_key_by_id(id);
-                    let cache_key_hash = Self::cache_key_by_hash(&key_hash);
+    pub async fn get_current_period_counters(
+        redis_pool: Arc<RedisPool>,
+        api_key_id: Uuid,
+    ) -> Result<MetricCounters> {
+        info!(api_key_id = %api_key_id, "Querying real-time hourly metric counters from Redis.");
 
-                    // 1. Invalidate API key cache by ID
-                    let _: () = conn.del(&cache_key_id).await.unwrap_or_else(|e| {
-                        error!(
-                            cache_key = %cache_key_id,
-                            error = %e,
-                            "Failed to invalidate API key ID cache"
-                        );
-                    });
+        // 1. Determine the key for the current hourly period
+        let now = Utc::now();
+        let period_key = match MetricKey::new(api_key_id, now, MetricGranularity::Hour) {
+            Ok(key) => key,
+            Err(e) => {
+                tracing::warn!("Failed to generate metric key: {}", e);
+                // Return default/zero counters on failure
+                return Ok(MetricCounters::default());
+            }
+        };
 
-                    // 2. Invalidate API key cache by Hash
-                    let _: () = conn.del(&cache_key_hash).await.unwrap_or_else(|e| {
-                        error!(
-                            cache_key_hash = %cache_key_hash,
-                            error = %e,
-                            "Failed to invalidate API key Hash cache"
-                        );
-                    });
+        // 2. Define the fields to retrieve from the Redis Hash
+        let fields = [
+            "messages_sent",
+            "messages_received",
+            "proofs_verified",
+            "total_bytes_sent",
+            "total_bytes_received",
+            "rate_limit_hits",
+        ];
 
-                    // 3. Invalidate quota cache
-                    let quota_key = Self::quota_cache_key(id);
-                    let _: () = conn.del(&quota_key).await.unwrap_or_else(|e| {
-                        error!(
-                            cache_key = %quota_key,
-                            error = %e,
-                            "Failed to invalidate quota cache"
-                        );
-                    });
-                }
-            });
+        let mut conn = match redis_pool.get().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!("Redis connection error during metrics lookup: {}", e);
+                // Return default/zero counters if Redis connection fails (fail open/soft)
+                return Ok(MetricCounters::default());
+            }
+        };
+
+        // 3. Perform the HGETALL or HMGET operation within a timeout
+        let result = tokio::time::timeout(
+            Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS),
+            // HMGET is more efficient for fetching specific fields
+            conn.hmget::<_, _, HashMap<String, i64>>(period_key.as_str(), &fields),
+        )
+        .await;
+
+        // 4. Process the result
+        match result {
+            Ok(Ok(values_map)) => {
+                let mut counters = MetricCounters::default();
+                // Note: MetricCounters has a merge_from_map method,
+                // but we can manually map for clarity in this specific lookup.
+
+                counters.messages_sent = *values_map.get("messages_sent").unwrap_or(&0);
+                counters.messages_received = *values_map.get("messages_received").unwrap_or(&0);
+                counters.proofs_verified = *values_map.get("proofs_verified").unwrap_or(&0);
+                counters.total_bytes_sent = *values_map.get("total_bytes_sent").unwrap_or(&0);
+                counters.total_bytes_received =
+                    *values_map.get("total_bytes_received").unwrap_or(&0);
+                counters.rate_limit_hits = *values_map.get("rate_limit_hits").unwrap_or(&0);
+
+                info!(
+                    api_key_id = %api_key_id,
+                    period_key = period_key.as_str(),
+                    "Retrieved real-time metric counters."
+                );
+
+                Ok(counters)
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Redis HMGET error for key {}: {}", period_key.as_str(), e);
+                // Return default/zero counters on Redis command error
+                Ok(MetricCounters::default())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Redis operation timed out during metrics lookup for key {}",
+                    period_key.as_str()
+                );
+                // Return default/zero counters on timeout
+                Ok(MetricCounters::default())
+            }
+        }
+    }
+
+    pub async fn find_by_plaintext_or_hash<'c, E>(
+        exec: E,
+        key_hash_hex: &str,   // The hash of the key, used for lookup
+    ) -> Result<(Self, KeyType)>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // For security, we only query against the stored hash in the 'key_hash' column.
+        let row = sqlx::query_as::<_, ApiKey>(
+            r#"
+            SELECT
+                id, 
+                application_id, 
+                key_hash
+            FROM 
+                api_keys
+            WHERE 
+                key_hash = $1
+            AND 
+                key_type = 'secret' -- Assuming you have a key_type column
+            "#,
+        )
+        .bind(key_hash_hex)
+        .fetch_optional(exec)
+        .await?;
+
+        match row {
+            Some(key_row) => Ok((key_row, KeyType::Secret)),
+            None => Err(crate::error::VaultlessError::NotFound(
+                "API Key not found or key type is not Secret.".to_string(),
+            )),
         }
     }
 }
@@ -837,14 +691,5 @@ mod tests {
         assert_eq!(SubscriptionTier::Free.default_monthly_quota(), 1_000);
         assert_eq!(SubscriptionTier::Pro.default_rate_limit(), 1_000);
         assert_eq!(SubscriptionTier::Starter.monthly_price_cents(), Some(2_900));
-    }
-
-    #[test]
-    fn test_cache_keys() {
-        let id = Uuid::new_v4();
-        let hash = "test_hash";
-
-        assert_eq!(ApiKey::cache_key_by_hash(hash), "api_key:hash:test_hash");
-        assert_eq!(ApiKey::cache_key_by_id(id), format!("api_key:id:{}", id));
     }
 }

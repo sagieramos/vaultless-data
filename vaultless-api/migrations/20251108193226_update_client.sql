@@ -1,4 +1,4 @@
--- Add migration script here
+-- 20251108193226_update_client.sql
 -- ============================================================================
 -- Migration: Update clients table for application support
 -- ============================================================================
@@ -29,22 +29,6 @@ CREATE INDEX IF NOT EXISTS idx_clients_app_active
     TABLESPACE pg_default
     WHERE is_active = true;
 
-CREATE INDEX IF NOT EXISTS idx_clients_dev_app
-    ON public.clients USING btree 
-    (developer_id ASC NULLS LAST, application_id ASC NULLS LAST)
-    TABLESPACE pg_default;
-
--- Step 4: Add check constraint to ensure referential integrity
-ALTER TABLE public.clients
-ADD CONSTRAINT clients_application_consistency_check
-CHECK (
-    (application_id IS NOT NULL AND developer_id IS NOT NULL AND api_key_id IS NOT NULL)
-    OR
-    (application_id IS NULL AND developer_id IS NULL AND api_key_id IS NULL)
-);
-
-COMMENT ON CONSTRAINT clients_application_consistency_check ON public.clients IS
-'Ensures that application_id, developer_id, and api_key_id are either all set or all null. This prevents orphaned references.';
 
 COMMIT;
 
@@ -98,15 +82,7 @@ SELECT
     a.id AS application_id,
     a.name AS application_name,
     a.platform,
-    a.publishable_key_prefix,
     a.is_active AS application_active,
-    
-    -- API Key/Tier info
-    ak.id AS api_key_id,
-    ak.tier,
-    ak.monthly_message_quota,
-    ak.rate_limit_per_minute,
-    ak.is_active AS api_key_active,
     
     -- Developer info
     u.id AS developer_id,
@@ -114,8 +90,7 @@ SELECT
 
 FROM public.clients c
 LEFT JOIN public.applications a ON c.application_id = a.id
-LEFT JOIN public.api_keys ak ON a.secret_key_id = ak.id
 LEFT JOIN public.users u ON c.developer_id = u.id;
 
 COMMENT ON VIEW public.v_clients_full IS 
-'Complete client view with application, tier, and developer information for dashboard queries.';
+'Complete client view with application and developer information for dashboard queries.';

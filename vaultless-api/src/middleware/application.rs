@@ -132,3 +132,39 @@ pub async fn validate_uuid_and_check_ownership(
     Ok(next.run(req).await)
 }
 
+/// Endpoint: GET /api/v1/applications/:app_id/realtime-usage
+/// Retrieves real-time metrics for the current hour for a given application.
+pub async fn get_app_realtime_usage(
+    State(pg_pool): State<Arc<PgPool>>,
+    State(redis_pool): State<Arc<RedisPool>>,
+    Path(app_id): Path<Uuid>,
+    // Auth context (assumes user is authenticated and authorized for this app_id)
+) -> Result<impl IntoResponse> {
+
+    // 1. Fetch the real-time counters through the Application model.
+    let counters = match Application::get_current_period_counters(
+        pg_pool.as_ref(), // Pass the concrete PgPool for execution
+        redis_pool,
+        app_id,
+    ).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!(application_id = %app_id, "Failed to fetch real-time metrics: {:?}", e);
+            // Return an appropriate error response
+            return Err(e);
+        }
+    };
+
+    // 2. Determine the period start time for context (client side needs this).
+    // This uses the same logic as MetricKey generation for the current hour.
+    let current_period_start = crate::usage_metrics::get_period_start(&chrono::Utc::now())
+        .to_rfc3339();
+
+    // 3. Construct and return the successful response
+    let response = RealTimeUsageResponse {
+        current_period_start_utc: current_period_start,
+        counters,
+    };
+
+    Ok(Json(response).into_response())
+}

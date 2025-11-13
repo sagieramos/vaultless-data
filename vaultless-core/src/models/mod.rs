@@ -8,7 +8,7 @@ pub mod proof;
 pub mod usage;
 pub mod user;
 
-pub use api_key::{ApiKey, CreateApiKey};
+pub use api_key::{ApiKey, CreateApiKey, CachedApiKey};
 pub use app_model::dto::{
     Application, ApplicationHealth, ApplicationValidation, ApplicationWithTier, CreateApplication,
     CreateApplicationResponse, UpdateApplication,

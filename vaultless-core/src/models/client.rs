@@ -171,37 +171,13 @@ impl Client {
         publishable_key: String,
     ) -> Result<RegisterClientResponse>
     where
-        E: Executor<'c, Database = Postgres> + Clone,
+        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
     {
-        // --- Step 1: Look up application by publishable key ---
-        let app =
-            Application::find_by_publishable_key(exec.clone(), redis.clone(), &publishable_key)
-                .await
-                .map_err(|e| {
-                    tracing::warn!("Invalid publishable key: {}", publishable_key);
-                    VaultlessError::Unauthorized(format!("Invalid publishable key: {}", e))
-                })?;
-
-        // Verify application is active
-        if !app.is_active {
-            return Err(VaultlessError::Unauthorized(
-                "Application is deactivated".into(),
-            ));
-        }
-
-        tracing::debug!(
-            application_id = %app.id,
-            application_name = %app.name,
-            developer_id = %app.user_id,
-            "Client registering through application"
-        );
-
-        // --- Step 2: Validate basic struct constraints ---
+        // --- Validate input ---
         input
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
-        // --- Step 3: Enforce mandatory fields ---
         let pubkey = input
             .public_key
             .ok_or_else(|| VaultlessError::Validation("public_key is required.".to_string()))?;
@@ -214,20 +190,12 @@ impl Client {
             .signed_payload
             .ok_or_else(|| VaultlessError::Validation("signed_payload is required.".to_string()))?;
 
-        // --- Step 4: Signature Verification (Mandatory) ---
-        tracing::debug!("Verifying registration signature...");
-        match crate::crypto::verify_signature(payload.as_bytes(), &signature, &pubkey) {
-            Ok(()) => tracing::debug!("✅ Signature verification passed"),
-            Err(e) => {
-                tracing::warn!("❌ Signature verification failed: {:?}", e);
-                return Err(VaultlessError::Validation(
-                    "Signature verification failed".into(),
-                ));
-            }
-        }
+        // --- Verify signature ---
+        crate::crypto::verify_signature(payload.as_bytes(), &signature, &pubkey)
+            .map_err(|_| VaultlessError::Validation("Signature verification failed".into()))?;
 
-        // --- Step 5: Nonce replay protection ---
-        if let (Some(nonce), Some(redis_pool)) = (input.nonce.as_ref(), &redis) {
+        // --- Nonce replay protection ---
+        if let (Some(nonce), Some(redis_pool)) = (&input.nonce, &redis) {
             let nonce_key = cache_key!("client", "register_nonce", nonce);
 
             if let Ok(mut conn) = redis_pool.get().await {
@@ -235,88 +203,76 @@ impl Client {
                 local key = KEYS[1]
                 local ttl = tonumber(ARGV[1])
                 local ok = redis.call('SET', key, '1', 'NX', 'EX', ttl)
-                if ok then
-                    return 1
-                else
-                    return 0
-                end
+                return ok and 1 or 0
             "#;
                 let script = Script::new(NONCE_SCRIPT);
-                let script_result: redis::RedisResult<i32> = script
+                let result: redis::RedisResult<i32> = script
                     .key(&nonce_key)
                     .arg(IDENTIFIER_TTL_SECS)
                     .invoke_async(&mut conn)
                     .await;
 
-                match script_result {
-                    Ok(1) => {
-                        tracing::debug!("Nonce reserved in redis for key {}", nonce_key);
-                    }
-                    Ok(0) => {
-                        return Err(VaultlessError::Validation("Nonce already used".into()));
-                    }
-                    Ok(other) => {
-                        tracing::warn!(
-                            "Unexpected redis script result for nonce key {}: {}",
-                            nonce_key,
-                            other
-                        );
+                match result {
+                    Ok(1) => tracing::debug!("Nonce reserved: {}", nonce_key),
+                    Ok(0) => return Err(VaultlessError::Validation("Nonce already used".into())),
+                    Err(e) => tracing::warn!("Redis nonce check failed: {}", e),
+                    _ => {
                         return Err(VaultlessError::Validation(
-                            "Nonce check failed due to unexpected redis response".into(),
+                            "Nonce check unexpected result".into(),
                         ));
                     }
-                    Err(e) => {
-                        tracing::warn!("Redis error while checking nonce with script: {}", e);
-                    }
                 }
-            } else {
-                tracing::warn!(
-                    "Could not acquire redis connection for nonce check; continuing without replay protection"
-                );
             }
         }
 
-        // --- Step 6: Timestamp freshness check ---
+        // --- Timestamp freshness check ---
         if let Some(ts) = input.timestamp {
             let now_unix = Utc::now().timestamp();
-            let skew_allowed = 300; // 5 minutes allowed drift
-            if (ts - now_unix).abs() > skew_allowed {
+            if (ts - now_unix).abs() > 300 {
                 return Err(VaultlessError::Validation(
-                    "Timestamp is outside allowed time window".into(),
+                    "Timestamp outside allowed window".into(),
                 ));
             }
         }
 
-        // --- Step 7: Compute client_identifier hash ---
+        // --- Client identifier hash ---
         let client_identifier_hash = input
             .client_identifier
             .as_ref()
             .map(|ci| crypto::hash_content(ci.as_bytes()));
 
-        // --- Step 8: Generate session token ---
+        // --- Session token ---
         let token = crypto::generate_secure_token::<32>()?;
         let session_token = BASE64.encode(token);
         let session_token_hash = crypto::hash_content(&token);
         let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
-        // --- Step 9: Insert into database with application references ---
+        // --- Fetch application and developer_id via publishable key ---
+        let bundle = Application::resolve_publishable_key_bundle(
+            exec.clone(),
+            redis.as_ref().unwrap().clone(),
+            &publishable_key,
+        )
+        .await?;
+        let app = &bundle.application;
+
+        // --- Insert client into DB ---
         let client = sqlx::query_as::<_, Client>(
             r#"
-            INSERT INTO clients (
-                identifier,
-                client_identifier_hash,
-                public_key,
-                session_token_hash,
-                session_expires_at,
-                metadata,
-                developer_id,
-                api_key_id,
-                application_id,
-                last_seen_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-            RETURNING *
-            "#,
+        INSERT INTO clients (
+            identifier,
+            client_identifier_hash,
+            public_key,
+            session_token_hash,
+            session_expires_at,
+            metadata,
+            developer_id,
+            application_id,
+            last_seen_at
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+        RETURNING *
+        "#,
         )
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
@@ -324,9 +280,8 @@ impl Client {
         .bind(&session_token_hash)
         .bind(session_expires_at)
         .bind(&input.metadata)
-        .bind(app.user_id) // developer_id from application
-        .bind(app.secret_key_id) // api_key_id for billing/metrics
-        .bind(app.id) // application_id (NEW)
+        .bind(app.user_id) // developer_id
+        .bind(app.id) // application_id
         .fetch_one(exec)
         .await
         .map_err(|e| match e {
@@ -343,7 +298,7 @@ impl Client {
             "Client registered successfully"
         );
 
-        // --- Step 10: Cache canonical and aliases in Redis ---
+        // --- Cache in Redis ---
         if let Some(redis_pool) = &redis {
             let _ = Self::cache_to_redis(redis_pool, &client).await;
         }

@@ -35,8 +35,7 @@ CREATE TABLE IF NOT EXISTS clients (
     last_message_at TIMESTAMPTZ,
 
     -- Multi-tenancy support (optional linking)
-    developer_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    api_key_id UUID REFERENCES api_keys(id) ON DELETE SET NULL,
+    developer_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     
     -- Minimal, encrypted metadata (device info, preferences, etc.)
     -- NEVER store: names, emails, phone numbers, addresses, or any PII
@@ -68,20 +67,14 @@ CREATE INDEX idx_clients_last_seen ON clients(last_seen_at DESC NULLS LAST);
 CREATE INDEX idx_clients_last_message ON clients(last_message_at DESC NULLS LAST);
 
 -- Multi-tenancy queries
-CREATE INDEX idx_clients_dev_api ON clients(developer_id, api_key_id);
+CREATE INDEX idx_clients_dev_api ON clients(developer_id);
 
 -- Active clients filter
 CREATE INDEX idx_clients_active ON clients(is_active) 
     WHERE is_active = true;
 
--- API key performance
-CREATE INDEX idx_clients_api_key ON clients(api_key_id) 
-    WHERE api_key_id IS NOT NULL;
-
 CREATE INDEX idx_clients_active_dev ON clients(developer_id) 
     WHERE is_active = true;
-
-
 
 -- ============================================================================
 -- UPDATED MESSAGES TABLE (if not already present)
@@ -168,7 +161,6 @@ CREATE OR REPLACE FUNCTION get_or_create_client(
     p_identifier_hash VARCHAR(64),
     p_public_key TEXT DEFAULT NULL,
     p_developer_id UUID DEFAULT NULL,
-    p_api_key_id UUID DEFAULT NULL,
     p_metadata JSONB DEFAULT NULL
 )
 RETURNS TABLE(client_id UUID, is_new BOOLEAN) AS $$
@@ -187,7 +179,6 @@ BEGIN
             client_identifier_hash,
             public_key,
             developer_id,
-            api_key_id,
             metadata,
             last_seen_at
         )
@@ -195,7 +186,6 @@ BEGIN
             p_identifier_hash,
             p_public_key,
             p_developer_id,
-            p_api_key_id,
             p_metadata,
             NOW()
         )
@@ -283,11 +273,10 @@ SELECT
     COUNT(*) FILTER (WHERE last_seen_at > NOW() - INTERVAL '1 day') as active_1d,
     COUNT(*) FILTER (WHERE last_seen_at > NOW() - INTERVAL '7 days') as active_7d,
     COUNT(*) FILTER (WHERE last_seen_at > NOW() - INTERVAL '30 days') as active_30d,
-    developer_id,
-    api_key_id
+    developer_id
 FROM clients
 WHERE is_active = TRUE
-GROUP BY DATE_TRUNC('day', created_at), developer_id, api_key_id;
+GROUP BY DATE_TRUNC('day', created_at), developer_id;
 
 -- ============================================================================
 -- COMMENTS

@@ -318,6 +318,10 @@ CREATE TABLE api_keys (
 );
 
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix
+    ON public.api_keys USING btree
+    (key_prefix COLLATE pg_catalog."default" ASC NULLS LAST)
+    TABLESPACE pg_default;
 CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX idx_api_keys_active ON api_keys(is_active) WHERE is_active = true;
 CREATE INDEX idx_api_keys_tier ON api_keys(tier);

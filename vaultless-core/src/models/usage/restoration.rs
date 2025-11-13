@@ -1,6 +1,6 @@
-use super::usage::{ACTIVE_KEYS_SET, MetricKey, RedisPoolType};
+use super::usage::{ACTIVE_KEYS_SET, MetricGranularity, MetricKey, RedisPoolType};
 use crate::error::{Result, VaultlessError};
-const LOOKBACK_HOUR: i64 = 48;
+const LOOKBACK_HOUR: i64 = 48 * 3600;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use sqlx::Row;
@@ -60,7 +60,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             let period_start: DateTime<Utc> = r
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-            let metric_key = MetricKey::new(api_key_id, period_start)?;
+            let metric_key = MetricKey::new(api_key_id, period_start, MetricGranularity::Hour)?;
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();
@@ -148,7 +148,8 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             let period_start: DateTime<Utc> = r
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-            let metric_key = MetricKey::new(api_key_id, period_start)?;
+            let metric_key = MetricKey::new(api_key_id, period_start, MetricGranularity::Hour)?;
+
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();

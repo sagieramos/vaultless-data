@@ -13,13 +13,17 @@
 //! - Idempotent processing with exactly-once semantics
 //! - Graceful shutdown with final flush
 //! - Health metrics and monitoring
+use std::fmt::Write;
 
 use crate::{
     cache_key, crypto,
     error::{Result, VaultlessError},
     models::{ApiKey, Application},
 };
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, NaiveDateTime, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveDateTime, Timelike, Utc,
+};
+
 use deadpool_redis::Pool as RedisPool;
 use once_cell::sync::Lazy;
 use redis::AsyncCommands;
@@ -57,7 +61,7 @@ pub static ACTIVE_KEYS_SET: Lazy<String> = Lazy::new(|| cache_key!("metric", "ac
 const PROCESSING_FLAG: &str = "_processing";
 
 /// Redis operation timeout in seconds
-const REDIS_OPERATION_TIMEOUT_SECS: u64 = 30;
+pub const REDIS_OPERATION_TIMEOUT_SECS: u64 = 30;
 
 // =============================================================================
 // Configuration
@@ -130,30 +134,65 @@ impl FlusherMetrics {
 // Newtype for Redis Keys
 // =============================================================================
 
+#[derive(Debug, Clone, Copy)]
+pub enum MetricGranularity {
+    Hour,
+    Minute,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MetricKey(String);
 
 impl MetricKey {
-    pub fn new(api_key_id: Uuid, period: DateTime<Utc>) -> Result<Self> {
-        let period_start = get_period_start(&period);
+    pub fn new(
+        api_key_id: Uuid,
+        now: DateTime<Utc>,
+        granularity: MetricGranularity,
+    ) -> Result<Self> {
+        let period_start = match granularity {
+            MetricGranularity::Hour => get_hour_window(&now),
+            MetricGranularity::Minute => get_minute_window(&now),
+        };
 
-        if period_start > Utc::now() {
-            return Err(VaultlessError::InvalidInput(
-                "Future periods not allowed for metric keys".into(),
-            ));
-        }
+        // Preallocate buffer for YYYYMMDDHHMM (12 chars) for minute granularity
+        let mut buf = String::with_capacity(12);
 
-        if api_key_id.is_nil() {
-            return Err(VaultlessError::InvalidInput(
-                "Nil UUID not allowed for metric keys".into(),
-            ));
+        match granularity {
+            MetricGranularity::Hour => {
+                // YYYYMMDDHH
+                write!(
+                    &mut buf,
+                    "{:04}{:02}{:02}{:02}",
+                    period_start.year(),
+                    period_start.month(),
+                    period_start.day(),
+                    period_start.hour()
+                )
+                .unwrap();
+            }
+            MetricGranularity::Minute => {
+                // YYYYMMDDHHMM
+                write!(
+                    &mut buf,
+                    "{:04}{:02}{:02}{:02}{:02}",
+                    period_start.year(),
+                    period_start.month(),
+                    period_start.day(),
+                    period_start.hour(),
+                    period_start.minute()
+                )
+                .unwrap();
+            }
         }
 
         Ok(Self(cache_key!(
             "metric",
-            "hash",
+            match granularity {
+                MetricGranularity::Hour => "hash_hour",
+                MetricGranularity::Minute => "hash_minute",
+            },
             api_key_id,
-            period_start.format("%Y%m%d%H")
+            buf
         )))
     }
 
@@ -219,16 +258,22 @@ impl TryFrom<String> for MetricKey {
 // Time Utilities
 // =============================================================================
 
-pub fn get_period_start(now: &DateTime<Utc>) -> DateTime<Utc> {
+/// Truncate a DateTime<Utc> to the start of the current hour
+#[inline(always)]
+pub fn get_hour_window(now: &DateTime<Utc>) -> DateTime<Utc> {
     now.date_naive()
         .and_hms_opt(now.hour(), 0, 0)
         .map(|dt| dt.and_utc())
-        .unwrap_or_else(|| {
-            now.date_naive()
-                .and_hms_opt(0, 0, 0)
-                .map(|dt| dt.and_utc())
-                .unwrap_or(*now)
-        })
+        .unwrap_or(*now) // fallback if impossible
+}
+
+/// Truncate a DateTime<Utc> to the start of the current minute
+#[inline(always)]
+pub fn get_minute_window(now: &DateTime<Utc>) -> DateTime<Utc> {
+    now.date_naive()
+        .and_hms_opt(now.hour(), now.minute(), 0)
+        .map(|dt| dt.and_utc())
+        .unwrap_or(*now) // fallback if impossible
 }
 
 // =============================================================================
@@ -296,7 +341,7 @@ where
     // --- END: New logic for real-time quota ---
 
     let now = Utc::now();
-    let key = MetricKey::new(api_key_id, get_period_start(&now))?;
+    let key = MetricKey::new(api_key_id, now, MetricGranularity::Hour)?;
 
     tokio::time::timeout(
         Duration::from_secs(config.redis_operation_timeout_secs),
@@ -327,7 +372,7 @@ where
     }
 
     let now = Utc::now();
-    let key = MetricKey::new(api_key_id, get_period_start(&now))?;
+    let key = MetricKey::new(api_key_id, now, MetricGranularity::Hour)?;
 
     tokio::time::timeout(
         Duration::from_secs(config.redis_operation_timeout_secs),
@@ -354,7 +399,7 @@ where
     C: AsyncCommands + Send + Unpin,
 {
     let now = Utc::now();
-    let key = MetricKey::new(api_key_id, get_period_start(&now))?;
+    let key = MetricKey::new(api_key_id, now, MetricGranularity::Hour)?;
 
     tokio::time::timeout(
         Duration::from_secs(config.redis_operation_timeout_secs),
@@ -378,7 +423,7 @@ where
     C: AsyncCommands + Send + Unpin,
 {
     let now = Utc::now();
-    let key = MetricKey::new(api_key_id, get_period_start(&now))?;
+    let key = MetricKey::new(api_key_id, now, MetricGranularity::Hour)?;
 
     tokio::time::timeout(
         Duration::from_secs(config.redis_operation_timeout_secs),
@@ -546,7 +591,7 @@ pub fn start_redis_flusher(
 ) -> (tokio::task::JoinHandle<()>, Arc<Notify>) {
     let shutdown = Arc::new(Notify::new());
     let shutdown_clone = Arc::clone(&shutdown);
-    
+
     let handle = tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(config.flush_interval_secs));
 
@@ -690,7 +735,7 @@ async fn flush_redis_to_pg(
     let cutoff = if flush_all {
         now + ChronoDuration::days(1)
     } else {
-        get_period_start(&now)
+        get_hour_window(&now)
     };
 
     loop {

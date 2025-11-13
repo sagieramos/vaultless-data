@@ -32,6 +32,14 @@ pub struct CreateApplicationRequest {
     pub bundle_id: Option<String>,
     pub platform: Option<String>,
     pub webhook_url: Option<String>,
+    pub existing_api_key_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+pub struct RealTimeUsageResponse {
+    pub current_period_start_utc: String,
+    #[serde(flatten)]
+    pub counters: MetricCounters,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +81,7 @@ pub async fn create_application(
         name: req.name,
         description: req.description,
         tier: SubscriptionTier::Free,
+        existing_api_key_id: req.existing_api_key_id,
         bundle_id: req.bundle_id,
         platform: req.platform,
         webhook_url: req.webhook_url,
@@ -176,7 +185,7 @@ pub async fn update_application(
     Json(req): Json<UpdateApplication>,
 ) -> Result<Json<ApplicationResponse>, ApiError> {
     // 1. Verify ownership
-    let app = Application::find_by_id(&*state.db, Some(state.redis_pool.clone()), app_id)
+    let app = Application::find_by_id(&*state.db, app_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -220,7 +229,7 @@ pub async fn deactivate_application(
     Path(app_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     // Verify ownership
-    let app = Application::find_by_id(&*state.db, Some(state.redis_pool.clone()), app_id)
+    let app = Application::find_by_id(&*state.db, app_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -256,7 +265,7 @@ pub async fn get_application_stats(
             .with_code("UNEXPECTED_QUERY_PARAMS"));
     }
     // Verify ownership
-    let app = Application::find_by_id(&*state.db, Some(state.redis_pool.clone()), app_id)
+    let app = Application::find_by_id(&*state.db, app_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -290,4 +299,41 @@ pub async fn get_application_stats(
         "usage": usage,
         "health": health,
     })))
+}
+
+/// Endpoint: GET /api/v1/applications/:app_id/realtime-usage
+/// Retrieves real-time metrics for the current hour for a given application.
+pub async fn get_app_realtime_usage(
+    State(state): State<AppState>,
+    Path(app_id): Path<Uuid>,
+    // Auth context (assumes user is authenticated and authorized for this app_id)
+) -> Result<impl IntoResponse> {
+    // 1. Fetch the real-time counters through the Application model.
+    let counters = match Application::get_current_period_counters(
+        pg_pool.as_ref(), // Pass the concrete PgPool for execution
+        redis_pool,
+        app_id,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(application_id = %app_id, "Failed to fetch real-time metrics: {:?}", e);
+            // Return an appropriate error response
+            return Err(e);
+        }
+    };
+
+    // 2. Determine the period start time for context (client side needs this).
+    // This uses the same logic as MetricKey generation for the current hour.
+    let current_period_start =
+        crate::usage_metrics::get_period_start(&chrono::Utc::now()).to_rfc3339();
+
+    // 3. Construct and return the successful response
+    let response = RealTimeUsageResponse {
+        current_period_start_utc: current_period_start,
+        counters,
+    };
+
+    Ok(Json(response).into_response())
 }

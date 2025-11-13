@@ -1,36 +1,81 @@
 use crate::cache_key;
-
-use crate::types::SubscriptionTier;
+use crate::models::{ApiKey, CachedApiKey};
+use crate::types::{KeyType, SubscriptionTier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 use validator::Validate;
 
+/// A comprehensive report on the validity and status of an incoming API request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplicationValidation {
+    /// Overall result: True if all critical checks passed.
     pub is_valid: bool,
-    pub is_active: bool,
+
+    // --- Application Status ---
+    /// Is the application marked as active by the owner?
+    pub application_active: bool,
+
+    // --- API Key Status ---
+    /// Is this specific key marked as active?
     pub api_key_active: bool,
-    pub tier: Option<SubscriptionTier>,
-    pub quota_status: Option<QuotaStatus>,
+    /// Has the key passed its explicit expiration date?
+    pub api_key_expired: bool,
+    /// The key's planned expiration time (used for checks).
+    pub api_key_expires_at: Option<DateTime<Utc>>,
+
+    // --- Subscription & Quota ---
+    /// The service tier governing limits.
+    pub tier: SubscriptionTier,
+    /// The current status of the monthly quota.
+    pub quota_status: QuotaStatus,
+
+    // --- Metrics ---
+    /// The current monthly usage count.
+    pub monthly_usage_count: i64,
+    /// The maximum monthly quota allowed by the tier.
+    pub monthly_quota_limit: i64,
+
+    // --- Errors ---
+    /// A collection of all validation errors found.
     pub errors: Vec<ValidationError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuotaStatus {
-    pub limit: i64,
-    pub used: i64,
-    pub remaining: i64,
-    pub percentage_used: f64,
-    pub is_exceeded: bool,
+pub enum QuotaStatus {
+    /// Usage is within the limit.
+    Ok,
+    /// Usage is approaching the limit (e.g., > 80%).
+    Warning,
+    /// Usage has exceeded the monthly limit.
+    Exhausted,
 }
 
+/// Defines the severity and type of validation failure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ValidationFailureType {
+    /// The API key or application is explicitly disabled.
+    Deactivated,
+    /// The API key has passed its expiration date.
+    Expired,
+    /// The monthly quota has been exceeded.
+    QuotaExhausted,
+    /// The rate limit for the current minute/period has been hit.
+    RateLimitHit,
+
+    ErrorRedis,
+
+    Error
+}
+
+/// Represents a specific validation failure encountered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
-    pub code: String,
+    /// The specific type of failure.
+    pub type_code: ValidationFailureType,
+    /// A human-readable message explaining the failure.
     pub message: String,
-    pub severity: ErrorSeverity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +105,8 @@ pub enum HealthStatus {
     Unhealthy, // Critical issues (inactive, expired, quota exceeded)
 }
 
+// --- MODIFIED STRUCTS ---
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Application {
     pub id: Uuid,
@@ -67,8 +114,6 @@ pub struct Application {
     pub name: String,
     pub description: Option<String>,
     pub secret_key_id: Uuid,
-    pub publishable_key: String,
-    pub publishable_key_prefix: String,
     pub bundle_id: Option<String>,
     pub platform: Option<String>,
     pub webhook_url: Option<String>,
@@ -89,6 +134,8 @@ pub struct CreateApplication {
 
     pub tier: SubscriptionTier,
 
+    pub existing_api_key_id: Option<Uuid>,
+
     #[validate(length(max = 255))]
     pub bundle_id: Option<String>,
 
@@ -99,17 +146,17 @@ pub struct CreateApplication {
     pub webhook_url: Option<String>,
 }
 
-/// Application with denormalized tier information from api_keys
+/// Application with denormalized tier information from api_keys and the Publishable Key from a separate JOIN.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ApplicationWithTier {
-    // All Application fields
+    // All Application fields (modified)
     pub id: Uuid,
     pub user_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub secret_key_id: Uuid,
-    pub publishable_key: String,
-    pub publishable_key_prefix: String,
+    // REMOVED: pub publishable_key: String,
+    // REMOVED: pub publishable_key_prefix: String,
     pub bundle_id: Option<String>,
     pub platform: Option<String>,
     pub webhook_url: Option<String>,
@@ -117,12 +164,33 @@ pub struct ApplicationWithTier {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 
-    // Tier information from api_keys JOIN
+    // Data from the Secret Key's api_keys record
     pub tier: SubscriptionTier,
     pub monthly_message_quota: i32,
     pub rate_limit_per_minute: i32,
     pub message_retention_seconds: i32,
     pub api_key_active: bool,
+
+    // Data from the Publishable Key's api_keys record (requires a second JOIN)
+    // You must select this column as 'publishable_key_plaintext' in your SQL query
+    pub publishable_key_plaintext: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplicationValidationCache {
+    // --- Application Fields ---
+    pub application_id: Uuid,
+    pub user_id: Uuid,
+    pub secret_key_id: Uuid,
+    pub is_active: bool, // Application active status
+
+    // --- Secret Key Fields (Source of truth for tier/quota) ---
+    pub api_key_active: bool,
+    pub api_key_expired: bool,
+    pub api_key_expires_at: Option<DateTime<Utc>>,
+    pub tier: SubscriptionTier,
+    pub monthly_quota_limit: i32,
+    pub rate_limit_per_minute: i32,
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -149,13 +217,89 @@ pub struct CreateApplicationResponse {
     pub application: Application,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<String>, // Only returned once at creation
-    pub publishable_key: String,
+    // Renamed from publishable_key to reflect the source column name
+    pub publishable_key_plaintext: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedKeyBundle {
+    /// The associated application data.
+    pub application: Application,
+    /// The API Key record for the Secret Key (used for quotas/billing).
+    pub secret_key_row: ApiKey,
+}
+
+// --- New Structs for Lean Caching ---
+
+/// A lean projection of the Application struct, omitting large fields like name and description.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedApplication {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub secret_key_id: Uuid,
+    pub bundle_id: Option<String>,
+    pub platform: Option<String>,
+    pub webhook_url: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The cached version of the key bundle, using the lean Application struct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedResolvedKeyBundle {
+    pub application: CachedApplication,
+    // Use the lean ApiKey struct
+    pub secret_key_row: CachedApiKey,
+}
+
+// --- Conversion Implementations ---
+
+impl From<&Application> for CachedApplication {
+    fn from(app: &Application) -> Self {
+        Self {
+            id: app.id,
+            user_id: app.user_id,
+            secret_key_id: app.secret_key_id,
+            // name and description are intentionally omitted
+            bundle_id: app.bundle_id.clone(),
+            platform: app.platform.clone(),
+            webhook_url: app.webhook_url.clone(),
+            is_active: app.is_active,
+            created_at: app.created_at,
+            updated_at: app.updated_at,
+        }
+    }
+}
+
+impl From<&ResolvedKeyBundle> for CachedResolvedKeyBundle {
+    fn from(bundle: &ResolvedKeyBundle) -> Self {
+        Self {
+            application: CachedApplication::from(&bundle.application),
+            // Use the new conversion for the ApiKey
+            secret_key_row: CachedApiKey::from(&bundle.secret_key_row),
+        }
+    }
 }
 
 pub fn cache_key_by_id(id: Uuid) -> String {
     cache_key!("app", "id", id)
 }
 
+// NOTE: This function needs to be updated to use the full plaintext key for caching
+// if the cache key relies on the publishable key.
 pub fn cache_key_by_publishable_key(pk: &str) -> String {
     cache_key!("app", "pk", pk)
+}
+
+/// Generates the Redis key for resolving a Secret Key hash to its ID.
+pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
+    // Example: "res:sk:2c78a9c8f..." -> Uuid
+    cache_key!("res", "sk", key_hash)
+}
+
+/// Generates the Redis key for resolving a Publishable Key plaintext to its Secret Key ID.
+pub fn publishable_key_resolution_cache_key(pk_plaintext: &str) -> String {
+    // Example: "res:pk:pk_live_ab12..." -> Uuid
+    cache_key!("res", "pk", pk_plaintext)
 }
