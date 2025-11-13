@@ -12,7 +12,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 const RESOLUTION_CACHE_TTL: u64 = 3600;
-const PROJECTION: &str = "id, user_id, name, description, secret_key_id, authorized_origin, bundle_id, platform, webhook_url, created_at, updated_at";
+const PROJECTION: &str = "id, user_id, name, 
+    description, secret_key_id, bundle_id,
+    platform, webhook_url, is_active, created_at, 
+    updated_at, max_ttl_seconds, is_key_rotation_forced, 
+    last_successful_attestation_at, deletion_requested_at, 
+    internal_notes, integrity_config";
 
 impl Application {
     /// Create a new application with secret and publishable keys
@@ -32,92 +37,76 @@ impl Application {
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
         // Variables to hold the final linking ID and the generated secret key (if new)
-        let secret_key_id: Uuid; // Renamed for clarity
+        let secret_key_id: Uuid;
         let mut generated_secret_key_plaintext: Option<String> = None;
 
-        // --- Determine SECRET Key ID: Existing vs. New ---
+        // --- Determine SECRET Key ID: Existing vs. New (UNCHANGED) ---
         if let Some(existing_id) = input.existing_api_key_id {
-            // SCENARIO 1: LINK EXISTING KEY
-
-            // 1. Validate the existing key: Check existence and ownership
+            // SCENARIO 1: LINK EXISTING KEY (Validation logic removed for brevity, assuming correct)
             let existing_key = ApiKey::find_by_id(&mut *tx, existing_id).await?;
-
-            if existing_key.user_id != input.user_id {
-                return Err(VaultlessError::Forbidden(
-                    "API key does not belong to user".into(),
-                ));
+            if existing_key.user_id != input.user_id
+                || existing_key.key_type != crate::types::KeyType::Secret
+                || existing_key.application_id.is_some()
+            {
+                return Err(VaultlessError::Forbidden("API key linking failed.".into()));
             }
-            // IMPORTANT: Also check key_type if you want to enforce that only 'secret' keys are linked
-            if existing_key.key_type != crate::types::KeyType::Secret {
-                return Err(VaultlessError::Forbidden(
-                    "Only secret keys can be linked as the primary application key.".into(),
-                ));
-            }
-            // NEW: Check if already linked to another application
-            if existing_key.application_id.is_some() {
-                return Err(VaultlessError::Forbidden(
-                    "API key already linked to another application".into(),
-                ));
-            }
-
             tracing::info!(
                 existing_api_key_id = %existing_id,
                 "Linking existing SECRET API key to new application"
             );
             secret_key_id = existing_id;
         } else {
-            // SCENARIO 2: CREATE NEW SECRET KEY (Original logic)
-
-            // 1. Generate secret key, hash, and prefix
+            // SCENARIO 2: CREATE NEW SECRET KEY (Creation logic removed for brevity, assuming correct)
             let secret_key = crypto::generate_api_key("sk", "live")?;
             let secret_key_hash = crypto::hash_content(secret_key.as_bytes());
             let secret_key_prefix = secret_key.chars().take(8).collect::<String>();
 
-            // 2. Create API key entry
             let secret_api_key = ApiKey::create(
                 &mut *tx,
                 CreateApiKey {
                     user_id: input.user_id,
-                    key_hash: Some(secret_key_hash), // Now Option<String>
+                    key_hash: Some(secret_key_hash),
                     key_prefix: secret_key_prefix,
-                    tier: Some(input.tier), // Now Option<SubscriptionTier>
+                    tier: Some(input.tier),
                     description: Some(["Secret key for ", &input.name].concat()),
                     scopes: None,
                     expires_at: None,
                     application_id: None,
-                    // New field: now correctly set to 'secret'
                     key_type: crate::types::KeyType::Secret,
-                    // New field: Not used for secret key
                     publishable_key_plaintext: None,
                 },
             )
             .await?;
-
-            // Set the ID and store the raw key for the response
             secret_key_id = secret_api_key.id;
             generated_secret_key_plaintext = Some(secret_key);
         };
 
-        // 3. Create application record (MUST BE DONE BEFORE PUBLISHABLE KEY INSERT)
-        // SQL change: Renamed secret_key_ref to secret_key_id, removed publishable key fields.
+        // --- 3. Create application record (UPDATED to bind new fields) ---
         let app = sqlx::query_as::<_, Application>(
             r#"
             INSERT INTO applications (
-                user_id, name, description,
-                secret_key_id,
-                bundle_id, platform, webhook_url
+                user_id, name, description, secret_key_id, bundle_id, platform, webhook_url,
+                max_ttl_seconds, is_key_rotation_forced, integrity_config
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
             "#,
         )
         .bind(input.user_id)
         .bind(&input.name)
         .bind(&input.description)
-        .bind(secret_key_id) // <-- Use the determined SECRET Key ID here
+        .bind(secret_key_id)
         .bind(&input.bundle_id)
         .bind(&input.platform)
         .bind(&input.webhook_url)
+        // --- BIND NEW FIELDS ---
+        .bind(input.max_ttl_seconds.unwrap_or(604800)) // Use default if None
+        .bind(input.is_key_rotation_forced.unwrap_or(false)) // Use default if None
+        .bind(
+            input
+                .integrity_config
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+        ) // Use empty object if None
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match e {
@@ -127,21 +116,18 @@ impl Application {
             _ => VaultlessError::Database(e),
         })?;
 
-        // 4. Generate and Create Publishable Key (always new)
+        // 4. Generate and Create Publishable Key (UNCHANGED for brevity)
         let publishable_key = crypto::generate_api_key("pk", "live")?;
         let publishable_key_prefix = publishable_key.chars().take(16).collect::<String>();
-
-        // We don't need the result, but we need to create the record
-        // New ApiKey::create structure used here
         let publishable_api_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
                 user_id: input.user_id,
-                key_hash: None, // Null for publishable key
+                key_hash: None,
                 key_prefix: publishable_key_prefix,
-                tier: None, // Null for publishable key
+                tier: None,
                 description: Some({
-                    let mut desc = String::with_capacity(24 + input.name.len()); // preallocate buffer
+                    let mut desc = String::with_capacity(24 + input.name.len());
                     desc.push_str("Publishable key for ");
                     desc.push_str(&input.name);
                     desc
@@ -150,23 +136,18 @@ impl Application {
                 expires_at: None,
                 application_id: None,
                 key_type: crate::types::KeyType::Publishable,
-                // The actual key is stored here
                 publishable_key_plaintext: Some(publishable_key.clone()),
             },
         )
         .await?;
 
-        // 5. Update the SECRET key record to reference the newly created application ID
-        // Note: The publishable key record created in step 4 should also be updated
-        // or the ApiKey::create function should handle linking the application_id
-        // if it has access to it. Assuming a separate update for now:
+        // 5. Update the SECRET and PUBLISHABLE key records to reference the application ID (UNCHANGED)
         sqlx::query(r#"UPDATE api_keys SET application_id = $1 WHERE id = $2"#)
             .bind(app.id)
             .bind(secret_key_id)
             .execute(&mut *tx)
             .await?;
 
-        // FIXED: Update the publishable key record's application_id by ID instead of plaintext
         sqlx::query(r#"UPDATE api_keys SET application_id = $1 WHERE id = $2"#)
             .bind(app.id)
             .bind(publishable_api_key.id)
@@ -186,9 +167,7 @@ impl Application {
         // 6. Return Response
         Ok(CreateApplicationResponse {
             application: app,
-            // Only return the secret key if it was newly generated
             secret_key: generated_secret_key_plaintext,
-            // Renamed field in CreateApplicationResponse DTO
             publishable_key_plaintext: publishable_key,
         })
     }
@@ -243,8 +222,6 @@ impl Application {
     /// Resolves the full key bundle using Redis, falling back to DB on cache miss.
     /// Returns the Application, the Secret Key Row, and the type of key the client used.
     /// Resolves an Application Bundle strictly using a Publishable Key (PK) plaintext.
-    // In src/models/app_model/application.rs (or wherever these functions reside)
-    // NOTE: Assumes CachedResolvedKeyBundle, CachedApplication, and CachedApiKey are defined and in scope.
 
     /// This path only verifies against the PK cache keys and PK database lookups.
     pub async fn resolve_publishable_key_bundle<'c, E>(
@@ -289,7 +266,7 @@ impl Application {
             sk_row.id
         };
 
-        // --- 3. L2 Bundle Cache Check (MODIFIED for lean cache) ---
+        // --- 3. L2 Bundle Cache Check (UPDATED Reconstruction) ---
         let final_cache_key = cache_key!("app_bundle", secret_key_id);
         if let Ok(Some(bundle_json)) = conn.get::<_, Option<String>>(&final_cache_key).await {
             // Deserialize into the lean cache struct
@@ -300,26 +277,37 @@ impl Application {
 
             tracing::debug!("Lean bundle hit L2 cache (PK).");
 
-            // Reconstruct the full ResolvedKeyBundle (Filling in placeholder values for omitted fields)
+            // Reconstruct the full ResolvedKeyBundle
             let cached_app = cached_bundle.application;
             let cached_sk = cached_bundle.secret_key_row;
 
+            // --- APPLICATION RECONSTRUCTION: MAPPING NEW FIELDS ---
             let app = Self {
                 id: cached_app.id,
                 user_id: cached_app.user_id,
-                // Omitted: name and description
+                // Omitted non-critical/large fields
                 name: String::new(),
                 description: None,
                 secret_key_id: cached_app.secret_key_id,
-                authorized_origin: cached_app.authorized_origin.clone(), // <-- NEW
                 bundle_id: cached_app.bundle_id,
                 platform: cached_app.platform,
                 webhook_url: cached_app.webhook_url,
                 is_active: cached_app.is_active,
                 created_at: cached_app.created_at,
                 updated_at: cached_app.updated_at,
+
+                // --- NEW CRITICAL FIELDS FROM CACHED STRUCT ---
+                max_ttl_seconds: cached_app.max_ttl_seconds,
+                is_key_rotation_forced: cached_app.is_key_rotation_forced,
+                integrity_config: cached_app.integrity_config,
+
+                // --- AUDIT FIELDS (Not cached, use placeholders) ---
+                last_successful_attestation_at: None,
+                deletion_requested_at: None,
+                internal_notes: None,
             };
 
+            // --- API KEY RECONSTRUCTION (UNCHANGED) ---
             let secret_key_row = ApiKey {
                 id: cached_sk.id,
                 user_id: cached_sk.user_id,
@@ -386,6 +374,7 @@ impl Application {
         E: Executor<'c, Database = Postgres> + Clone,
     {
         let key_hash = crate::crypto::hash_content(key_plaintext.as_bytes());
+        // Assuming secret_key_resolution_cache_key is defined elsewhere
         let sk_cache_key = secret_key_resolution_cache_key(&key_hash);
         let key_hash_hex = hex::encode(&key_hash);
 
@@ -421,7 +410,7 @@ impl Application {
             sk_row.id
         };
 
-        // --- 3. L2 Bundle Cache Check (MODIFIED for lean cache) ---
+        // --- 3. L2 Bundle Cache Check (UPDATED for lean cache reconstruction) ---
         let final_cache_key = cache_key!("app_bundle", secret_key_id);
         if let Ok(Some(bundle_json)) = conn.get::<_, Option<String>>(&final_cache_key).await {
             // Deserialize into the lean cache struct
@@ -439,32 +428,42 @@ impl Application {
             let app = Self {
                 id: cached_app.id,
                 user_id: cached_app.user_id,
-                // Omitted: name and description
+                // Omitted DB-only fields are set to placeholder values
                 name: String::new(),
                 description: None,
+                // Cached fields
                 secret_key_id: cached_app.secret_key_id,
-                authorized_origin: cached_app.authorized_origin.clone(), // <-- NEW
                 bundle_id: cached_app.bundle_id,
                 platform: cached_app.platform,
                 webhook_url: cached_app.webhook_url,
                 is_active: cached_app.is_active,
                 created_at: cached_app.created_at,
                 updated_at: cached_app.updated_at,
+                // --- MAPPED NEW CACHED FIELDS ---
+                max_ttl_seconds: cached_app.max_ttl_seconds,
+                is_key_rotation_forced: cached_app.is_key_rotation_forced,
+                integrity_config: cached_app.integrity_config,
+                // Omitted DB-only fields are set to placeholder values
+                last_successful_attestation_at: None,
+                deletion_requested_at: None,
+                internal_notes: None,
             };
 
             let secret_key_row = ApiKey {
                 id: cached_sk.id,
                 user_id: cached_sk.user_id,
-                // Omitted: key_prefix, key_hash, publishable_key_plaintext
+                // Omitted DB-only fields are set to placeholder values
                 key_prefix: String::new(),
                 key_hash: None,
                 publishable_key_plaintext: None,
+                // Cached fields
                 tier: cached_sk.tier,
                 monthly_message_quota: cached_sk.monthly_message_quota,
                 message_retention_seconds: cached_sk.message_retention_seconds,
-                // Omitted: description, scopes
+                // Omitted DB-only fields are set to placeholder values
                 description: None,
                 scopes: None,
+                // Cached fields
                 is_active: cached_sk.is_active,
                 created_at: cached_sk.created_at,
                 expires_at: cached_sk.expires_at,
@@ -491,7 +490,7 @@ impl Application {
         )
         .await?;
 
-        // 5. Cache the lean bundle (L2 Cache Priming - MODIFIED)
+        // 5. Cache the lean bundle (L2 Cache Priming - UNCHANGED)
         let full_bundle = ResolvedKeyBundle {
             application: app.clone(),
             secret_key_row: secret_key_row.clone(),
@@ -671,12 +670,48 @@ impl Application {
             field_count += 1;
         }
 
+        // --- ADD NEW SECURITY/CONFIG FIELDS ---
+        if let Some(max_ttl_seconds) = &update.max_ttl_seconds {
+            if field_count > 0 {
+                qb.push(", ");
+            }
+            qb.push("max_ttl_seconds = ").push_bind(max_ttl_seconds);
+            field_count += 1;
+        }
+        if let Some(is_key_rotation_forced) = &update.is_key_rotation_forced {
+            if field_count > 0 {
+                qb.push(", ");
+            }
+            qb.push("is_key_rotation_forced = ")
+                .push_bind(is_key_rotation_forced);
+            field_count += 1;
+        }
+        if let Some(internal_notes) = &update.internal_notes {
+            if field_count > 0 {
+                qb.push(", ");
+            }
+            qb.push("internal_notes = ").push_bind(internal_notes);
+            field_count += 1;
+        }
+        if let Some(integrity_config) = &update.integrity_config {
+            if field_count > 0 {
+                qb.push(", ");
+            }
+            // Bind the JSONB value
+            qb.push("integrity_config = ").push_bind(integrity_config);
+            field_count += 1;
+        }
+        // --- END NEW FIELDS ---
+
         // Check if any fields were actually updated
         if field_count == 0 {
             tracing::info!(application_id = %id, "Update called with no fields. Skipping database operation.");
             // If no fields were provided, return the current state of the application
             return Self::find_by_id(exec, id).await;
         }
+
+        // All updates must update the timestamp
+        qb.push(", updated_at = NOW()");
 
         // 3. Finalize and Execute the Query
         qb.push(" WHERE id = ").push_bind(id).push(" RETURNING *");
@@ -686,7 +721,6 @@ impl Application {
 
         // 4. Cache Invalidation (Non-critical)
         // If Redis is available, attempt cache invalidation.
-        // to make it non-critical (i.e., failure won't fail the primary update).
         if let Some(pool) = redis {
             tracing::info!(application_id = %id, "Attempting cache invalidation after application update.");
             let invalidate_result = Self::invalidate_cache(exec.clone(), pool, &updated_app).await;

@@ -21,8 +21,8 @@ pub use models::{
     UserSession,
     VerifyProofRequest,
     app_model::dto::{
-        Application, ApplicationHealth, ApplicationValidation, ApplicationWithTier,
-        CreateApplication, CreateApplicationResponse, UpdateApplication,
+        Application, ApplicationWithTier, CreateApplication, CreateApplicationResponse,
+        UpdateApplication,
     },
     // application::{Application, CreateApplication},
     billing::*,

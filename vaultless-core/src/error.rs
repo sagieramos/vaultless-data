@@ -33,10 +33,12 @@ pub enum VaultlessError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
-    // ⭐ ADDED MISSING VARIANT HERE ⭐
     #[error("Missing required field: {0}")]
     MissingRequiredField(String),
-    // ⭐ END ADDED MISSING VARIANT ⭐
+
+    /// NEW: Integrity check failed due to invalid platform configuration (e.g., bad origin/token)
+    #[error("Integrity check failed: {0}")]
+    IntegrityCheckFailed(String),
 
     // =========================================================================
     // Authentication / Authorization errors
@@ -117,7 +119,8 @@ impl VaultlessError {
             VaultlessError::Validation(_)
                 | VaultlessError::BadRequest(_)
                 | VaultlessError::InvalidInput(_)
-                | VaultlessError::MissingRequiredField(_) // ⭐ ADDED HERE ⭐
+                | VaultlessError::MissingRequiredField(_)
+                | VaultlessError::IntegrityCheckFailed(_) // ⭐ ADDED HERE ⭐
                 | VaultlessError::Unauthorized(_)
                 | VaultlessError::EmailNotVerified(_)
                 | VaultlessError::Forbidden(_)
@@ -147,6 +150,7 @@ impl VaultlessError {
             VaultlessError::ApiKeyInactive => 403,
             VaultlessError::QuotaExceeded(_) => 429,
             VaultlessError::RateLimitExceeded => 429,
+            VaultlessError::IntegrityCheckFailed(_) => 403, // ⭐ ADDED HERE (Forbidden) ⭐
             VaultlessError::Validation(_)
             | VaultlessError::BadRequest(_)
             | VaultlessError::InvalidInput(_)
@@ -162,7 +166,7 @@ impl VaultlessError {
 }
 
 // -------------------------------------------------------------------------
-// Implement From trait for Redis Pool Errors
+// Implement From trait for Redis Pool Errors (UNCHANGED)
 // -------------------------------------------------------------------------
 
 /// Converts a deadpool-redis connection pool error into VaultlessError::Internal.
@@ -188,15 +192,6 @@ impl From<SerdeJsonError> for VaultlessError {
         } else {
             // Treat user-provided invalid JSON (parsing error) as a client error (400)
             VaultlessError::BadRequest(format!("Invalid JSON format: {}", e))
-        }
-    }
-}
-
-impl From<VaultlessError> for ValidationError {
-    fn from(e: VaultlessError) -> Self {
-        ValidationError {
-            type_code: ValidationFailureType::Internal,
-            message: format!("Internal error: {}", e),
         }
     }
 }

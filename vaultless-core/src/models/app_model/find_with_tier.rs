@@ -1,4 +1,4 @@
-use super::dto::*;
+use super::dto::{ApplicationWithTier, Application};
 use crate::error::{Result, VaultlessError};
 use sqlx::{Executor, Postgres};
 use uuid::Uuid;
@@ -16,9 +16,13 @@ impl Application {
             r#"
             SELECT
                 a.id, a.user_id, a.name, a.description, a.secret_key_id,
-                a.authorized_origin, -- <-- NEW
                 a.bundle_id, a.platform, a.webhook_url, a.is_active,
                 a.created_at, a.updated_at,
+                -- NEW SECURITY & CONFIG FIELDS
+                a.max_ttl_seconds, 
+                a.is_key_rotation_forced, 
+                a.internal_notes, 
+                a.integrity_config, 
 
                 -- Data from Secret Key (ak_secret)
                 ak_secret.tier,

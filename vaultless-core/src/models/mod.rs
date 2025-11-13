@@ -8,10 +8,10 @@ pub mod proof;
 pub mod usage;
 pub mod user;
 
-pub use api_key::{ApiKey, CreateApiKey, CachedApiKey};
+pub use api_key::{ApiKey, CachedApiKey, CreateApiKey};
 pub use app_model::dto::{
-    Application, ApplicationHealth, ApplicationValidation, ApplicationWithTier, CreateApplication,
-    CreateApplicationResponse, UpdateApplication,
+    Application, ApplicationWithTier, CreateApplication, CreateApplicationResponse,
+    UpdateApplication,
 };
 pub use billing::*;
 pub use client::{

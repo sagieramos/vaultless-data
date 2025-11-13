@@ -1,53 +1,99 @@
 use super::dto::*;
-use crate::error::VaultlessError;
+use crate::error::{Result, VaultlessError}; // Use our unified Result and VaultlessError
 use crate::models::{
     ApiKey, CachedApiKey,
     usage::{MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool},
 };
 use chrono::Utc;
+use serde_json::Value; // Needed for JSONB/integrity_config handling
 use sqlx::{Executor, Postgres};
+use std::collections::HashMap;
 use std::sync::Arc;
+
 
 impl CachedResolvedKeyBundle {
     /// Hot-path optimized validation
     pub async fn validate_hot(
         &self,
         redis_pool: Arc<deadpool_redis::Pool>,
-    ) -> Result<(), ValidationError> {
+        request_headers: &HashMap<String, String>,
+    ) -> Result<()> {
+        // <-- Updated signature to use VaultlessError::Result<()>
         let sk = &self.secret_key_row;
         let app = &self.application;
 
-        // In-memory fast checks
-        if !sk.is_active || !app.is_active {
-            return Err(ValidationError {
-                type_code: ValidationFailureType::Deactivated,
-                message: "API key or associated application is deactivated.".into(),
-            });
+        // 1. In-memory fast checks
+        if !sk.is_active {
+            return Err(VaultlessError::ApiKeyInactive);
+        }
+        if !app.is_active {
+            return Err(VaultlessError::Forbidden(
+                "Associated application is deactivated.".into(),
+            ));
         }
 
         if let Some(expiry) = sk.expires_at {
             if Utc::now() > expiry {
-                return Err(ValidationError {
-                    type_code: ValidationFailureType::Expired,
-                    message: "API key has expired.".into(),
-                });
+                return Err(VaultlessError::ApiKeyExpired);
             }
         }
 
-        // Build Redis keys
+        // 2. PLATFORM INTEGRITY CHECK
+        if let Some(platform) = &app.platform {
+            match platform.as_str() {
+                "web" => {
+                    // WEB INTEGRITY: Check Origin against integrity_config
+                    if let Some(origin) = request_headers.get("Origin") {
+                        if let Some(Value::Array(allowed_origins)) =
+                            app.integrity_config.get("authorized_origins")
+                        {
+                            let is_allowed = allowed_origins
+                                .iter()
+                                .any(|v| v.as_str().map_or(false, |s| s == origin));
+
+                            if !is_allowed {
+                                return Err(VaultlessError::IntegrityCheckFailed(format!(
+                                    "Origin '{}' is not authorized for this web application.",
+                                    origin
+                                )));
+                            }
+                        } else {
+                            // Fail open if web platform but config is missing/empty, but log a warning.
+                            tracing::warn!(app_id = %app.id, "Web application is missing 'authorized_origins' config. Failing open.");
+                        }
+                    } else {
+                        // Missing Origin header
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "Web application requires 'Origin' header for integrity check.".into(),
+                        ));
+                    }
+                }
+                "ios" | "android" => {
+                    // MOBILE INTEGRITY: Enforce presence of Attestation/Integrity Token
+                    if request_headers.get("X-Integrity-Token").is_none() {
+                        return Err(VaultlessError::IntegrityCheckFailed(format!(
+                            "{} application requires 'X-Integrity-Token' header for integrity check.",
+                            platform
+                        )));
+                    }
+                }
+                _ => {
+                    // Other/Unknown platforms: No integrity check enforced
+                }
+            }
+        }
+
+        // 3. QUOTA AND RATE LIMIT CHECKS
+
+        // Build Redis keys, mapping errors to VaultlessError::Internal
         let monthly_key = ApiKey::quota_cache_key(sk.id);
         let now = Utc::now();
-        let period_key =
-            MetricKey::new(sk.id, now, MetricGranularity::Minute).map_err(|_| ValidationError {
-                type_code: ValidationFailureType::Internal,
-                message: "Failed to create metric key".into(),
-            })?;
+        let period_key = MetricKey::new(sk.id, now, MetricGranularity::Minute)
+            .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
 
-        // Fetch monthly quota and period metrics
-        let mut conn = redis_pool.get().await.map_err(|_| ValidationError {
-            type_code: ValidationFailureType::ErrorRedis,
-            message: "Failed to get Redis connection".into(),
-        })?;
+        // Fetch monthly quota and period metrics. The `?` operator uses the `From` trait
+        // to convert Redis errors into VaultlessError::Internal.
+        let mut conn = redis_pool.get().await?;
 
         let results: Vec<Option<i64>> = redis::pipe()
             .atomic()
@@ -55,11 +101,7 @@ impl CachedResolvedKeyBundle {
             .hget(&period_key.as_str(), "messages_sent")
             .hget(&period_key.as_str(), "messages_received")
             .query_async(&mut *conn)
-            .await
-            .map_err(|_| ValidationError {
-                type_code: ValidationFailureType::ErrorRedis,
-                message: "Redis query failed".into(),
-            })?;
+            .await?;
 
         let monthly_messages = results.get(0).copied().flatten().unwrap_or(0);
         let messages_sent = results.get(1).copied().flatten().unwrap_or(0);
@@ -68,12 +110,12 @@ impl CachedResolvedKeyBundle {
 
         // Validate quotas
         if monthly_messages >= sk.monthly_message_quota as i64 {
-            return Err(ValidationError {
-                type_code: ValidationFailureType::QuotaExhausted,
-                message: "API key monthly quota exhausted.".into(),
-            });
+            return Err(VaultlessError::QuotaExceeded(
+                "API key monthly quota exhausted.".into(),
+            ));
         }
 
+        // Validate rate limits
         if total_requests >= sk.rate_limit_per_minute as i64 {
             let sk_id = sk.id;
             let pool_clone = redis_pool.clone();
@@ -84,10 +126,7 @@ impl CachedResolvedKeyBundle {
                         .await;
             });
 
-            return Err(ValidationError {
-                type_code: ValidationFailureType::RateLimitHit,
-                message: "API key rate limit exceeded.".into(),
-            });
+            return Err(VaultlessError::RateLimitExceeded);
         }
 
         Ok(())
@@ -98,7 +137,9 @@ impl CachedResolvedKeyBundle {
         redis_pool: Arc<deadpool_redis::Pool>,
         key_plaintext: &str,
         granularity: &KeyGranularity,
-    ) -> Result<Result<Self, ValidationError>, VaultlessError>
+        request_headers: &HashMap<String, String>,
+    ) -> Result<Self>
+    // <-- Updated signature to return Self on success, VaultlessError on failure
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
@@ -122,21 +163,18 @@ impl CachedResolvedKeyBundle {
             }
         };
 
-        // Step 2: Handle VaultlessError (DB/cache errors)
+        // Step 2: Handle resolution result
         let full_bundle = match full_bundle_result {
             Ok(bundle) => bundle,
             Err(VaultlessError::NotFound(_)) => {
-                // Graceful validation-style error for "not found"
-                return Ok(Err(ValidationError {
-                    type_code: ValidationFailureType::NotFound,
-                    message: match granularity {
-                        KeyGranularity::Publishable => "Publishable key not found.".into(),
-                        KeyGranularity::Secret => "Secret key not found.".into(),
-                    },
+                // Key not found is a specific client-facing error
+                return Err(VaultlessError::NotFound(match granularity {
+                    KeyGranularity::Publishable => "Publishable key not found.".into(),
+                    KeyGranularity::Secret => "Secret key not found.".into(),
                 }));
             }
             Err(e) => {
-                // Real internal error — bubble up to caller
+                // All other internal errors propagate
                 return Err(e);
             }
         };
@@ -147,12 +185,12 @@ impl CachedResolvedKeyBundle {
             secret_key_row: CachedApiKey::from(&full_bundle.secret_key_row),
         };
 
-        // Step 4: Run hot validation
-        if let Err(validation_error) = cached_bundle.validate_hot(redis_pool.clone()).await {
-            return Ok(Err(validation_error));
-        }
+        // Step 4: Run hot validation. Any failure returns a VaultlessError directly via `?`
+        cached_bundle
+            .validate_hot(redis_pool.clone(), request_headers)
+            .await?;
 
         // Step 5: Return success
-        Ok(Ok(cached_bundle))
+        Ok(cached_bundle)
     }
 }
