@@ -1,3 +1,4 @@
+use crate::models::app_model::dto::*;
 use deadpool_redis::PoolError as DeadpoolRedisPoolError;
 use redis::RedisError;
 use serde_json::Error as SerdeJsonError;
@@ -187,6 +188,15 @@ impl From<SerdeJsonError> for VaultlessError {
         } else {
             // Treat user-provided invalid JSON (parsing error) as a client error (400)
             VaultlessError::BadRequest(format!("Invalid JSON format: {}", e))
+        }
+    }
+}
+
+impl From<VaultlessError> for ValidationError {
+    fn from(e: VaultlessError) -> Self {
+        ValidationError {
+            type_code: ValidationFailureType::Internal,
+            message: format!("Internal error: {}", e),
         }
     }
 }

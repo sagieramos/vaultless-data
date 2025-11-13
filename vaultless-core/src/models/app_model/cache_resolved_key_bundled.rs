@@ -1,10 +1,17 @@
 use super::dto::*;
+use crate::error::VaultlessError;
 use crate::models::{
-    ApiKey,
+    ApiKey, CachedApiKey,
     usage::{MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool},
 };
 use chrono::Utc;
+use sqlx::{Executor, Postgres};
 use std::sync::Arc;
+
+pub enum KeyGranularity {
+    Secret,
+    Publishable,
+}
 
 impl CachedResolvedKeyBundle {
     /// Hot-path optimized validation
@@ -37,7 +44,7 @@ impl CachedResolvedKeyBundle {
         let now = Utc::now();
         let period_key =
             MetricKey::new(sk.id, now, MetricGranularity::Minute).map_err(|_| ValidationError {
-                type_code: ValidationFailureType::Error,
+                type_code: ValidationFailureType::Internal,
                 message: "Failed to create metric key".into(),
             })?;
 
@@ -81,8 +88,76 @@ impl CachedResolvedKeyBundle {
                     increment_rate_limit_hit_pool(&*pool_clone, sk_id, &MetricsConfig::default())
                         .await;
             });
+
+            return Err(ValidationError {
+                type_code: ValidationFailureType::RateLimitHit,
+                message: "API key rate limit exceeded.".into(),
+            });
         }
 
         Ok(())
+    }
+
+    pub async fn resolve_and_validate<'c, E>(
+        exec: E,
+        redis_pool: Arc<deadpool_redis::Pool>,
+        key_plaintext: &str,
+        granularity: KeyGranularity,
+    ) -> Result<Result<Self, ValidationError>, VaultlessError>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        // Step 1: Choose resolver based on granularity
+        let full_bundle_result = match granularity {
+            KeyGranularity::Publishable => {
+                super::Application::resolve_publishable_key_bundle(
+                    exec.clone(),
+                    redis_pool.clone(),
+                    key_plaintext,
+                )
+                .await
+            }
+            KeyGranularity::Secret => {
+                super::Application::resolve_secret_key_bundle(
+                    exec.clone(),
+                    redis_pool.clone(),
+                    key_plaintext,
+                )
+                .await
+            }
+        };
+
+        // Step 2: Handle VaultlessError (DB/cache errors)
+        let full_bundle = match full_bundle_result {
+            Ok(bundle) => bundle,
+            Err(VaultlessError::NotFound(_)) => {
+                // Graceful validation-style error for "not found"
+                return Ok(Err(ValidationError {
+                    type_code: ValidationFailureType::NotFound,
+                    message: match granularity {
+                        KeyGranularity::Publishable => "Publishable key not found.".into(),
+                        KeyGranularity::Secret => "Secret key not found.".into(),
+                    },
+                }));
+            }
+            Err(e) => {
+                // Real internal error — bubble up to caller
+                return Err(e);
+            }
+        };
+
+        // Step 3: Build the lean cached bundle
+        let cached_bundle = CachedResolvedKeyBundle {
+            application: CachedApplication::from(&full_bundle.application),
+            secret_key_row: CachedApiKey::from(&full_bundle.secret_key_row),
+        };
+
+        // Step 4: Run hot validation
+        if let Err(validation_error) = cached_bundle.validate_hot(redis_pool.clone()).await {
+            return Ok(Err(validation_error));
+        }
+
+        // Step 5: Return success
+        Ok(Ok(cached_bundle))
     }
 }

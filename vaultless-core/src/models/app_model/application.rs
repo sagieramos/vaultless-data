@@ -250,7 +250,7 @@ impl Application {
         key_plaintext: &str,
     ) -> Result<ResolvedKeyBundle>
     where
-        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
         let pk_cache_key = publishable_key_resolution_cache_key(key_plaintext);
         let mut conn = redis_pool
@@ -301,13 +301,14 @@ impl Application {
             let cached_app = cached_bundle.application;
             let cached_sk = cached_bundle.secret_key_row;
 
-            let app = Application {
+            let app = Self {
                 id: cached_app.id,
                 user_id: cached_app.user_id,
                 // Omitted: name and description
                 name: String::new(),
                 description: None,
                 secret_key_id: cached_app.secret_key_id,
+                authorized_origin: cached_app.authorized_origin.clone(), // <-- NEW
                 bundle_id: cached_app.bundle_id,
                 platform: cached_app.platform,
                 webhook_url: cached_app.webhook_url,
@@ -379,7 +380,7 @@ impl Application {
         key_plaintext: &str,
     ) -> Result<ResolvedKeyBundle>
     where
-        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
         let key_hash = crate::crypto::hash_content(key_plaintext.as_bytes());
         let sk_cache_key = secret_key_resolution_cache_key(&key_hash);
@@ -432,13 +433,14 @@ impl Application {
             let cached_app = cached_bundle.application;
             let cached_sk = cached_bundle.secret_key_row;
 
-            let app = Application {
+            let app = Self {
                 id: cached_app.id,
                 user_id: cached_app.user_id,
                 // Omitted: name and description
                 name: String::new(),
                 description: None,
                 secret_key_id: cached_app.secret_key_id,
+                authorized_origin: cached_app.authorized_origin.clone(), // <-- NEW
                 bundle_id: cached_app.bundle_id,
                 platform: cached_app.platform,
                 webhook_url: cached_app.webhook_url,
@@ -564,10 +566,7 @@ impl Application {
     }
 
     /// Get the associated secret API key (for validation/billing)
-    pub async fn get_secret_key<'c, E>(
-        &self,
-        exec: E,
-    ) -> Result<ApiKey>
+    pub async fn get_secret_key<'c, E>(&self, exec: E) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -697,7 +696,4 @@ impl Application {
 
         Ok(updated_app)
     }
-
-    
 }
-

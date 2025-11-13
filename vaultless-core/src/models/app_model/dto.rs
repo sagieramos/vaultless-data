@@ -63,10 +63,9 @@ pub enum ValidationFailureType {
     QuotaExhausted,
     /// The rate limit for the current minute/period has been hit.
     RateLimitHit,
-
     ErrorRedis,
-
-    Error
+    NotFound,
+    Internal,
 }
 
 /// Represents a specific validation failure encountered.
@@ -105,8 +104,6 @@ pub enum HealthStatus {
     Unhealthy, // Critical issues (inactive, expired, quota exceeded)
 }
 
-// --- MODIFIED STRUCTS ---
-
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Application {
     pub id: Uuid,
@@ -114,6 +111,7 @@ pub struct Application {
     pub name: String,
     pub description: Option<String>,
     pub secret_key_id: Uuid,
+    pub authorized_origin: Option<String>,
     pub bundle_id: Option<String>,
     pub platform: Option<String>,
     pub webhook_url: Option<String>,
@@ -142,7 +140,7 @@ pub struct CreateApplication {
     #[validate(length(max = 50))]
     pub platform: Option<String>,
 
-    #[validate(url)]
+    #[validate(url, length(max = 255))]
     pub webhook_url: Option<String>,
 }
 
@@ -155,6 +153,7 @@ pub struct ApplicationWithTier {
     pub name: String,
     pub description: Option<String>,
     pub secret_key_id: Uuid,
+    pub authorized_origin: Option<String>, // <-- added
     // REMOVED: pub publishable_key: String,
     // REMOVED: pub publishable_key_prefix: String,
     pub bundle_id: Option<String>,
@@ -176,23 +175,6 @@ pub struct ApplicationWithTier {
     pub publishable_key_plaintext: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApplicationValidationCache {
-    // --- Application Fields ---
-    pub application_id: Uuid,
-    pub user_id: Uuid,
-    pub secret_key_id: Uuid,
-    pub is_active: bool, // Application active status
-
-    // --- Secret Key Fields (Source of truth for tier/quota) ---
-    pub api_key_active: bool,
-    pub api_key_expired: bool,
-    pub api_key_expires_at: Option<DateTime<Utc>>,
-    pub tier: SubscriptionTier,
-    pub monthly_quota_limit: i32,
-    pub rate_limit_per_minute: i32,
-}
-
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct UpdateApplication {
     #[validate(length(min = 1, max = 255))]
@@ -207,7 +189,7 @@ pub struct UpdateApplication {
     #[validate(length(max = 50))]
     pub platform: Option<String>,
 
-    #[validate(url)]
+    #[validate(url, length(max = 255))]
     pub webhook_url: Option<String>,
     pub is_active: Option<bool>,
 }
@@ -237,6 +219,7 @@ pub struct CachedApplication {
     pub id: Uuid,
     pub user_id: Uuid,
     pub secret_key_id: Uuid,
+    pub authorized_origin: Option<String>, // <-- NEW
     pub bundle_id: Option<String>,
     pub platform: Option<String>,
     pub webhook_url: Option<String>,
@@ -245,23 +228,13 @@ pub struct CachedApplication {
     pub updated_at: DateTime<Utc>,
 }
 
-/// The cached version of the key bundle, using the lean Application struct.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedResolvedKeyBundle {
-    pub application: CachedApplication,
-    // Use the lean ApiKey struct
-    pub secret_key_row: CachedApiKey,
-}
-
-// --- Conversion Implementations ---
-
 impl From<&Application> for CachedApplication {
     fn from(app: &Application) -> Self {
         Self {
             id: app.id,
             user_id: app.user_id,
             secret_key_id: app.secret_key_id,
-            // name and description are intentionally omitted
+            authorized_origin: app.authorized_origin.clone(), // <-- NEW
             bundle_id: app.bundle_id.clone(),
             platform: app.platform.clone(),
             webhook_url: app.webhook_url.clone(),
@@ -272,11 +245,18 @@ impl From<&Application> for CachedApplication {
     }
 }
 
+/// The cached version of the key bundle, using the lean Application struct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedResolvedKeyBundle {
+    pub application: CachedApplication,
+    // Use the lean ApiKey struct
+    pub secret_key_row: CachedApiKey,
+}
+
 impl From<&ResolvedKeyBundle> for CachedResolvedKeyBundle {
     fn from(bundle: &ResolvedKeyBundle) -> Self {
         Self {
             application: CachedApplication::from(&bundle.application),
-            // Use the new conversion for the ApiKey
             secret_key_row: CachedApiKey::from(&bundle.secret_key_row),
         }
     }
