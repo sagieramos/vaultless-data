@@ -23,14 +23,10 @@ impl Application {
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
         let secret_key_id = app.secret_key_id;
-
-        // 1. Fetch necessary key data for cache key construction
         let (sk_hash, pk_plaintext) =
             ApiKey::get_linked_key_data_for_cache_invalidation(exec.clone(), app.id).await?;
 
-        // 2. Identify all keys to delete
-        let mut keys_to_delete: Vec<String> = Vec::new();
-
+        let mut keys_to_delete = Vec::with_capacity(3);
         keys_to_delete.push(cache_key!("app_bundle", secret_key_id));
         keys_to_delete.push(publishable_key_resolution_cache_key(&pk_plaintext));
 
@@ -38,15 +34,12 @@ impl Application {
             keys_to_delete.push(secret_key_resolution_cache_key(&hash));
         }
 
-        // 3. Execute the deletion
-        conn.del::<_, u64>(keys_to_delete)
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis DEL command failed: {}", e)))?;
+        conn.del::<_, u64>(keys_to_delete).await.map_err(|e| {
+            tracing::error!("Redis DEL command failed: {:?}", e);
+            VaultlessError::Internal("Failed to delete Redis cache keys".into())
+        })?;
 
-        tracing::info!(
-            application_id = %app.id,
-            "Application and all associated key caches fully invalidated."
-        );
+        tracing::info!(application_id = %app.id, "Application and all associated key caches fully invalidated.");
 
         Ok(())
     }

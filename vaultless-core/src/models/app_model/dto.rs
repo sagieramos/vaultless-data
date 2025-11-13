@@ -66,6 +66,7 @@ pub enum ValidationFailureType {
     ErrorRedis,
     NotFound,
     Internal,
+    Forbidden,
 }
 
 /// Represents a specific validation failure encountered.
@@ -261,6 +262,12 @@ impl From<&ResolvedKeyBundle> for CachedResolvedKeyBundle {
         }
     }
 }
+
+pub enum KeyGranularity {
+    Secret,
+    Publishable,
+}
+
 
 pub fn cache_key_by_id(id: Uuid) -> String {
     cache_key!("app", "id", id)

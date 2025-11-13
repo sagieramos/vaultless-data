@@ -8,11 +8,6 @@ use chrono::Utc;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 
-pub enum KeyGranularity {
-    Secret,
-    Publishable,
-}
-
 impl CachedResolvedKeyBundle {
     /// Hot-path optimized validation
     pub async fn validate_hot(
@@ -102,7 +97,7 @@ impl CachedResolvedKeyBundle {
         exec: E,
         redis_pool: Arc<deadpool_redis::Pool>,
         key_plaintext: &str,
-        granularity: KeyGranularity,
+        granularity: &KeyGranularity,
     ) -> Result<Result<Self, ValidationError>, VaultlessError>
     where
         E: Executor<'c, Database = Postgres> + Clone,

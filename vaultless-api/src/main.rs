@@ -18,6 +18,7 @@ mod middleware;
 mod routes;
 mod services;
 mod state;
+mod extractor;
 
 use crate::config::Config;
 use crate::middleware::track_metrics;

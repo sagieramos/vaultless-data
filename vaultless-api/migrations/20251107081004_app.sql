@@ -14,9 +14,6 @@ CREATE TABLE IF NOT EXISTS public.applications
     
     -- The secret key (references existing api_keys table)
     api_key_id uuid NOT NULL,
-
-    -- Field for validating the source of API requests (Domain or App ID
-    authorized_origin character varying(512) COLLATE pg_catalog."default",
     
     -- Application metadata
     bundle_id character varying(255) COLLATE pg_catalog."default",

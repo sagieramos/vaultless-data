@@ -14,8 +14,6 @@ use validator::Validate;
 const RESOLUTION_CACHE_TTL: u64 = 3600;
 const PROJECTION: &str = "id, user_id, name, description, secret_key_id, authorized_origin, bundle_id, platform, webhook_url, created_at, updated_at";
 
-const APPLICATION_CACHE_TTL: u64 = 600; // 10 minutes
-
 impl Application {
     /// Create a new application with secret and publishable keys
     pub async fn create<'c, E>(
@@ -83,7 +81,7 @@ impl Application {
                     key_hash: Some(secret_key_hash), // Now Option<String>
                     key_prefix: secret_key_prefix,
                     tier: Some(input.tier), // Now Option<SubscriptionTier>
-                    description: Some(format!("Secret key for {}", input.name)),
+                    description: Some(["Secret key for ", &input.name].concat()),
                     scopes: None,
                     expires_at: None,
                     application_id: None,
@@ -142,7 +140,12 @@ impl Application {
                 key_hash: None, // Null for publishable key
                 key_prefix: publishable_key_prefix,
                 tier: None, // Null for publishable key
-                description: Some(format!("Publishable key for {}", input.name)),
+                description: Some({
+                    let mut desc = String::with_capacity(24 + input.name.len()); // preallocate buffer
+                    desc.push_str("Publishable key for ");
+                    desc.push_str(&input.name);
+                    desc
+                }),
                 scopes: None,
                 expires_at: None,
                 application_id: None,
