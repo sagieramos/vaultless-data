@@ -252,11 +252,16 @@ impl Client {
             VaultlessError::Internal("Redis pool required for key resolution".into())
         })?;
 
-        let bundle =
-            Application::resolve_publishable_key_bundle(exec.clone(), redis_pool, &publishable_key)
-                .await?;
-
-        let app = &bundle.application;
+        let app = Application::fetch_auth_config_by_publishable_key(
+            exec.clone(),
+            redis_pool,
+            false,
+            &publishable_key,
+        )
+        .await?
+        .ok_or(VaultlessError::NotFound(
+            "Auth configuration not found".to_string(),
+        ))?;
 
         // --- Insert client into DB ---
         let client = sqlx::query_as::<_, Client>(
@@ -283,8 +288,8 @@ impl Client {
         .bind(&session_token_hash)
         .bind(session_expires_at)
         .bind(&input.metadata)
-        .bind(app.user_id) 
-        .bind(app.id) 
+        .bind(app.app_user_id)
+        .bind(app.app_id)
         .bind(input.is_platform_attested)
         .fetch_one(exec)
         .await
@@ -297,8 +302,8 @@ impl Client {
 
         tracing::info!(
             client_id = %client.id,
-            application_id = %app.id,
-            developer_id = %app.user_id,
+            application_id = %app.app_id,
+            developer_id = %app.app_user_id,
             "Client registered successfully"
         );
 

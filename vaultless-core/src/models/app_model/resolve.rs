@@ -79,7 +79,6 @@ impl Application {
 
         if is_hot_path {
             let mut conn = redis.get().await?;
-            // Use get::<_, Option<String>> to specify the return type
             if let Some(cached) = conn.get::<_, Option<String>>(&cache_key).await? {
                 // Deserialize Redis hot version
                 let cached: CachedAuthConfig = serde_json::from_str(&cached)?;
