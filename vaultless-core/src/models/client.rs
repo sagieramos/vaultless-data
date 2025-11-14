@@ -42,40 +42,51 @@ pub const MINIMAL_CLIENT_FIELDS: &str = "
     last_seen_at,
     last_message_at,
     developer_id,
-    api_key_id,
-    metadata
+    application_id,
+    metadata,
+    is_platform_attested
 ";
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Client {
     #[serde(skip_serializing)]
     pub id: Uuid,
+
     pub identifier: Option<String>,
+
     #[serde(skip_serializing)]
     pub client_identifier_hash: Option<String>,
+
     pub public_key: Option<String>,
+
     #[serde(skip_serializing)]
     pub session_token_hash: Option<String>,
+
     #[serde(skip_serializing)]
     pub session_expires_at: Option<DateTime<Utc>>,
+
     pub allow_anonymous_messages: bool,
     pub require_proof_verification: bool,
     pub is_active: bool,
+
     #[serde(skip_serializing)]
     pub created_at: DateTime<Utc>,
+
     #[serde(skip_serializing)]
     pub updated_at: DateTime<Utc>,
+
     pub last_seen_at: Option<DateTime<Utc>>,
     pub last_message_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing)]
+
     pub metadata: Option<serde_json::Value>,
+
     #[serde(skip_serializing)]
-    pub developer_id: Option<Uuid>,
+    pub developer_id: Uuid,
+
     #[serde(skip_serializing)]
-    pub api_key_id: Option<Uuid>,
-    #[serde(skip_serializing)]
-    #[sqlx(skip)]
-    pub application_id: Option<Uuid>,
+    pub application_id: Uuid,
+
+    pub is_platform_attested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -106,8 +117,7 @@ pub struct RegisterClientRequest {
     #[validate(length(min = 8, max = 128))]
     pub nonce: Option<String>,
 
-    /// Optional: UTC timestamp seconds for freshness checks (optional but recommended)
-    pub timestamp: Option<i64>,
+    pub is_platform_attested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,7 +171,6 @@ pub fn cache_auth_challenge_key(challenge_hash: &str) -> String {
 // =============================================================================
 // Implementation
 // =============================================================================
-
 impl Client {
     /// Register new client with application support (idempotent via unique hash)
     pub async fn register<'c, E>(
@@ -180,15 +189,15 @@ impl Client {
 
         let pubkey = input
             .public_key
-            .ok_or_else(|| VaultlessError::Validation("public_key is required.".to_string()))?;
+            .ok_or_else(|| VaultlessError::Validation("public_key is required.".into()))?;
 
         let signature = input
             .signature
-            .ok_or_else(|| VaultlessError::Validation("signature is required.".to_string()))?;
+            .ok_or_else(|| VaultlessError::Validation("signature is required.".into()))?;
 
         let payload = input
             .signed_payload
-            .ok_or_else(|| VaultlessError::Validation("signed_payload is required.".to_string()))?;
+            .ok_or_else(|| VaultlessError::Validation("signed_payload is required.".into()))?;
 
         // --- Verify signature ---
         crate::crypto::verify_signature(payload.as_bytes(), &signature, &pubkey)
@@ -200,11 +209,12 @@ impl Client {
 
             if let Ok(mut conn) = redis_pool.get().await {
                 const NONCE_SCRIPT: &str = r#"
-                local key = KEYS[1]
-                local ttl = tonumber(ARGV[1])
-                local ok = redis.call('SET', key, '1', 'NX', 'EX', ttl)
-                return ok and 1 or 0
-            "#;
+                    local key = KEYS[1]
+                    local ttl = tonumber(ARGV[1])
+                    local ok = redis.call('SET', key, '1', 'NX', 'EX', ttl)
+                    return ok and 1 or 0
+                "#;
+
                 let script = Script::new(NONCE_SCRIPT);
                 let result: redis::RedisResult<i32> = script
                     .key(&nonce_key)
@@ -213,7 +223,7 @@ impl Client {
                     .await;
 
                 match result {
-                    Ok(1) => tracing::debug!("Nonce reserved: {}", nonce_key),
+                    Ok(1) => tracing::debug!("Nonce reserved"),
                     Ok(0) => return Err(VaultlessError::Validation("Nonce already used".into())),
                     Err(e) => tracing::warn!("Redis nonce check failed: {}", e),
                     _ => {
@@ -225,17 +235,7 @@ impl Client {
             }
         }
 
-        // --- Timestamp freshness check ---
-        if let Some(ts) = input.timestamp {
-            let now_unix = Utc::now().timestamp();
-            if (ts - now_unix).abs() > 300 {
-                return Err(VaultlessError::Validation(
-                    "Timestamp outside allowed window".into(),
-                ));
-            }
-        }
-
-        // --- Client identifier hash ---
+        // --- Compute identifier hash (if provided) ---
         let client_identifier_hash = input
             .client_identifier
             .as_ref()
@@ -247,32 +247,35 @@ impl Client {
         let session_token_hash = crypto::hash_content(&token);
         let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
-        // --- Fetch application and developer_id via publishable key ---
-        let bundle = Application::resolve_publishable_key_bundle(
-            exec.clone(),
-            redis.as_ref().unwrap().clone(),
-            &publishable_key,
-        )
-        .await?;
+        // --- Resolve application bundle ---
+        let redis_pool = redis.clone().ok_or_else(|| {
+            VaultlessError::Internal("Redis pool required for key resolution".into())
+        })?;
+
+        let bundle =
+            Application::resolve_publishable_key_bundle(exec.clone(), redis_pool, &publishable_key)
+                .await?;
+
         let app = &bundle.application;
 
         // --- Insert client into DB ---
         let client = sqlx::query_as::<_, Client>(
             r#"
-        INSERT INTO clients (
-            identifier,
-            client_identifier_hash,
-            public_key,
-            session_token_hash,
-            session_expires_at,
-            metadata,
-            developer_id,
-            application_id,
-            last_seen_at
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
-        RETURNING *
-        "#,
+            INSERT INTO clients (
+                identifier,
+                client_identifier_hash,
+                public_key,
+                session_token_hash,
+                session_expires_at,
+                metadata,
+                developer_id,
+                application_id,
+                last_seen_at,
+                is_platform_attested
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(), $9)
+            RETURNING *
+            "#,
         )
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
@@ -280,13 +283,14 @@ impl Client {
         .bind(&session_token_hash)
         .bind(session_expires_at)
         .bind(&input.metadata)
-        .bind(app.user_id) // developer_id
-        .bind(app.id) // application_id
+        .bind(app.user_id) 
+        .bind(app.id) 
+        .bind(input.is_platform_attested)
         .fetch_one(exec)
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
-                VaultlessError::Duplicate("Client already registered".to_string())
+                VaultlessError::Duplicate("Client already registered".into())
             }
             _ => VaultlessError::Database(e),
         })?;
@@ -298,9 +302,9 @@ impl Client {
             "Client registered successfully"
         );
 
-        // --- Cache in Redis ---
-        if let Some(redis_pool) = &redis {
-            let _ = Self::cache_to_redis(redis_pool, &client).await;
+        // --- Cache in Redis (non-critical) ---
+        if let Some(pool) = &redis {
+            let _ = Self::cache_to_redis(pool, &client).await;
         }
 
         Ok(RegisterClientResponse {

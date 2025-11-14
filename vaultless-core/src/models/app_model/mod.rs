@@ -1,10 +1,11 @@
 pub mod application;
 mod cache_resolved_key_bundled;
 pub mod dto;
-mod find_with_tier;
+mod integrity_config;
 mod invalidate_cache;
+mod resolve;
 
 pub use dto::{
-    Application, ApplicationWithTier, CachedApplication, CachedResolvedKeyBundle,
-    CreateApplication, CreateApplicationResponse, KeyGranularity, UpdateApplication,
+    Application, ApplicationWithTier, CreateApplication, CreateApplicationResponse, KeyGranularity,
+    UpdateApplication,
 };

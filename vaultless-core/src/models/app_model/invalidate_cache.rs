@@ -1,45 +1,46 @@
 use super::dto::*;
-use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::ApiKey;
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 
 impl Application {
-    /// Invalidate application cache (standard method - requires full Application)
-    pub async fn invalidate_cache<'c, E>(
+    /// Invalidate cached auth entries (SK and PK) for this application
+    pub async fn invalidate_auth_cache<'c, E>(
+        &self,
         exec: E,
-        redis_pool: Arc<RedisPool>,
-        app: &Application,
+        redis: Arc<RedisPool>,
     ) -> Result<()>
     where
-        E: Executor<'c, Database = Postgres> + Clone,
+        E: Executor<'c, Database = Postgres>,
     {
-        let mut conn = redis_pool
-            .get()
-            .await
-            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+        // 1. Fetch all keys for this app (ignore is_active)
+        let keys: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT key_hash, publishable_key_plaintext
+            FROM api_keys
+            WHERE application_id = $1
+            "#,
+        )
+        .bind(self.id)
+        .fetch_all(exec)
+        .await
+        .map_err(VaultlessError::Database)?;
 
-        let secret_key_id = app.secret_key_id;
-        let (sk_hash, pk_plaintext) =
-            ApiKey::get_linked_key_data_for_cache_invalidation(exec.clone(), app.id).await?;
+        let mut conn = redis.get().await?;
 
-        let mut keys_to_delete = Vec::with_capacity(3);
-        keys_to_delete.push(cache_key!("app_bundle", secret_key_id));
-        keys_to_delete.push(publishable_key_resolution_cache_key(&pk_plaintext));
-
-        if let Some(hash) = sk_hash {
-            keys_to_delete.push(secret_key_resolution_cache_key(&hash));
+        // 2. Delete each key from Redis
+        for (sk_opt, pk_opt) in keys {
+            if let Some(sk) = sk_opt {
+                let sk_key = secret_key_resolution_cache_key(&sk);
+                let _: () = conn.del(sk_key).await?;
+            }
+            if let Some(pk) = pk_opt {
+                let pk_key = publishable_key_resolution_cache_key(&pk);
+                let _: () = conn.del(pk_key).await?;
+            }
         }
-
-        conn.del::<_, u64>(keys_to_delete).await.map_err(|e| {
-            tracing::error!("Redis DEL command failed: {:?}", e);
-            VaultlessError::Internal("Failed to delete Redis cache keys".into())
-        })?;
-
-        tracing::info!(application_id = %app.id, "Application and all associated key caches fully invalidated.");
 
         Ok(())
     }

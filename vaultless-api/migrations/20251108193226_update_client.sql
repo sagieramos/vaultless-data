@@ -81,7 +81,6 @@ SELECT
     -- Application info
     a.id AS application_id,
     a.name AS application_name,
-    a.platform,
     a.is_active AS application_active,
     
     -- Developer info
