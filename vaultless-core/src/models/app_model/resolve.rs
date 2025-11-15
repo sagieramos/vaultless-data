@@ -1,16 +1,14 @@
-// Ensure Application, VaultlessError, etc. are imported
 use super::dto::*;
 use crate::error::Result;
 use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands; // Add this import
+use redis::AsyncCommands; 
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 
 impl Application {
     pub async fn fetch_auth_config_by_publishable_key<'c, E>(
         exec: E,
-        redis: Arc<RedisPool>,
-        is_hot_path: bool,
+        redis: Option<Arc<RedisPool>>,  
         pk_plaintext: &str,
     ) -> Result<Option<AuthConfig>>
     where
@@ -18,35 +16,33 @@ impl Application {
     {
         let cache_key = publishable_key_resolution_cache_key(pk_plaintext);
 
-        if is_hot_path {
-            let mut conn = redis.get().await?;
-            if let Some(cached) = conn.get::<_, Option<String>>(&cache_key).await? {
-                // Deserialize hot version
-                let cached: CachedAuthConfig = serde_json::from_str(&cached)?;
+        // --- HOT PATH ---
+        if let Some(redis_pool) = &redis {
+            if let Ok(mut conn) = redis_pool.get().await {
+                if let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await {
+                    let cached: CachedAuthConfig = serde_json::from_str(&cached)?;
 
-                // Convert hot cache to full AuthConfig
-                let auth = AuthConfig {
-                    app_id: cached.app_id,
-                    app_user_id: cached.app_user_id,
-                    app_name: cached.app_name,
-                    app_description: None, // intentionally omitted in hot cache
-                    app_is_active: cached.app_is_active,
-                    app_max_ttl_seconds: cached.app_max_ttl_seconds,
-                    app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
-                    app_integrity_config: cached.app_integrity_config,
-                    sk_id: cached.sk_id,
-                    sk_key_prefix: String::new(), // omitted in hot cache
-                    sk_tier: cached.sk_tier,
-                    sk_monthly_message_quota: cached.sk_monthly_message_quota,
-                    sk_message_retention_seconds: cached.sk_message_retention_seconds,
-                    sk_rate_limit_per_minute: cached.sk_rate_limit_per_minute,
-                };
-
-                return Ok(Some(auth));
+                    return Ok(Some(AuthConfig {
+                        app_id: cached.app_id,
+                        app_user_id: cached.app_user_id,
+                        app_name: cached.app_name,
+                        app_description: None,
+                        app_is_active: cached.app_is_active,
+                        app_max_ttl_seconds: cached.app_max_ttl_seconds,
+                        app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
+                        app_integrity_config: cached.app_integrity_config,
+                        sk_id: cached.sk_id,
+                        sk_key_prefix: String::new(),
+                        sk_tier: cached.sk_tier,
+                        sk_monthly_message_quota: cached.sk_monthly_message_quota,
+                        sk_message_retention_seconds: cached.sk_message_retention_seconds,
+                        sk_rate_limit_per_minute: cached.sk_rate_limit_per_minute,
+                    }));
+                }
             }
         }
 
-        // Postgres fallback
+        // --- POSTGRES FALLBACK ---
         let auth = sqlx::query_as::<_, AuthConfig>(
             "SELECT * FROM fetch_auth_config_by_publishable_key($1)",
         )
@@ -54,13 +50,14 @@ impl Application {
         .fetch_optional(exec)
         .await?;
 
-        if let Some(ref full) = auth {
-            // Cache hot version in Redis
-            let cached: CachedAuthConfig = full.clone().into();
-            let mut conn = redis.get().await?;
-            let _ = conn
-                .set_ex::<_, _, ()>(&cache_key, serde_json::to_string(&cached)?, 3600)
-                .await;
+        // Cache if full record exists
+        if let (Some(full), Some(redis_pool)) = (&auth, redis) {
+            if let Ok(mut conn) = redis_pool.get().await {
+                let cached: CachedAuthConfig = full.clone().into();
+                let _ = conn
+                    .set_ex::<_, _, ()>(&cache_key, serde_json::to_string(&cached)?, 3600)
+                    .await;
+            }
         }
 
         Ok(auth)
@@ -68,8 +65,7 @@ impl Application {
 
     pub async fn fetch_auth_config_by_secret_hash<'c, E>(
         exec: E,
-        redis: Arc<RedisPool>,
-        is_hot_path: bool,
+        redis: Option<Arc<RedisPool>>,
         secret_hash_hex: &str,
     ) -> Result<Option<AuthConfig>>
     where
@@ -77,48 +73,47 @@ impl Application {
     {
         let cache_key = secret_key_resolution_cache_key(secret_hash_hex);
 
-        if is_hot_path {
-            let mut conn = redis.get().await?;
-            if let Some(cached) = conn.get::<_, Option<String>>(&cache_key).await? {
-                // Deserialize Redis hot version
-                let cached: CachedAuthConfig = serde_json::from_str(&cached)?;
+        // --- HOT PATH ---
+        if let Some(redis_pool) = &redis {
+            if let Ok(mut conn) = redis_pool.get().await {
+                if let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await {
+                    let cached: CachedAuthConfig = serde_json::from_str(&cached)?;
 
-                // Convert to full AuthConfig, filling missing fields with defaults or None
-                let auth = AuthConfig {
-                    app_id: cached.app_id,
-                    app_user_id: cached.app_user_id,
-                    app_name: cached.app_name,
-                    app_description: None, // intentionally omitted in hot cache
-                    app_is_active: cached.app_is_active,
-                    app_max_ttl_seconds: cached.app_max_ttl_seconds,
-                    app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
-                    app_integrity_config: cached.app_integrity_config,
-                    sk_id: cached.sk_id,
-                    sk_key_prefix: String::new(), // hot cache omits it
-                    sk_tier: cached.sk_tier,
-                    sk_monthly_message_quota: cached.sk_monthly_message_quota,
-                    sk_message_retention_seconds: cached.sk_message_retention_seconds,
-                    sk_rate_limit_per_minute: cached.sk_rate_limit_per_minute,
-                };
-
-                return Ok(Some(auth));
+                    return Ok(Some(AuthConfig {
+                        app_id: cached.app_id,
+                        app_user_id: cached.app_user_id,
+                        app_name: cached.app_name,
+                        app_description: None,
+                        app_is_active: cached.app_is_active,
+                        app_max_ttl_seconds: cached.app_max_ttl_seconds,
+                        app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
+                        app_integrity_config: cached.app_integrity_config,
+                        sk_id: cached.sk_id,
+                        sk_key_prefix: String::new(),
+                        sk_tier: cached.sk_tier,
+                        sk_monthly_message_quota: cached.sk_monthly_message_quota,
+                        sk_message_retention_seconds: cached.sk_message_retention_seconds,
+                        sk_rate_limit_per_minute: cached.sk_rate_limit_per_minute,
+                    }));
+                }
             }
         }
 
-        // Postgres fallback
+        // --- POSTGRES FALLBACK ---
         let auth =
             sqlx::query_as::<_, AuthConfig>("SELECT * FROM fetch_auth_config_by_secret_hash($1)")
                 .bind(secret_hash_hex)
                 .fetch_optional(exec)
                 .await?;
 
-        if let Some(ref full) = auth {
-            // cache hot version in Redis
-            let cached: CachedAuthConfig = full.clone().into();
-            let mut conn = redis.get().await?;
-            let _ = conn
-                .set_ex::<_, _, ()>(&cache_key, serde_json::to_string(&cached)?, 3600)
-                .await;
+        // Cache if needed
+        if let (Some(full), Some(redis_pool)) = (&auth, redis) {
+            if let Ok(mut conn) = redis_pool.get().await {
+                let cached: CachedAuthConfig = full.clone().into();
+                let _ = conn
+                    .set_ex::<_, _, ()>(&cache_key, serde_json::to_string(&cached)?, 3600)
+                    .await;
+            }
         }
 
         Ok(auth)

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vaultless_core::{
     models::{
-        Application, ApplicationHealth, ApplicationWithTier, CreateApplication, UpdateApplication,
+        Application, ApplicationWithTier, CreateApplication, UpdateApplication,
     },
     types::SubscriptionTier,
 };
@@ -29,10 +29,6 @@ use crate::{
 pub struct CreateApplicationRequest {
     pub name: String,
     pub description: Option<String>,
-    pub bundle_id: Option<String>,
-    pub platform: Option<String>,
-    pub webhook_url: Option<String>,
-    pub existing_api_key_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -80,11 +76,6 @@ pub async fn create_application(
         user_id: user.id,
         name: req.name,
         description: req.description,
-        tier: SubscriptionTier::Free,
-        existing_api_key_id: req.existing_api_key_id,
-        bundle_id: req.bundle_id,
-        platform: req.platform,
-        webhook_url: req.webhook_url,
     };
 
     // Create application
@@ -102,7 +93,7 @@ pub async fn create_application(
     Ok(Json(serde_json::json!({
         "application": response.application,
         "secret_key": response.secret_key,
-        "publishable_key": response.publishable_key,
+        "publishable_key": response.publishable_key_plaintext,
         "message": "IMPORTANT: Save your secret key now. You won't be able to see it again!"
     })))
 }

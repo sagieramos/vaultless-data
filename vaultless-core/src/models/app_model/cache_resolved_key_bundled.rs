@@ -1,7 +1,8 @@
 use super::dto::*;
 use crate::crypto::hash_content;
-use crate::models::ApiKey;
 use crate::error::{Result, VaultlessError};
+use crate::models::ApiKey;
+use deadpool_redis::Pool as RedisPool;
 use crate::models::usage::{
     MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool,
 };
@@ -14,7 +15,7 @@ impl AuthConfig {
     /// Hot-path optimized validation
     pub async fn validate_hot(
         &self,
-        redis_pool: Arc<deadpool_redis::Pool>,
+        redis_pool: Arc<RedisPool>,
         request_headers: &HashMap<String, String>,
     ) -> Result<()> {
         // 1. In-memory fast checks
@@ -29,6 +30,15 @@ impl AuthConfig {
         if let Some(web_config) = self.app_integrity_config.get("web") {
             if let Some(origins) = web_config.get("authorized_origins") {
                 if let Some(origins_array) = origins.as_array() {
+                    // --- NEW: Check for the Wildcard Origin ---
+                    let allow_all = origins_array.iter().any(|v| v.as_str() == Some("*"));
+
+                    if allow_all {
+                        // If "*" is present, allow the request immediately without further checking
+                        return Ok(()); // Or proceed with the rest of the function
+                    }
+                    // ------------------------------------------
+
                     // WEB INTEGRITY: Check Origin against integrity_config
                     if let Some(origin) = request_headers.get("Origin") {
                         let is_allowed = origins_array
@@ -50,6 +60,9 @@ impl AuthConfig {
                 }
             }
         }
+
+        // ... rest of the function (if the check is meant to be a guard at the start)
+
         // Mobile integrity checks (ios/android) are handled during client registration
         // and stored in the clients table (is_platform_attested field)
 
@@ -104,7 +117,7 @@ impl AuthConfig {
     /// Resolve and validate an API key on the hot path
     pub async fn resolve_and_validate<'c, E>(
         exec: E,
-        redis_pool: Arc<deadpool_redis::Pool>,
+        redis_pool: Arc<RedisPool>,
         key_plaintext: &str,
         granularity: &KeyGranularity,
         request_headers: &HashMap<String, String>,
@@ -117,8 +130,7 @@ impl AuthConfig {
             KeyGranularity::Publishable => {
                 super::Application::fetch_auth_config_by_publishable_key(
                     exec.clone(),
-                    redis_pool.clone(),
-                    true, // is_hot_path = true for hot path
+                    Some(redis_pool.clone()),
                     key_plaintext,
                 )
                 .await?
@@ -128,8 +140,7 @@ impl AuthConfig {
                 let secret_hash = hash_content(key_plaintext.as_bytes());
                 super::Application::fetch_auth_config_by_secret_hash(
                     exec.clone(),
-                    redis_pool.clone(),
-                    true, // is_hot_path = true for hot path
+                    Some(redis_pool.clone()),
                     &secret_hash,
                 )
                 .await?

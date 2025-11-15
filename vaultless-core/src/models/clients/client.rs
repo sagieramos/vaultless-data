@@ -247,15 +247,9 @@ impl Client {
         let session_token_hash = crypto::hash_content(&token);
         let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
-        // --- Resolve application bundle ---
-        let redis_pool = redis.clone().ok_or_else(|| {
-            VaultlessError::Internal("Redis pool required for key resolution".into())
-        })?;
-
         let app = Application::fetch_auth_config_by_publishable_key(
             exec.clone(),
-            redis_pool,
-            false,
+            redis.clone(),
             &publishable_key,
         )
         .await?
@@ -753,7 +747,7 @@ impl Client {
         Ok(Some(client))
     }
 
-    async fn cache_to_redis(redis_pool: &Arc<RedisPool>, client: &Client) -> Result<()> {
+    pub async fn cache_to_redis(redis_pool: &Arc<RedisPool>, client: &Client) -> Result<()> {
         if let Ok(mut conn) = redis_pool.get().await {
             let ttl_secs = 24 * 60 * 60; // 24 hours
 

@@ -1,7 +1,7 @@
 pub mod api_key;
 pub mod app_model;
 pub mod billing;
-pub mod client;
+pub mod clients;
 pub mod client_token;
 pub mod message;
 pub mod proof;
@@ -14,7 +14,7 @@ pub use app_model::dto::{
     UpdateApplication,
 };
 pub use billing::*;
-pub use client::{
+pub use clients::client::{
     AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
     RegisterClientRequest, RegisterClientResponse,
 };

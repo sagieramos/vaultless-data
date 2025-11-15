@@ -26,7 +26,7 @@ pub use models::{
     },
     // application::{Application, CreateApplication},
     billing::*,
-    client::{
+    clients::client::{
         AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
         RegisterClientRequest, RegisterClientResponse,
     },

@@ -43,6 +43,7 @@ pub struct CreateApplication {
 
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct UpdateApplication {
+    pub id: Uuid,
     #[validate(length(min = 1, max = 255))]
     pub name: Option<String>,
 
@@ -108,6 +109,8 @@ pub enum KeyGranularity {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IntegrityConfig {
     #[serde(default)]
+    pub allow_unauthenticated: bool,
+    #[serde(default)]
     pub web: WebIntegrityConfig,
     #[serde(default)]
     pub ios: MobileIntegrityConfig,
@@ -145,6 +148,7 @@ pub struct MobileIntegrityConfig {
 /// DTO for updating the entire configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct UpdateIntegrityConfigRequest {
+    pub allow_unauthenticated: bool,
     pub web: WebIntegrityConfig,
     pub ios: MobileIntegrityConfig,
     pub android: MobileIntegrityConfig,
@@ -215,6 +219,16 @@ impl From<AuthConfig> for CachedAuthConfig {
             sk_rate_limit_per_minute: a.sk_rate_limit_per_minute,
         }
     }
+}
+
+/// Summary of integrity requirements for an application
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IntegrityRequirements {
+    pub web_origin_validation: bool,
+    pub ios_attestation_required: bool,
+    pub android_attestation_required: bool,
+    pub ios_reject_untrusted: bool,
+    pub android_reject_untrusted: bool,
 }
 
 // --- Cache key helpers ---

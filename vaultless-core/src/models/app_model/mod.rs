@@ -1,9 +1,12 @@
 pub mod application;
 mod cache_resolved_key_bundled;
 pub mod dto;
-mod integrity_config;
-mod invalidate_cache;
-mod resolve;
+pub mod integrity_config;
+pub mod invalidate_cache;
+pub mod resolve;
+pub mod attestation_types;
+pub mod attestation;
+pub mod update;
 
 pub use dto::{
     Application, ApplicationWithTier, CreateApplication, CreateApplicationResponse, KeyGranularity,
