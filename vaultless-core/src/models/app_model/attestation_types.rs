@@ -372,16 +372,51 @@ impl AttestationMetadata {
 // Configuration Helpers (from Application.integrity_config)
 // =============================================================================
 
-/// Extract expected certificate hash from integrity config
+/// Extract expected certificate hash from integrity config (Android only)
 pub fn get_expected_cert_hash(
     integrity_config: &serde_json::Value,
     platform: Platform,
 ) -> Option<String> {
+    match platform {
+        Platform::Android => {
+            integrity_config
+                .get("android")
+                .and_then(|p| p.get("allowed_certificate_sha256"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        }
+        Platform::IOS | Platform::Web => None,
+    }
+}
+
+/// Extract Apple Team ID from integrity config (iOS only)
+pub fn get_apple_team_id(
+    integrity_config: &serde_json::Value,
+) -> Option<String> {
     integrity_config
-        .get(platform.as_str())
-        .and_then(|p| p.get("allowed_certificate_sha256"))
+        .get("ios")
+        .and_then(|p| p.get("apple_team_id"))
         .and_then(|v| v.as_str())
         .map(String::from)
+}
+
+/// Extract Google Cloud credentials from integrity config (Android only)
+pub fn get_google_credentials(
+    integrity_config: &serde_json::Value,
+) -> Option<(String, String)> {
+    let android = integrity_config.get("android")?;
+    
+    let project = android
+        .get("google_cloud_project")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    
+    let api_key = android
+        .get("google_api_key")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    
+    Some((project, api_key))
 }
 
 /// Extract allowed bundle IDs from integrity config

@@ -1,14 +1,14 @@
 use super::dto::*;
 use crate::error::Result;
 use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands; 
+use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 
 impl Application {
     pub async fn fetch_auth_config_by_publishable_key<'c, E>(
         exec: E,
-        redis: Option<Arc<RedisPool>>,  
+        redis: Option<Arc<RedisPool>>,
         pk_plaintext: &str,
     ) -> Result<Option<AuthConfig>>
     where
@@ -30,7 +30,7 @@ impl Application {
                         app_is_active: cached.app_is_active,
                         app_max_ttl_seconds: cached.app_max_ttl_seconds,
                         app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
-                        app_integrity_config: cached.app_integrity_config,
+                        app_integrity_config: serde_json::json!({}),
                         sk_id: cached.sk_id,
                         sk_key_prefix: String::new(),
                         sk_tier: cached.sk_tier,
@@ -87,7 +87,7 @@ impl Application {
                         app_is_active: cached.app_is_active,
                         app_max_ttl_seconds: cached.app_max_ttl_seconds,
                         app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
-                        app_integrity_config: cached.app_integrity_config,
+                        app_integrity_config: serde_json::json!({}),
                         sk_id: cached.sk_id,
                         sk_key_prefix: String::new(),
                         sk_tier: cached.sk_tier,
@@ -115,6 +115,39 @@ impl Application {
                     .await;
             }
         }
+
+        Ok(auth)
+    }
+
+    pub async fn fetch_full_auth_by_publishable_key<'c, E>(
+        exec: E,
+        pk_plaintext: &str,
+    ) -> Result<Option<AuthConfig>>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let auth = sqlx::query_as::<_, AuthConfig>(
+            "SELECT * FROM fetch_auth_config_by_publishable_key($1)",
+        )
+        .bind(pk_plaintext)
+        .fetch_optional(exec)
+        .await?;
+
+        Ok(auth)
+    }
+
+    pub async fn fetch_full_auth_by_secret_hash<'c, E>(
+        exec: E,
+        secret_hash_hex: &str,
+    ) -> Result<Option<AuthConfig>>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        let auth =
+            sqlx::query_as::<_, AuthConfig>("SELECT * FROM fetch_auth_config_by_secret_hash($1)")
+                .bind(secret_hash_hex)
+                .fetch_optional(exec)
+                .await?;
 
         Ok(auth)
     }

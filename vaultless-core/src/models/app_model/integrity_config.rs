@@ -8,7 +8,6 @@ use uuid::Uuid;
 use validator::Validate;
 
 impl Application {
-    /// Update integrity configuration with validation
     pub async fn update_integrity_config<'c, E>(
         exec: E,
         redis: Option<Arc<RedisPool>>,
@@ -77,10 +76,15 @@ impl Application {
             Err(_) => return false,
         };
 
+        // If unauthenticated access is allowed, attestation is not required
+        if config.allow_unauthenticated {
+            return false;
+        }
+
         match platform {
             Platform::IOS => {
                 // Attestation required if certificate hash is configured
-                config.ios.allowed_certificate_sha256.is_some()
+                config.ios.apple_team_id.is_some() || !config.ios.allowed_bundle_ids.is_empty()
             }
             Platform::Android => config.android.allowed_certificate_sha256.is_some(),
             Platform::Web => {
@@ -88,6 +92,13 @@ impl Application {
                 false
             }
         }
+    }
+
+    /// Check if unauthenticated access is allowed (dev/test mode)
+    pub fn allows_unauthenticated(&self) -> bool {
+        self.get_integrity_config()
+            .map(|c| c.allow_unauthenticated)
+            .unwrap_or(false)
     }
 
     /// Check if web origin validation is required
@@ -124,7 +135,7 @@ impl Application {
         let config = self.get_integrity_config().ok()?;
 
         match platform {
-            Platform::IOS => config.ios.allowed_certificate_sha256.clone(),
+            Platform::IOS => None,
             Platform::Android => config.android.allowed_certificate_sha256.clone(),
             Platform::Web => None,
         }
@@ -207,8 +218,10 @@ impl Application {
         };
 
         IntegrityRequirements {
+            allow_unauthenticated: config.allow_unauthenticated,
             web_origin_validation: !config.web.authorized_origins.is_empty(),
-            ios_attestation_required: config.ios.allowed_certificate_sha256.is_some(),
+            ios_attestation_required: config.ios.apple_team_id.is_some()
+                || !config.ios.allowed_bundle_ids.is_empty(),
             android_attestation_required: config.android.allowed_certificate_sha256.is_some(),
             ios_reject_untrusted: config.ios.reject_untrusted_device,
             android_reject_untrusted: config.android.reject_untrusted_device,
@@ -226,35 +239,39 @@ impl IntegrityConfig {
     /// Create a development/testing config (no attestation required)
     pub fn dev_mode() -> Self {
         Self {
-            allow_unauthenticated: true, // ← NEW
+            allow_unauthenticated: true,
             web: WebIntegrityConfig::default(),
-            ios: MobileIntegrityConfig::default(),
-            android: MobileIntegrityConfig::default(),
+            ios: IosIntegrityConfig::default(),
+            android: AndroidIntegrityConfig::default(),
         }
     }
 
     /// Create a web-only config
     pub fn web_only(authorized_origins: Vec<String>) -> Self {
         Self {
-            allow_unauthenticated: false, // ← ADDED
+            allow_unauthenticated: false,
             web: WebIntegrityConfig { authorized_origins },
-            ios: MobileIntegrityConfig::default(),
-            android: MobileIntegrityConfig::default(),
+            ios: IosIntegrityConfig::default(),
+            android: AndroidIntegrityConfig::default(),
         }
     }
 
     /// Create an iOS-only config
-    pub fn ios_only(cert_hash: String, bundle_ids: Vec<String>, reject_untrusted: bool) -> Self {
+    pub fn ios_only(
+        apple_team_id: String,
+        bundle_ids: Vec<String>,
+        reject_untrusted: bool,
+    ) -> Self {
         Self {
-            allow_unauthenticated: false, // ← ADDED
+            allow_unauthenticated: false,
             web: WebIntegrityConfig::default(),
-            ios: MobileIntegrityConfig {
-                allowed_certificate_sha256: Some(cert_hash),
+            ios: IosIntegrityConfig {
+                apple_team_id: Some(apple_team_id),
                 allowed_bundle_ids: bundle_ids,
                 min_version_code: None,
                 reject_untrusted_device: reject_untrusted,
             },
-            android: MobileIntegrityConfig::default(),
+            android: AndroidIntegrityConfig::default(),
         }
     }
 
@@ -265,14 +282,16 @@ impl IntegrityConfig {
         reject_untrusted: bool,
     ) -> Self {
         Self {
-            allow_unauthenticated: false, // ← ADDED
+            allow_unauthenticated: false,
             web: WebIntegrityConfig::default(),
-            ios: MobileIntegrityConfig::default(),
-            android: MobileIntegrityConfig {
+            ios: IosIntegrityConfig::default(),
+            android: AndroidIntegrityConfig {
                 allowed_certificate_sha256: Some(cert_hash),
                 allowed_bundle_ids: bundle_ids,
                 min_version_code: None,
                 reject_untrusted_device: reject_untrusted,
+                google_cloud_project: None,
+                google_api_key: None,
             },
         }
     }

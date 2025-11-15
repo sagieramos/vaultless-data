@@ -62,9 +62,6 @@ impl Client {
         redis: Option<Arc<RedisPool>>,
         input: RegisterClientRequest,
         publishable_key: String,
-        // NEW: Optional Google Cloud credentials for Android attestation
-        google_cloud_project: Option<String>,
-        google_api_key: Option<String>,
     ) -> Result<RegisterClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
@@ -122,15 +119,11 @@ impl Client {
             }
         }
 
-        let app = Application::fetch_auth_config_by_publishable_key(
-            exec.clone(),
-            redis.clone(),
-            &publishable_key,
-        )
-        .await?
-        .ok_or(VaultlessError::NotFound(
-            "Auth configuration not found".to_string(),
-        ))?;
+        let app = Application::fetch_full_auth_by_publishable_key(exec.clone(), &publishable_key)
+            .await?
+            .ok_or(VaultlessError::NotFound(
+                "Auth configuration not found".to_string(),
+            ))?;
 
         // ============= NEW: PLATFORM ATTESTATION =============
 
@@ -150,11 +143,32 @@ impl Client {
             );
 
             // Verify attestation against application's integrity_config
+            // Extract Google Cloud credentials from config for Android
+            let (google_project, google_key) = if attestation_request.platform == Platform::Android
+            {
+                get_google_credentials(&app.app_integrity_config).ok_or_else(|| {
+                    VaultlessError::Internal(
+                        "Google Cloud credentials not configured for Android attestation".into(),
+                    )
+                })?
+            } else {
+                (String::new(), String::new()) // Not needed for iOS
+            };
+
+            // Verify attestation against application's integrity_config
             let attestation_result = verify_attestation(
                 &attestation_request,
                 &app.app_integrity_config,
-                google_cloud_project.as_deref(),
-                google_api_key.as_deref(),
+                if attestation_request.platform == Platform::Android {
+                    Some(&google_project)
+                } else {
+                    None
+                },
+                if attestation_request.platform == Platform::Android {
+                    Some(&google_key)
+                } else {
+                    None
+                },
             )
             .await?;
 
@@ -258,18 +272,17 @@ impl Client {
     // ============= NEW: RE-ATTESTATION METHOD =============
 
     /// Re-attest an existing client (for periodic verification)
+    /// Re-attest an existing client (periodic verification)
     pub async fn re_attest<'c, E>(
         exec: E,
         redis: Option<Arc<RedisPool>>,
         client_id: Uuid,
         attestation_request: AttestationRequest,
-        google_cloud_project: Option<String>,
-        google_api_key: Option<String>,
     ) -> Result<()>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // 1. Fetch existing client
+        // 1. Fetch client
         let client =
             sqlx::query_as::<_, Client>("SELECT * FROM clients WHERE id = $1 AND is_active = TRUE")
                 .bind(client_id)
@@ -277,31 +290,52 @@ impl Client {
                 .await?
                 .ok_or_else(|| VaultlessError::NotFound("Client not found".into()))?;
 
-        // 2. Get application config
-        let app = sqlx::query_as::<_, Application>("SELECT * FROM applications WHERE id = $1")
-            .bind(client.application_id)
-            .fetch_optional(exec.clone())
-            .await?
-            .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
+        // 2. Fetch application
+        let app = sqlx::query_as::<_, Application>(
+            "SELECT * FROM applications WHERE id = $1 AND is_active = TRUE",
+        )
+        .bind(client.application_id)
+        .fetch_optional(exec.clone())
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
 
-        // 3. Validate attestation request
+        // 4. Validate request
         attestation_request.validate().map_err(|e| {
             VaultlessError::Validation(format!("Invalid attestation request: {}", e))
         })?;
 
-        // 4. Verify attestation
+        // 5. Extract Google API credentials (only for Android)
+        let (google_project, google_key) = if attestation_request.platform == Platform::Android {
+            get_google_credentials(&app.integrity_config).ok_or_else(|| {
+                VaultlessError::Internal(
+                    "Google Cloud credentials not configured for Android attestation".into(),
+                )
+            })?
+        } else {
+            (String::new(), String::new()) // iOS does not need these
+        };
+
+        // 6. Verify attestation
         let attestation_result = verify_attestation(
             &attestation_request,
             &app.integrity_config,
-            google_cloud_project.as_deref(),
-            google_api_key.as_deref(),
+            if attestation_request.platform == Platform::Android {
+                Some(&google_project)
+            } else {
+                None
+            },
+            if attestation_request.platform == Platform::Android {
+                Some(&google_key)
+            } else {
+                None
+            },
         )
         .await?;
 
-        // 5. Enforce policies
+        // 7. Enforce policies
         attestation::enforce_attestation_policies(&attestation_result, &app.integrity_config)?;
 
-        // 6. Update client metadata
+        // 8. Rebuild attestation metadata
         let mut attestation_meta =
             AttestationMetadata::from_metadata(client.metadata.as_ref())?.unwrap_or_default();
 
@@ -309,22 +343,22 @@ impl Client {
 
         let updated_metadata = attestation_meta.merge_into_metadata(client.metadata.clone())?;
 
-        // 7. Update database
+        // 9. Update database
         sqlx::query(
             r#"
-            UPDATE clients
-            SET metadata = $1,
-                is_platform_attested = TRUE,
-                updated_at = NOW()
-            WHERE id = $2
-            "#,
+        UPDATE clients
+        SET metadata = $1,
+            is_platform_attested = TRUE,
+            updated_at = NOW()
+        WHERE id = $2
+        "#,
         )
         .bind(&updated_metadata)
         .bind(client_id)
-        .execute(exec)
+        .execute(exec.clone())
         .await?;
 
-        // 8. Invalidate cache
+        // 10. Invalidate Redis cache
         if let Some(redis_pool) = redis {
             if let Ok(mut conn) = redis_pool.get().await {
                 let cache_key = cache_key!("client", "id", client_id);

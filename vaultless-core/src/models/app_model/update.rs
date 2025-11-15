@@ -19,17 +19,24 @@ impl Application {
         if let Some(ref integrity_config_json) = update.integrity_config {
             // Try to parse and validate the config
             let config: IntegrityConfig = serde_json::from_value(integrity_config_json.clone())
-                .map_err(|e| VaultlessError::Validation(format!("Invalid integrity_config JSON: {}", e)))?;
+                .map_err(|e| {
+                    VaultlessError::Validation(format!("Invalid integrity_config JSON: {}", e))
+                })?;
 
             // Validate each platform's config
-            config.web.validate()
+            config
+                .web
+                .validate()
                 .map_err(|e| VaultlessError::Validation(format!("Invalid web config: {}", e)))?;
-            
-            config.ios.validate()
+
+            config
+                .ios
+                .validate()
                 .map_err(|e| VaultlessError::Validation(format!("Invalid iOS config: {}", e)))?;
-            
-            config.android.validate()
-                .map_err(|e| VaultlessError::Validation(format!("Invalid Android config: {}", e)))?;
+
+            config.android.validate().map_err(|e| {
+                VaultlessError::Validation(format!("Invalid Android config: {}", e))
+            })?;
 
             tracing::debug!(
                 app_id = %update.id,
@@ -106,7 +113,9 @@ impl Application {
         qb.push(", updated_at = NOW()");
 
         // 3. Finalize and Execute the Query
-        qb.push(" WHERE id = ").push_bind(update.id).push(" RETURNING *");
+        qb.push(" WHERE id = ")
+            .push_bind(update.id)
+            .push(" RETURNING *");
 
         let query = qb.build_query_as::<Application>();
         let updated_app = query.fetch_one(exec.clone()).await?;

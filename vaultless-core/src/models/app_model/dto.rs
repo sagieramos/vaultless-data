@@ -105,6 +105,7 @@ pub enum KeyGranularity {
     Publishable,
     Secret,
 }
+
 /// Represents the structured content of the JSONB 'integrity_config' column.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IntegrityConfig {
@@ -113,9 +114,9 @@ pub struct IntegrityConfig {
     #[serde(default)]
     pub web: WebIntegrityConfig,
     #[serde(default)]
-    pub ios: MobileIntegrityConfig,
+    pub ios: IosIntegrityConfig,
     #[serde(default)]
-    pub android: MobileIntegrityConfig,
+    pub android: AndroidIntegrityConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
@@ -126,7 +127,7 @@ pub struct WebIntegrityConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
-pub struct MobileIntegrityConfig {
+pub struct AndroidIntegrityConfig {
     /// REQUIRED: The expected SHA256 hash of the application's signing certificate.
     #[validate(custom(function = "validate_sha256_format"))]
     #[serde(default)]
@@ -140,7 +141,36 @@ pub struct MobileIntegrityConfig {
     #[serde(default)]
     pub min_version_code: Option<i32>,
 
-    /// OPTIONAL: Flag to reject untrusted devices.
+    /// OPTIONAL: Flag to reject untrusted devices (e.g., rooted/jailbroken).
+    #[serde(default)]
+    pub reject_untrusted_device: bool,
+
+    // --- Google Verification Credentials ---
+    /// Google Cloud Project ID needed for verification API.
+    #[serde(default)]
+    pub google_cloud_project: Option<String>,
+
+    /// API Key to authenticate the server with Google Play Integrity.
+    #[serde(default)]
+    pub google_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+pub struct IosIntegrityConfig {
+    /// REQUIRED: The 10-digit Apple Team ID (e.g., "83Z139DVZ2")
+    /// Used to compute the App ID Hash for verification.
+    #[serde(default)]
+    pub apple_team_id: Option<String>,
+
+    /// OPTIONAL: A list of accepted package/bundle identifiers. Max 5.
+    #[validate(length(max = 5))]
+    pub allowed_bundle_ids: Vec<String>,
+
+    /// OPTIONAL: Minimum acceptable version of the application.
+    #[serde(default)]
+    pub min_version_code: Option<i32>,
+
+    /// OPTIONAL: Flag to reject untrusted devices (e.g., jailbroken/modified).
     #[serde(default)]
     pub reject_untrusted_device: bool,
 }
@@ -150,8 +180,8 @@ pub struct MobileIntegrityConfig {
 pub struct UpdateIntegrityConfigRequest {
     pub allow_unauthenticated: bool,
     pub web: WebIntegrityConfig,
-    pub ios: MobileIntegrityConfig,
-    pub android: MobileIntegrityConfig,
+    pub ios: IosIntegrityConfig,
+    pub android: AndroidIntegrityConfig,
 }
 
 // --- CORRECTED VALIDATION FUNCTION ---
@@ -192,7 +222,6 @@ pub struct CachedAuthConfig {
     pub app_is_active: bool,
     pub app_max_ttl_seconds: i32,
     pub app_is_key_rotation_forced: bool,
-    pub app_integrity_config: serde_json::Value,
 
     pub sk_id: Uuid,
     pub sk_tier: Option<crate::types::SubscriptionTier>,
@@ -210,7 +239,6 @@ impl From<AuthConfig> for CachedAuthConfig {
             app_is_active: a.app_is_active,
             app_max_ttl_seconds: a.app_max_ttl_seconds,
             app_is_key_rotation_forced: a.app_is_key_rotation_forced,
-            app_integrity_config: a.app_integrity_config,
 
             sk_id: a.sk_id,
             sk_tier: a.sk_tier,
@@ -224,6 +252,7 @@ impl From<AuthConfig> for CachedAuthConfig {
 /// Summary of integrity requirements for an application
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IntegrityRequirements {
+    pub allow_unauthenticated: bool,
     pub web_origin_validation: bool,
     pub ios_attestation_required: bool,
     pub android_attestation_required: bool,

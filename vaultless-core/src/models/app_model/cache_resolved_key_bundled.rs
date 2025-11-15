@@ -2,11 +2,11 @@ use super::dto::*;
 use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
 use crate::models::ApiKey;
-use deadpool_redis::Pool as RedisPool;
 use crate::models::usage::{
     MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool,
 };
 use chrono::Utc;
+use deadpool_redis::Pool as RedisPool;
 use sqlx::{Executor, Postgres};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +16,6 @@ impl AuthConfig {
     pub async fn validate_hot(
         &self,
         redis_pool: Arc<RedisPool>,
-        request_headers: &HashMap<String, String>,
     ) -> Result<()> {
         // 1. In-memory fast checks
         if !self.app_is_active {
@@ -24,48 +23,6 @@ impl AuthConfig {
                 "Associated application is deactivated.".into(),
             ));
         }
-
-        // 2. PLATFORM INTEGRITY CHECK (Web Only) 🌐
-        // Check if this is a web application by looking for authorized_origins
-        if let Some(web_config) = self.app_integrity_config.get("web") {
-            if let Some(origins) = web_config.get("authorized_origins") {
-                if let Some(origins_array) = origins.as_array() {
-                    // --- NEW: Check for the Wildcard Origin ---
-                    let allow_all = origins_array.iter().any(|v| v.as_str() == Some("*"));
-
-                    if allow_all {
-                        // If "*" is present, allow the request immediately without further checking
-                        return Ok(()); // Or proceed with the rest of the function
-                    }
-                    // ------------------------------------------
-
-                    // WEB INTEGRITY: Check Origin against integrity_config
-                    if let Some(origin) = request_headers.get("Origin") {
-                        let is_allowed = origins_array
-                            .iter()
-                            .any(|v| v.as_str().map_or(false, |s| s == origin));
-
-                        if !is_allowed {
-                            return Err(VaultlessError::IntegrityCheckFailed(format!(
-                                "Origin '{}' is not authorized for this web application.",
-                                origin
-                            )));
-                        }
-                    } else {
-                        // Missing Origin header for web app
-                        return Err(VaultlessError::IntegrityCheckFailed(
-                            "Web application requires 'Origin' header for integrity check.".into(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // ... rest of the function (if the check is meant to be a guard at the start)
-
-        // Mobile integrity checks (ios/android) are handled during client registration
-        // and stored in the clients table (is_platform_attested field)
-
         // 3. QUOTA AND RATE LIMIT CHECKS
         let monthly_key = ApiKey::quota_cache_key(self.sk_id);
         let now = Utc::now();
@@ -120,7 +77,6 @@ impl AuthConfig {
         redis_pool: Arc<RedisPool>,
         key_plaintext: &str,
         granularity: &KeyGranularity,
-        request_headers: &HashMap<String, String>,
     ) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres> + Clone,
@@ -157,7 +113,7 @@ impl AuthConfig {
 
         // Step 3: Run hot validation
         auth_config
-            .validate_hot(redis_pool.clone(), request_headers)
+            .validate_hot(redis_pool.clone())
             .await?;
 
         // Step 4: Return the validated auth config
