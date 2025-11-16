@@ -39,6 +39,6 @@ x509-parser = { version = "0.18.0", optional = true }
 zeroize = "1.8.2"
 
 [features]
-default = ["cbor"] 
+default = ["cbor", "x509"] 
 cbor = ["ciborium"]
 x509 = ["x509-parser"]

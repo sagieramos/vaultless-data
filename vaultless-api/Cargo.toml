@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+asn1-rs = "0.7.1"
 async-trait = "0.1.89"
 axum = { version = "0.8.6", features = ["macros", "ws"] }
 base64 = "0.22.1"

@@ -1,11 +1,18 @@
 use super::attestation_types::*;
 use crate::error::{Result, VaultlessError};
+use asn1_rs::oid;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
+use pem::Pem;
 use reqwest::Client;
+use ring::signature::{
+    ECDSA_P256_SHA256_ASN1, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey, VerificationAlgorithm,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
+use x509_parser::certificate::X509Certificate;
+use x509_parser::der_parser::oid::Oid;
 
 // =============================================================================
 // iOS APP ATTEST VERIFICATION
@@ -151,7 +158,8 @@ pub async fn verify_ios_attestation(
                 hasher.finalize()
             };
 
-            if rp_id_hash != expected_rp_id_hash.as_slice() {
+            let expected_slice: &[u8] = expected_rp_id_hash.as_ref();
+            if rp_id_hash != expected_slice {
                 return Ok(AttestationResult {
                     is_valid: false,
                     certificate_hash: cert_hash,
@@ -188,12 +196,133 @@ pub async fn verify_ios_attestation(
 }
 
 #[cfg(feature = "x509")]
-fn verify_apple_certificate_chain(_cert_chain: &[String]) -> Result<()> {
-    // TODO: Implement proper certificate chain validation
-    // 1. Parse certificates using x509-parser
-    // 2. Verify chain up to Apple's root CA
-    // 3. Check validity dates
-    // 4. Verify certificate purposes/extensions
+use x509_parser::prelude::*;
+
+#[cfg(feature = "x509")]
+fn get_apple_root_certs() -> Vec<X509Certificate<'static>> {
+    let mut roots = Vec::new();
+    let g2_pem = include_str!("../../../certs/AppleRootCA-G2.pem");
+    let g3_pem = include_str!("../../../certs/AppleRootCA-G3.pem");
+
+    for pem in [g2_pem, g3_pem] {
+        let (_, parsed_pem_struct) = x509_parser::pem::parse_x509_pem(pem.as_bytes())
+            .expect("Failed to parse Apple root PEM");
+
+        let owned_der_bytes: Vec<u8> = parsed_pem_struct.contents.to_vec();
+        let leaked_der: &'static [u8] = Box::leak(owned_der_bytes.into_boxed_slice());
+
+        let (_, cert) = x509_parser::certificate::X509Certificate::from_der(leaked_der)
+            .expect("Failed to parse DER from PEM");
+
+        roots.push(cert);
+    }
+
+    roots
+}
+
+#[cfg(feature = "x509")]
+fn verify_signature(issuer_cert: &X509Certificate, subject_cert: &X509Certificate) -> Result<()> {
+    // 1. Get the signature algorithm from the SUBJECT certificate's signature field
+    let sig_alg_oid = &subject_cert.signature_algorithm.algorithm;
+    let ring_alg = get_ring_verification_alg(sig_alg_oid)?;
+
+    let pub_key_data: &[u8] = &issuer_cert.subject_pki.subject_public_key.data;
+    let public_key = UnparsedPublicKey::new(ring_alg, pub_key_data);
+
+    public_key
+        .verify(
+            subject_cert.tbs_certificate.as_ref(),
+            &subject_cert.signature_value.data,
+        )
+        .map_err(|_| VaultlessError::IntegrityCheckFailed("Certificate signature invalid".into()))
+}
+
+fn get_ring_verification_alg(sig_alg: &Oid) -> Result<&'static dyn VerificationAlgorithm> {
+    if *sig_alg == oid!(1.2.840.10045.4.3.2) {
+        // ECDSA with SHA-256
+        Ok(&ECDSA_P256_SHA256_ASN1)
+    } else if *sig_alg == oid!(1.2.840.113549.1.1.11) {
+        // SHA-256 with RSA Encryption
+        Ok(&RSA_PKCS1_2048_8192_SHA256)
+    } else {
+        Err(VaultlessError::Internal(format!(
+            "Unsupported signature algorithm OID: {:?}",
+            sig_alg
+        )))
+    }
+}
+
+pub fn verify_apple_certificate_chain(cert_chain: &[String]) -> Result<()> {
+    if cert_chain.is_empty() {
+        return Err(VaultlessError::Validation(
+            "Certificate chain is empty".into(),
+        ));
+    }
+
+    // Parse all client-provided certificates
+    let mut parsed_chain = Vec::new();
+    for cert_pem in cert_chain {
+        let (_, pem_struct) = x509_parser::pem::parse_x509_pem(cert_pem.as_bytes())
+            .map_err(|e| VaultlessError::Validation(format!("Invalid PEM: {}", e)))?;
+
+        let owned_der_bytes: Vec<u8> = pem_struct.contents.to_vec();
+        let leaked_der: &'static [u8] = Box::leak(owned_der_bytes.into_boxed_slice());
+
+        let (_, cert) = X509Certificate::from_der(leaked_der)
+            .map_err(|e| VaultlessError::Validation(format!("Failed to parse DER: {}", e)))?;
+
+        parsed_chain.push(cert);
+    }
+    // Load Apple roots
+    let apple_roots = get_apple_root_certs();
+
+    // 1. Check validity dates
+    let now = Utc::now();
+    let now_ts = now.timestamp();
+    for cert in &parsed_chain {
+        let not_before = cert.validity.not_before.to_datetime();
+        let not_after = cert.validity.not_after.to_datetime();
+        if now_ts < not_before.unix_timestamp() || now_ts > not_after.unix_timestamp() {
+            return Err(VaultlessError::IntegrityCheckFailed(
+                "Certificate expired or not yet valid".into(),
+            ));
+        }
+    }
+
+    // 2. Verify chain signatures (leaf -> intermediate -> root)
+    for i in 0..parsed_chain.len() - 1 {
+        let subject = &parsed_chain[i];
+        let issuer = &parsed_chain[i + 1];
+        verify_signature(issuer, subject)?;
+    }
+
+    // 3. Verify root matches one of Apple roots
+    let root_cert = parsed_chain.last().unwrap();
+    if !apple_roots
+        .iter()
+        .any(|root| root.tbs_certificate.as_ref() == root_cert.tbs_certificate.as_ref())
+    {
+        return Err(VaultlessError::IntegrityCheckFailed(
+            "Root certificate does not match Apple root CA".into(),
+        ));
+    }
+
+    // 4. Optional: Verify leaf has Apple attestation OID
+    let leaf = parsed_chain.first().unwrap();
+    // Use the OID macro for consistency
+    let attestation_oid = oid!(1.2.840.113635.100.8.2);
+
+    let has_attestation_oid = leaf
+        .extensions()
+        .iter()
+        .any(|ext| ext.oid == attestation_oid);
+
+    if !has_attestation_oid {
+        return Err(VaultlessError::IntegrityCheckFailed(
+            "Leaf certificate missing Apple attestation OID".into(),
+        ));
+    }
+
     Ok(())
 }
 
