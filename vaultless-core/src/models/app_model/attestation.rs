@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-use crate::crypto::verify_app_id_from_certificate;
+use crate::crypto::{verify_app_id_from_certificate, verify_apple_certificate_chain};
 
 // =============================================================================
 // iOS APP ATTEST VERIFICATION
@@ -160,16 +160,6 @@ pub async fn verify_ios_attestation(
     })
 }
 
-#[cfg(feature = "x509")]
-fn verify_apple_certificate_chain(_cert_chain: &[String]) -> Result<()> {
-    // TODO: Implement proper certificate chain validation
-    // 1. Parse certificates using x509-parser
-    // 2. Verify chain up to Apple's root CA
-    // 3. Check validity dates
-    // 4. Verify certificate purposes/extensions
-    Ok(())
-}
-
 // =============================================================================
 // ANDROID PLAY INTEGRITY VERIFICATION
 // =============================================================================
@@ -265,7 +255,7 @@ pub async fn verify_android_attestation(
         .map_err(|e| {
             VaultlessError::IntegrityCheckFailed(format!("Play Integrity API request failed: {}", e))
         })?;
-        
+
     // 3. Check response status
     if !response.status().is_success() {
         let status = response.status();

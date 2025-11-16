@@ -1,5 +1,6 @@
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
+use crate::models::app_model::attestation_types::AttestationRequest;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
@@ -134,6 +135,9 @@ pub struct AuthenticateClientRequest {
     /// The Base64-encoded signature of the `challenge`.
     #[validate(length(min = 32))]
     pub challenge_signature: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +147,7 @@ pub struct AuthenticateClientResponse {
     pub session_token: String,
     pub expires_at: DateTime<Utc>,
     pub is_new_session: bool,
+    pub was_reattested: bool, 
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
