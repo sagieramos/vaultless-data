@@ -172,7 +172,6 @@ pub fn cache_auth_challenge_key(challenge_hash: &str) -> String {
 // Implementation
 // =============================================================================
 impl Client {
-
     /// Authenticate client by hashed identifier
     pub async fn authenticate<'c, E>(
         exec: E,

@@ -76,6 +76,11 @@ pub async fn create_application(
         user_id: user.id,
         name: req.name,
         description: req.description,
+        max_ttl_seconds: None,
+
+        is_key_rotation_forced: false,
+
+        integrity_config:
     };
 
     // Create application

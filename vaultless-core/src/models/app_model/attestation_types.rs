@@ -256,9 +256,7 @@ impl AttestationMetadata {
     pub fn needs_reattesation(&self, days: i64) -> bool {
         match &self.attestation {
             Some(att) => {
-                let age = Utc::now()
-                    .signed_duration_since(att.verified_at)
-                    .num_days();
+                let age = Utc::now().signed_duration_since(att.verified_at).num_days();
                 age > days
             }
             None => true,
@@ -326,8 +324,13 @@ impl AttestationMetadata {
 
         // Try to parse the full structure from the "attestation" key
         if let Some(attestation_value) = metadata.get("attestation") {
-            let attestation_meta: AttestationMetadata = serde_json::from_value(attestation_value.clone())
-                .map_err(|e| VaultlessError::Serialization(format!("Failed to parse attestation metadata: {}", e)))?;
+            let attestation_meta: AttestationMetadata =
+                serde_json::from_value(attestation_value.clone()).map_err(|e| {
+                    VaultlessError::Serialization(format!(
+                        "Failed to parse attestation metadata: {}",
+                        e
+                    ))
+                })?;
             return Ok(Some(attestation_meta));
         }
 
@@ -378,21 +381,17 @@ pub fn get_expected_cert_hash(
     platform: Platform,
 ) -> Option<String> {
     match platform {
-        Platform::Android => {
-            integrity_config
-                .get("android")
-                .and_then(|p| p.get("allowed_certificate_sha256"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        }
+        Platform::Android => integrity_config
+            .get("android")
+            .and_then(|p| p.get("allowed_certificate_sha256"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
         Platform::IOS | Platform::Web => None,
     }
 }
 
 /// Extract Apple Team ID from integrity config (iOS only)
-pub fn get_apple_team_id(
-    integrity_config: &serde_json::Value,
-) -> Option<String> {
+pub fn get_apple_team_id(integrity_config: &serde_json::Value) -> Option<String> {
     integrity_config
         .get("ios")
         .and_then(|p| p.get("apple_team_id"))
@@ -401,21 +400,19 @@ pub fn get_apple_team_id(
 }
 
 /// Extract Google Cloud credentials from integrity config (Android only)
-pub fn get_google_credentials(
-    integrity_config: &serde_json::Value,
-) -> Option<(String, String)> {
+pub fn get_google_credentials(integrity_config: &serde_json::Value) -> Option<(String, String)> {
     let android = integrity_config.get("android")?;
-    
+
     let project = android
         .get("google_cloud_project")
         .and_then(|v| v.as_str())
         .map(String::from)?;
-    
+
     let api_key = android
         .get("google_api_key")
         .and_then(|v| v.as_str())
         .map(String::from)?;
-    
+
     Some((project, api_key))
 }
 
@@ -463,43 +460,85 @@ pub fn should_reject_untrusted_device(
 pub fn validate_attestation_config(
     request: &AttestationRequest,
     integrity_config: &serde_json::Value,
-) -> Result<String> {
-    // 1. Get expected certificate hash
-    let expected_cert_hash = get_expected_cert_hash(integrity_config, request.platform)
-        .ok_or_else(|| {
-            VaultlessError::IntegrityCheckFailed(format!(
-                "No certificate hash configured for platform: {}",
-                request.platform
-            ))
-        })?;
+) -> Result<Option<String>> {
+    match request.platform {
+        Platform::IOS => {
+            // iOS uses Apple Team ID instead of certificate hash
+            let _team_id = get_apple_team_id(integrity_config).ok_or_else(|| {
+                VaultlessError::IntegrityCheckFailed(
+                    "No Apple Team ID configured for iOS attestation".into(),
+                )
+            })?;
 
-    // 2. Check if bundle ID is in allowed list (if configured)
-    if let Some(allowed_bundles) = get_allowed_bundle_ids(integrity_config, request.platform) {
-        if !allowed_bundles.is_empty() && !allowed_bundles.contains(&request.bundle_id) {
-            return Err(VaultlessError::IntegrityCheckFailed(format!(
-                "Bundle ID '{}' not in allowed list",
-                request.bundle_id
-            )));
-        }
-    }
-
-    // 3. Check minimum version (if configured)
-    if let Some(min_version) = get_min_version_code(integrity_config, request.platform) {
-        // Parse version code from app_version string if present
-        // This is simplified - in production you'd have proper version parsing
-        if let Some(version_str) = &request.app_version {
-            if let Ok(version_code) = version_str.parse::<i32>() {
-                if version_code < min_version {
+            // Check bundle IDs if configured
+            if let Some(allowed_bundles) =
+                get_allowed_bundle_ids(integrity_config, request.platform)
+            {
+                if !allowed_bundles.is_empty() && !allowed_bundles.contains(&request.bundle_id) {
                     return Err(VaultlessError::IntegrityCheckFailed(format!(
-                        "App version {} is below minimum required version {}",
-                        version_code, min_version
+                        "Bundle ID '{}' not in allowed list",
+                        request.bundle_id
                     )));
                 }
             }
-        }
-    }
 
-    Ok(expected_cert_hash)
+            // Check minimum version if configured
+            if let Some(min_version) = get_min_version_code(integrity_config, request.platform) {
+                if let Some(version_str) = &request.app_version {
+                    if let Ok(version_code) = version_str.parse::<i32>() {
+                        if version_code < min_version {
+                            return Err(VaultlessError::IntegrityCheckFailed(format!(
+                                "App version {} is below minimum required version {}",
+                                version_code, min_version
+                            )));
+                        }
+                    }
+                }
+            }
+
+            Ok(None) // iOS doesn't return cert hash
+        }
+        Platform::Android => {
+            // Android uses certificate hash
+            let cert_hash =
+                get_expected_cert_hash(integrity_config, request.platform).ok_or_else(|| {
+                    VaultlessError::IntegrityCheckFailed(
+                        "No certificate hash configured for Android attestation".into(),
+                    )
+                })?;
+
+            // Check bundle IDs if configured
+            if let Some(allowed_bundles) =
+                get_allowed_bundle_ids(integrity_config, request.platform)
+            {
+                if !allowed_bundles.is_empty() && !allowed_bundles.contains(&request.bundle_id) {
+                    return Err(VaultlessError::IntegrityCheckFailed(format!(
+                        "Bundle ID '{}' not in allowed list",
+                        request.bundle_id
+                    )));
+                }
+            }
+
+            // Check minimum version
+            if let Some(min_version) = get_min_version_code(integrity_config, request.platform) {
+                if let Some(version_str) = &request.app_version {
+                    if let Ok(version_code) = version_str.parse::<i32>() {
+                        if version_code < min_version {
+                            return Err(VaultlessError::IntegrityCheckFailed(format!(
+                                "App version {} is below minimum required version {}",
+                                version_code, min_version
+                            )));
+                        }
+                    }
+                }
+            }
+
+            Ok(Some(cert_hash))
+        }
+        Platform::Web => Err(VaultlessError::Validation(
+            "Web platform does not support mobile attestation".into(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -539,8 +578,10 @@ mod tests {
             "custom_field": "value"
         });
 
-        let merged = attestation_meta.merge_into_metadata(Some(existing)).unwrap();
-        
+        let merged = attestation_meta
+            .merge_into_metadata(Some(existing))
+            .unwrap();
+
         assert!(merged.get("platform").is_some());
         assert!(merged.get("bundle_id").is_some());
         assert!(merged.get("attestation").is_some());
@@ -550,7 +591,7 @@ mod tests {
     #[test]
     fn test_needs_reattesation() {
         let mut attestation_meta = AttestationMetadata::default();
-        
+
         // No attestation details = needs attestation
         assert!(attestation_meta.needs_reattesation(30));
 
@@ -567,7 +608,7 @@ mod tests {
         assert!(!attestation_meta.needs_reattesation(30));
 
         // Old attestation = needs
-        attestation_meta.attestation.as_mut().unwrap().verified_at = 
+        attestation_meta.attestation.as_mut().unwrap().verified_at =
             Utc::now() - chrono::Duration::days(31);
         assert!(attestation_meta.needs_reattesation(30));
     }
