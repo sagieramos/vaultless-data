@@ -14,10 +14,6 @@ pub use app_model::dto::{
     UpdateApplication,
 };
 pub use billing::*;
-pub use clients::client::{
-    AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
-    RegisterClientRequest, RegisterClientResponse,
-};
 pub use message::*;
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use usage::*;

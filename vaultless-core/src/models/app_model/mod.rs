@@ -4,7 +4,7 @@ pub mod dto;
 pub mod integrity_config;
 pub mod invalidate_cache;
 pub mod resolve;
-pub mod attestation_types;
+pub mod attestationee;
 pub mod attestation;
 pub mod update;
 

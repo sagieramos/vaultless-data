@@ -110,8 +110,6 @@ pub struct RegisterClientRequest {
     /// Optional: nonce for replay protection — server will check Redis for reuse.
     #[validate(length(min = 8, max = 128))]
     pub nonce: Option<String>,
-
-    pub is_platform_attested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,7 +145,7 @@ pub struct AuthenticateClientResponse {
     pub session_token: String,
     pub expires_at: DateTime<Utc>,
     pub is_new_session: bool,
-    pub was_reattested: bool, 
+    pub was_reattested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

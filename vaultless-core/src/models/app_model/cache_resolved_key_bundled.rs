@@ -13,10 +13,7 @@ use std::sync::Arc;
 
 impl AuthConfig {
     /// Hot-path optimized validation
-    pub async fn validate_hot(
-        &self,
-        redis_pool: Arc<RedisPool>,
-    ) -> Result<()> {
+    pub async fn validate_hot(&self, redis_pool: Arc<RedisPool>) -> Result<()> {
         // 1. In-memory fast checks
         if !self.app_is_active {
             return Err(VaultlessError::Forbidden(
@@ -65,7 +62,9 @@ impl AuthConfig {
                         .await;
             });
 
-            return Err(VaultlessError::RateLimitExceeded);
+            return Err(VaultlessError::RateLimitExceeded(
+                "API key rate limit exceeded.".into(),
+            ));
         }
 
         Ok(())
@@ -112,9 +111,7 @@ impl AuthConfig {
         })?;
 
         // Step 3: Run hot validation
-        auth_config
-            .validate_hot(redis_pool.clone())
-            .await?;
+        auth_config.validate_hot(redis_pool.clone()).await?;
 
         // Step 4: Return the validated auth config
         Ok(auth_config)

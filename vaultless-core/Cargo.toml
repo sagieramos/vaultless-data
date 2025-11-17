@@ -14,6 +14,7 @@ chrono = { version = "0.4.42", features = ["serde"] }
 ciborium = { version = "0.2.2", optional = true }
 deadpool-redis = "0.22.0"
 ed25519 = "2.2.3"
+ed25519-dalek = { version = "2.2.0", features = ["pkcs8"] }
 getrandom = "0.3.3"
 hex = "0.4.3"
 hmac = "0.12.1"

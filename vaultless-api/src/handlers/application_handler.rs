@@ -9,9 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vaultless_core::{
-    models::{
-        Application, ApplicationWithTier, CreateApplication, UpdateApplication,
-    },
+    models::{Application, ApplicationWithTier, CreateApplication, UpdateApplication},
     types::SubscriptionTier,
 };
 
@@ -71,16 +69,15 @@ pub async fn create_application(
     let user = User::find_by_id(&state.db, user_id)
         .await
         .map_err(ApiError::from)?;
+
     // Create application input
     let input = CreateApplication {
         user_id: user.id,
         name: req.name,
         description: req.description,
         max_ttl_seconds: None,
-
-        is_key_rotation_forced: false,
-
-        integrity_config:
+        is_key_rotation_forced: Some(false),
+        integrity_config: req.integrity_config, // NEW: Pass integrity config if provided
     };
 
     // Create application

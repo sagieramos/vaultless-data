@@ -67,8 +67,8 @@ pub enum VaultlessError {
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
-    #[error("Rate limit exceeded")]
-    RateLimitExceeded,
+    #[error("Rate limit exceeded: {0}")]
+    RateLimitExceeded(String),
 
     #[error("Message expired")]
     MessageExpired,
