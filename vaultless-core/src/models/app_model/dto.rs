@@ -3,8 +3,12 @@ use crate::types::{KeyType, SubscriptionTier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::clone::Clone;
+use std::default::Default;
+use std::fmt::Debug;
 use uuid::Uuid;
 use validator::Validate;
+use super::attestation::dto::*;
 
 /// Application table model — matches the `public.applications` schema.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -106,84 +110,6 @@ pub enum KeyGranularity {
     Secret,
 }
 
-/// Represents the structured content of the JSONB 'integrity_config' column.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IntegrityConfig {
-    #[serde(default)]
-    pub allow_unauthenticated: bool,
-    #[serde(default)]
-    pub web: WebIntegrityConfig,
-    #[serde(default)]
-    pub ios: IosIntegrityConfig,
-    #[serde(default)]
-    pub android: AndroidIntegrityConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
-pub struct WebIntegrityConfig {
-    /// A list of allowed origins (e.g., ["https://my.app.com"]). Max 5.
-    #[validate(length(max = 5))]
-    pub authorized_origins: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
-pub struct AndroidIntegrityConfig {
-    /// REQUIRED: The expected SHA256 hash of the application's signing certificate.
-    #[validate(custom(function = "validate_sha256_format"))]
-    #[serde(default)]
-    pub allowed_certificate_sha256: Option<String>,
-
-    /// OPTIONAL: A list of accepted package/bundle identifiers. Max 5.
-    #[validate(length(max = 5))]
-    pub allowed_bundle_ids: Vec<String>,
-
-    /// OPTIONAL: Minimum acceptable version of the application.
-    #[serde(default)]
-    pub min_version_code: Option<i32>,
-
-    /// OPTIONAL: Flag to reject untrusted devices (e.g., rooted/jailbroken).
-    #[serde(default)]
-    pub reject_untrusted_device: bool,
-
-    // --- Google Verification Credentials ---
-    /// Google Cloud Project ID needed for verification API.
-    #[serde(default)]
-    pub google_cloud_project: Option<String>,
-
-    /// API Key to authenticate the server with Google Play Integrity.
-    #[serde(default)]
-    pub google_api_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
-pub struct IosIntegrityConfig {
-    /// REQUIRED: The 10-digit Apple Team ID (e.g., "83Z139DVZ2")
-    /// Used to compute the App ID Hash for verification.
-    #[serde(default)]
-    pub apple_team_id: Option<String>,
-
-    /// OPTIONAL: A list of accepted package/bundle identifiers. Max 5.
-    #[validate(length(max = 5))]
-    pub allowed_bundle_ids: Vec<String>,
-
-    /// OPTIONAL: Minimum acceptable version of the application.
-    #[serde(default)]
-    pub min_version_code: Option<i32>,
-
-    /// OPTIONAL: Flag to reject untrusted devices (e.g., jailbroken/modified).
-    #[serde(default)]
-    pub reject_untrusted_device: bool,
-}
-
-/// DTO for updating the entire configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
-pub struct UpdateIntegrityConfigRequest {
-    pub allow_unauthenticated: bool,
-    pub web: WebIntegrityConfig,
-    pub ios: IosIntegrityConfig,
-    pub android: AndroidIntegrityConfig,
-}
-
 // --- CORRECTED VALIDATION FUNCTION ---
 
 /// Custom validator for an optional SHA256 string.
@@ -249,18 +175,6 @@ impl From<AuthConfig> for CachedAuthConfig {
     }
 }
 
-/// Summary of integrity requirements for an application
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IntegrityRequirements {
-    pub allow_unauthenticated: bool,
-    pub web_origin_validation: bool,
-    pub ios_attestation_required: bool,
-    pub android_attestation_required: bool,
-    pub ios_reject_untrusted: bool,
-    pub android_reject_untrusted: bool,
-}
-
-// --- Cache key helpers ---
 
 pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
     cache_key!("res", "sk", key_hash)

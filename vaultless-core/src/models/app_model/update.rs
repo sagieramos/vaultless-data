@@ -5,7 +5,7 @@ use sqlx::QueryBuilder;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 use validator::Validate;
-
+use super::attestation::dto::IntegrityConfig;
 impl Application {
     pub async fn update<'c, E>(
         exec: E,
@@ -25,7 +25,7 @@ impl Application {
 
             // Validate each platform's config
             config
-                .web
+                .browser
                 .validate()
                 .map_err(|e| VaultlessError::Validation(format!("Invalid web config: {}", e)))?;
 

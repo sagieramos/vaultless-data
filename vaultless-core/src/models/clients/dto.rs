@@ -1,6 +1,6 @@
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::attestation_types::AttestationRequest;
+use crate::models::app_model::attestation::{AttestationMetadata, AttestationRequest, Platform};
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 // =============================================================================
-// Constants
+// CONSTANTS
 // =============================================================================
 
 pub const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
@@ -18,7 +18,7 @@ pub const CHALLENGE_EXPIRY_SECONDS: u64 = 300; // 5 minutes
 pub const IDENTIFIER_TTL_SECS: u64 = 600; // 10 minutes
 
 // =============================================================================
-// Models
+// CLIENT MODEL
 // =============================================================================
 
 pub const MINIMAL_CLIENT_FIELDS: &str = "
@@ -83,6 +83,10 @@ pub struct Client {
     pub is_platform_attested: bool,
 }
 
+// =============================================================================
+// REGISTRATION
+// =============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct RegisterClientRequest {
     /// Public key or device fingerprint (client-side hash input)
@@ -99,17 +103,29 @@ pub struct RegisterClientRequest {
     /// Optional: encrypted metadata (device info, version, etc.)
     pub metadata: Option<serde_json::Value>,
 
-    /// Optional: signature proving ownership of the provided public_key.
-    /// When present, server will verify signature against `signed_payload`.
+    /// Optional: signature proving ownership of the provided public_key
     #[validate(length(min = 16, max = 2048))]
     pub signature: Option<String>,
 
-    /// Optional: arbitrary payload that was signed (recommended: client_identifier or timestamp)
+    /// Optional: arbitrary payload that was signed
     pub signed_payload: Option<String>,
 
-    /// Optional: nonce for replay protection — server will check Redis for reuse.
+    /// Optional: nonce for replay protection
     #[validate(length(min = 8, max = 128))]
     pub nonce: Option<String>,
+
+    /// Platform attestation request (iOS/Android/IoT)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationRequest>,
+
+    /// Platform indicator (used when attestation not provided but platform needs checking)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation_platform: Option<Platform>,
+
+    /// CAPTCHA token for web registration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(min = 20, max = 2048))]
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,20 +136,26 @@ pub struct RegisterClientResponse {
     pub expires_at: DateTime<Utc>,
 }
 
+// =============================================================================
+// AUTHENTICATION
+// =============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AuthenticateClientRequest {
+    /// One of these three identifiers must be provided
     pub client_identifier_hash: Option<String>,
     pub identifier: Option<String>,
     pub public_key: Option<String>,
 
-    /// The original Base64-encoded challenge string received from the server.
+    /// The original Base64-encoded challenge string received from the server
     #[validate(length(min = 32))]
     pub challenge: String,
 
-    /// The Base64-encoded signature of the `challenge`.
+    /// The Base64-encoded signature of the `challenge`
     #[validate(length(min = 32))]
     pub challenge_signature: String,
 
+    /// Optional: Platform attestation for re-attestation during auth
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationRequest>,
 }
@@ -148,23 +170,36 @@ pub struct AuthenticateClientResponse {
     pub was_reattested: bool,
 }
 
+// =============================================================================
+// AUTHENTICATION CHALLENGE
+// =============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationChallenge {
     pub challenge: String,
     pub expires_at: DateTime<Utc>,
 }
 
-// Cache key for looking up a client by session token hash
+// =============================================================================
+// CACHE KEY HELPERS
+// =============================================================================
+
+/// Cache key for looking up a client by session token hash
 pub fn cache_client_session_key(session_hash: &str) -> String {
     cache_key!("client", "session", session_hash)
 }
 
-// Cache key for storing a temporary authentication challenge
+/// Cache key for storing a temporary authentication challenge
 pub fn cache_auth_challenge_key(challenge_hash: &str) -> String {
     cache_key!("auth_challenge", challenge_hash)
 }
 
+// =============================================================================
+// CLIENT IMPL - HELPER METHODS
+// =============================================================================
+
 impl Client {
+    /// Cache client to Redis with aliases
     pub async fn cache_to_redis(redis_pool: &Arc<RedisPool>, client: &Client) -> Result<()> {
         if let Ok(mut conn) = redis_pool.get().await {
             let ttl_secs = 24 * 60 * 60; // 24 hours
@@ -218,5 +253,82 @@ impl Client {
             }
         }
         Ok(())
+    }
+
+    /// Check if client needs re-attestation (based on age)
+    pub fn needs_reattesation(&self, days: i64) -> bool {
+        if !self.is_platform_attested {
+            return false; // Client never attested, not required
+        }
+
+        match AttestationMetadata::from_metadata(self.metadata.as_ref()) {
+            Ok(Some(meta)) => meta.needs_reattesation(days),
+            _ => true, // If we can't parse metadata, assume re-attestation needed
+        }
+    }
+
+    /// Get attestation metadata from client
+    pub fn get_attestation_metadata(&self) -> Result<Option<AttestationMetadata>> {
+        AttestationMetadata::from_metadata(self.metadata.as_ref())
+    }
+
+    /// Verify a signature using the client's public key
+    pub fn verify_signature(&self, message: &str, signature: &str) -> Result<bool> {
+        let public_key = self.public_key.as_ref().ok_or_else(|| {
+            VaultlessError::Validation("Client does not have a public key".into())
+        })?;
+
+        crate::crypto::verify_signature(message.as_bytes(), signature, public_key)
+            .map(|_| true)
+            .or_else(|_| Ok(false))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_register_request_validation() {
+        let request = RegisterClientRequest {
+            client_identifier: Some("test-id".to_string()),
+            public_key: Some("A".repeat(64)), // 64 chars
+            identifier: Some("test".to_string()),
+            metadata: None,
+            signature: Some("B".repeat(32)),
+            signed_payload: Some("payload".to_string()),
+            nonce: Some("nonce123".to_string()),
+            attestation: None,
+            attestation_platform: None,
+            captcha_token: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_authenticate_request_validation() {
+        let request = AuthenticateClientRequest {
+            client_identifier_hash: Some("hash123".to_string()),
+            identifier: None,
+            public_key: None,
+            challenge: "C".repeat(32),
+            challenge_signature: "D".repeat(32),
+            attestation: None,
+        };
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_cache_key_generation() {
+        let session_key = cache_client_session_key("test_hash");
+        assert!(session_key.contains("client"));
+        assert!(session_key.contains("session"));
+        assert!(session_key.contains("test_hash"));
+
+        let challenge_key = cache_auth_challenge_key("challenge_hash");
+        assert!(challenge_key.contains("auth_challenge"));
+        assert!(challenge_key.contains("challenge_hash"));
     }
 }

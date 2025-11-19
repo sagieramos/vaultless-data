@@ -16,8 +16,8 @@ pub enum Platform {
     IOS,
     #[serde(rename = "android")]
     Android,
-    #[serde(rename = "web")]
-    Web,
+    #[serde(rename = "browser")]
+    Browser,
     #[serde(rename = "iot")]
     IoT,
 }
@@ -27,7 +27,7 @@ impl Platform {
         match self {
             Platform::IOS => "ios",
             Platform::Android => "android",
-            Platform::Web => "web",
+            Platform::Browser => "browser",
             Platform::IoT => "iot",
         }
     }
@@ -36,7 +36,7 @@ impl Platform {
         match s.to_lowercase().as_str() {
             "ios" => Ok(Platform::IOS),
             "android" => Ok(Platform::Android),
-            "web" => Ok(Platform::Web),
+            "browser" => Ok(Platform::Browser),
             "iot" => Ok(Platform::IoT),
             _ => Err(VaultlessError::Validation(format!(
                 "Invalid platform: {}",
@@ -276,6 +276,60 @@ impl AttestationMetadata {
 
         Ok(metadata)
     }
+
+    /// Extract attestation metadata from client metadata JSONB
+    pub fn from_metadata(metadata: Option<&serde_json::Value>) -> Result<Option<Self>> {
+        let Some(metadata) = metadata else {
+            return Ok(None);
+        };
+
+        // Try to parse from "attestation" key
+        if let Some(attestation_value) = metadata.get("attestation") {
+            let attestation_meta: AttestationMetadata =
+                serde_json::from_value(attestation_value.clone()).map_err(|e| {
+                    VaultlessError::Serialization(format!(
+                        "Failed to parse attestation metadata: {}",
+                        e
+                    ))
+                })?;
+            return Ok(Some(attestation_meta));
+        }
+
+        // Fallback: construct from root-level fields
+        let platform = metadata
+            .get("platform")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Platform::from_str(s).ok());
+
+        let bundle_id = metadata
+            .get("bundle_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let device_id = metadata
+            .get("device_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let app_version = metadata
+            .get("app_version")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        // If we have at least platform or bundle_id, return partial metadata
+        if platform.is_some() || bundle_id.is_some() {
+            Ok(Some(AttestationMetadata {
+                platform,
+                bundle_id,
+                device_id,
+                app_version,
+                attestation: None,
+                device_info: None,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -286,7 +340,7 @@ mod tests {
     fn test_platform_serialization() {
         assert_eq!(Platform::IOS.as_str(), "ios");
         assert_eq!(Platform::Android.as_str(), "android");
-        assert_eq!(Platform::Web.as_str(), "web");
+        assert_eq!(Platform::Browser.as_str(), "browser");
         assert_eq!(Platform::IoT.as_str(), "iot");
 
         assert_eq!(Platform::from_str("iOS").unwrap(), Platform::IOS);

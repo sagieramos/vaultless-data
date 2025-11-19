@@ -128,7 +128,7 @@ impl VaultlessError {
                 | VaultlessError::ApiKeyExpired
                 | VaultlessError::ApiKeyInactive
                 | VaultlessError::QuotaExceeded(_)
-                | VaultlessError::RateLimitExceeded
+                | VaultlessError::RateLimitExceeded(_)
                 | VaultlessError::MessageExpired
                 | VaultlessError::MessageAccessLimitReached
                 | VaultlessError::NotFound(_)
@@ -149,7 +149,7 @@ impl VaultlessError {
             VaultlessError::ApiKeyExpired => 401,
             VaultlessError::ApiKeyInactive => 403,
             VaultlessError::QuotaExceeded(_) => 429,
-            VaultlessError::RateLimitExceeded => 429,
+            VaultlessError::RateLimitExceeded(_) => 429,
             VaultlessError::IntegrityCheckFailed(_) => 403, // ⭐ ADDED HERE (Forbidden) ⭐
             VaultlessError::Validation(_)
             | VaultlessError::BadRequest(_)
@@ -193,5 +193,11 @@ impl From<SerdeJsonError> for VaultlessError {
             // Treat user-provided invalid JSON (parsing error) as a client error (400)
             VaultlessError::BadRequest(format!("Invalid JSON format: {}", e))
         }
+    }
+}
+
+impl From<pasetors::errors::Error> for VaultlessError {
+    fn from(err: pasetors::errors::Error) -> Self {
+        VaultlessError::Internal(format!("PASETO error: {err}"))
     }
 }

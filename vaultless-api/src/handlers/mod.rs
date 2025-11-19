@@ -1,5 +1,6 @@
 // vaultless-api/src/handlers/mod.rs
 pub mod analytics;
+pub mod application;
 // pub mod api_keys;
 pub mod client;
 pub mod dto;

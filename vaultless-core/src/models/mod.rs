@@ -7,6 +7,7 @@ pub mod message;
 pub mod proof;
 pub mod usage;
 pub mod user;
+pub mod session;
 
 pub use api_key::{ApiKey, CachedApiKey, CreateApiKey};
 pub use app_model::dto::{

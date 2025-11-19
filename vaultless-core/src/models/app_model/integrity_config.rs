@@ -1,6 +1,7 @@
-use super::attestation_types::Platform;
+use super::attestation::dto::*;
 use super::dto::*;
 use crate::error::{Result, VaultlessError};
+use crate::models::app_model::attestation::types::Platform;
 use deadpool_redis::Pool as RedisPool;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
@@ -25,9 +26,11 @@ impl Application {
         // 2. Convert to IntegrityConfig struct
         let integrity_config = IntegrityConfig {
             allow_unauthenticated: config.allow_unauthenticated,
-            web: config.web,
+            browser: config.browser,
             ios: config.ios,
             android: config.android,
+            iot: config.iot,
+            rate_limits: config.rate_limits,
         };
 
         // 3. Serialize to JSON
@@ -83,11 +86,16 @@ impl Application {
 
         match platform {
             Platform::IOS => {
-                // Attestation required if certificate hash is configured
+                // Attestation required if team ID is configured
                 config.ios.apple_team_id.is_some() || !config.ios.allowed_bundle_ids.is_empty()
             }
             Platform::Android => config.android.allowed_certificate_sha256.is_some(),
-            Platform::Web => {
+            Platform::IoT => {
+                // IoT attestation required if CAs are configured
+                config.iot.require_device_certificate
+                    && !config.iot.allowed_certificate_authorities.is_empty()
+            }
+            Platform::Browser => {
                 // Web uses origin validation, not attestation
                 false
             }
@@ -108,19 +116,19 @@ impl Application {
             Err(_) => return false,
         };
 
-        !config.web.authorized_origins.is_empty()
+        !config.browser.authorized_origins.is_empty()
     }
 
     /// Validate a web origin against configured origins
     pub fn validate_web_origin(&self, origin: &str) -> Result<()> {
         let config = self.get_integrity_config()?;
 
-        if config.web.authorized_origins.is_empty() {
+        if config.browser.authorized_origins.is_empty() {
             // No origins configured, allow all (fail open)
             return Ok(());
         }
 
-        if config.web.authorized_origins.iter().any(|o| o == origin) {
+        if config.browser.authorized_origins.iter().any(|o| o == origin) {
             Ok(())
         } else {
             Err(VaultlessError::IntegrityCheckFailed(format!(
@@ -135,9 +143,14 @@ impl Application {
         let config = self.get_integrity_config().ok()?;
 
         match platform {
-            Platform::IOS => None,
+            Platform::IOS => None, // iOS uses team ID + bundle ID verification
             Platform::Android => config.android.allowed_certificate_sha256.clone(),
-            Platform::Web => None,
+            Platform::IoT => {
+                // IoT uses CA verification, not direct cert hash
+                // But we can return the first CA for compatibility
+                config.iot.allowed_certificate_authorities.first().cloned()
+            }
+            Platform::Browser => None,
         }
     }
 
@@ -151,18 +164,20 @@ impl Application {
         match platform {
             Platform::IOS => config.ios.reject_untrusted_device,
             Platform::Android => config.android.reject_untrusted_device,
-            Platform::Web => false,
+            Platform::IoT => true, // IoT always requires trusted certificates
+            Platform::Browser => false,
         }
     }
 
-    /// Get allowed bundle IDs for a platform
+    /// Get allowed bundle IDs for a platform (or device IDs for IoT)
     pub fn get_allowed_bundle_ids(&self, platform: Platform) -> Option<Vec<String>> {
         let config = self.get_integrity_config().ok()?;
 
         let bundle_ids = match platform {
             Platform::IOS => &config.ios.allowed_bundle_ids,
             Platform::Android => &config.android.allowed_bundle_ids,
-            Platform::Web => return None,
+            Platform::IoT => &config.iot.allowed_device_ids,
+            Platform::Browser => return None,
         };
 
         if bundle_ids.is_empty() {
@@ -179,7 +194,8 @@ impl Application {
         match platform {
             Platform::IOS => config.ios.min_version_code,
             Platform::Android => config.android.min_version_code,
-            Platform::Web => None,
+            Platform::IoT => config.iot.min_firmware_version,
+            Platform::Browser => None,
         }
     }
 
@@ -187,9 +203,13 @@ impl Application {
     pub fn validate_bundle_id(&self, platform: Platform, bundle_id: &str) -> Result<()> {
         if let Some(allowed_bundles) = self.get_allowed_bundle_ids(platform) {
             if !allowed_bundles.contains(&bundle_id.to_string()) {
+                let id_type = match platform {
+                    Platform::IoT => "Device ID",
+                    _ => "Bundle ID",
+                };
                 return Err(VaultlessError::IntegrityCheckFailed(format!(
-                    "Bundle ID '{}' is not in the allowed list",
-                    bundle_id
+                    "{} '{}' is not in the allowed list",
+                    id_type, bundle_id
                 )));
             }
         }
@@ -201,13 +221,59 @@ impl Application {
     pub fn validate_app_version(&self, platform: Platform, version_code: i32) -> Result<()> {
         if let Some(min_version) = self.get_min_version_code(platform) {
             if version_code < min_version {
+                let version_type = match platform {
+                    Platform::IoT => "Firmware version",
+                    _ => "App version",
+                };
                 return Err(VaultlessError::IntegrityCheckFailed(format!(
-                    "App version {} is below minimum required version {}",
-                    version_code, min_version
+                    "{} {} is below minimum required version {}",
+                    version_type, version_code, min_version
                 )));
             }
         }
         Ok(())
+    }
+
+    /// Get rate limit configuration
+    pub fn get_rate_limits(&self) -> RateLimits {
+        self.get_integrity_config()
+            .map(|c| c.rate_limits)
+            .unwrap_or_default()
+    }
+
+    /// Get platform-specific rate limit
+    pub fn get_attestation_rate_limit(&self, platform: Platform) -> u32 {
+        let rate_limits = self.get_rate_limits();
+
+        match platform {
+            Platform::IOS => rate_limits.max_attestations_per_user_per_hour,
+            Platform::Android => rate_limits.max_attestations_per_user_per_hour,
+            Platform::IoT => rate_limits.max_attestations_per_user_per_hour,
+            Platform::Browser => rate_limits.max_attestations_per_user_per_hour,
+        }
+    }
+
+    /// Get max failed attempts before lockout
+    pub fn get_max_failed_attempts(&self) -> u32 {
+        self.get_rate_limits().max_failed_attempts_before_lockout
+    }
+
+    /// Get Android-specific config
+    pub fn get_android_config(&self) -> Result<AndroidIntegrityConfig> {
+        let config = self.get_integrity_config()?;
+        Ok(config.android)
+    }
+
+    /// Get iOS-specific config
+    pub fn get_ios_config(&self) -> Result<IosIntegrityConfig> {
+        let config = self.get_integrity_config()?;
+        Ok(config.ios)
+    }
+
+    /// Get IoT-specific config
+    pub fn get_iot_config(&self) -> Result<IoTIntegrityConfig> {
+        let config = self.get_integrity_config()?;
+        Ok(config.iot)
     }
 
     /// Get a summary of integrity requirements
@@ -219,12 +285,15 @@ impl Application {
 
         IntegrityRequirements {
             allow_unauthenticated: config.allow_unauthenticated,
-            web_origin_validation: !config.web.authorized_origins.is_empty(),
+            browser_origin_validation: !config.browser.authorized_origins.is_empty(),
             ios_attestation_required: config.ios.apple_team_id.is_some()
                 || !config.ios.allowed_bundle_ids.is_empty(),
             android_attestation_required: config.android.allowed_certificate_sha256.is_some(),
+            iot_attestation_required: config.iot.require_device_certificate
+                && !config.iot.allowed_certificate_authorities.is_empty(),
             ios_reject_untrusted: config.ios.reject_untrusted_device,
             android_reject_untrusted: config.android.reject_untrusted_device,
+            iot_reject_untrusted: true, // Always true for IoT
         }
     }
 }
@@ -240,19 +309,26 @@ impl IntegrityConfig {
     pub fn dev_mode() -> Self {
         Self {
             allow_unauthenticated: true,
-            web: WebIntegrityConfig::default(),
+            browser: BrowserIntegrityConfig::default(),
             ios: IosIntegrityConfig::default(),
             android: AndroidIntegrityConfig::default(),
+            iot: IoTIntegrityConfig::default(),
+            rate_limits: RateLimits::default(),
         }
     }
 
     /// Create a web-only config
-    pub fn web_only(authorized_origins: Vec<String>) -> Self {
+    pub fn browser_only(authorized_origins: Vec<String>) -> Self {
         Self {
             allow_unauthenticated: false,
-            web: WebIntegrityConfig { authorized_origins },
+            browser: BrowserIntegrityConfig {
+                authorized_origins,
+                ..Default::default()
+            },
             ios: IosIntegrityConfig::default(),
             android: AndroidIntegrityConfig::default(),
+            iot: IoTIntegrityConfig::default(),
+            rate_limits: RateLimits::default(),
         }
     }
 
@@ -264,14 +340,18 @@ impl IntegrityConfig {
     ) -> Self {
         Self {
             allow_unauthenticated: false,
-            web: WebIntegrityConfig::default(),
+            browser: BrowserIntegrityConfig::default(),
             ios: IosIntegrityConfig {
                 apple_team_id: Some(apple_team_id),
                 allowed_bundle_ids: bundle_ids,
+                allowed_certificate_hashes: vec![],
                 min_version_code: None,
                 reject_untrusted_device: reject_untrusted,
+                challenge_ttl_seconds: 60,
             },
             android: AndroidIntegrityConfig::default(),
+            iot: IoTIntegrityConfig::default(),
+            rate_limits: RateLimits::default(),
         }
     }
 
@@ -279,20 +359,85 @@ impl IntegrityConfig {
     pub fn android_only(
         cert_hash: String,
         bundle_ids: Vec<String>,
+        google_cloud_project: String,
+        google_api_key: String,
         reject_untrusted: bool,
     ) -> Self {
         Self {
             allow_unauthenticated: false,
-            web: WebIntegrityConfig::default(),
+            browser: BrowserIntegrityConfig::default(),
             ios: IosIntegrityConfig::default(),
             android: AndroidIntegrityConfig {
                 allowed_certificate_sha256: Some(cert_hash),
                 allowed_bundle_ids: bundle_ids,
                 min_version_code: None,
                 reject_untrusted_device: reject_untrusted,
-                google_cloud_project: None,
-                google_api_key: None,
+                reject_unrecognized_version: true,
+                google_cloud_project: Some(google_cloud_project),
+                google_api_key: Some(google_api_key),
+                max_token_age_seconds: 60,
             },
+            iot: IoTIntegrityConfig::default(),
+            rate_limits: RateLimits::default(),
         }
+    }
+
+    /// Create an IoT-only config
+    pub fn iot_only(
+        allowed_cas: Vec<String>,
+        allowed_device_ids: Vec<String>,
+        require_cn_match: bool,
+    ) -> Self {
+        Self {
+            allow_unauthenticated: false,
+            browser: BrowserIntegrityConfig::default(),
+            ios: IosIntegrityConfig::default(),
+            android: AndroidIntegrityConfig::default(),
+            iot: IoTIntegrityConfig {
+                require_device_certificate: true,
+                allowed_certificate_authorities: allowed_cas,
+                allowed_device_ids,
+                min_firmware_version: None,
+                challenge_ttl_seconds: 30,
+                require_cn_match,
+            },
+            rate_limits: RateLimits::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_integrity_config_dev_mode() {
+        let config = IntegrityConfig::dev_mode();
+        assert!(config.allow_unauthenticated);
+    }
+
+    #[test]
+    fn test_integrity_config_ios_only() {
+        let config = IntegrityConfig::ios_only(
+            "ABCD123456".to_string(),
+            vec!["com.example.app".to_string()],
+            true,
+        );
+        assert!(!config.allow_unauthenticated);
+        assert_eq!(config.ios.apple_team_id, Some("ABCD123456".to_string()));
+        assert!(config.ios.reject_untrusted_device);
+    }
+
+    #[test]
+    fn test_integrity_config_iot_only() {
+        let config = IntegrityConfig::iot_only(
+            vec!["ca_cert_base64".to_string()],
+            vec!["device-123".to_string()],
+            true,
+        );
+        assert!(!config.allow_unauthenticated);
+        assert!(config.iot.require_device_certificate);
+        assert!(config.iot.require_cn_match);
+        assert_eq!(config.iot.challenge_ttl_seconds, 30);
     }
 }

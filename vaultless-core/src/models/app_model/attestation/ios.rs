@@ -1,3 +1,4 @@
+use crate::cache_key;
 use crate::error::{Result, VaultlessError};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
@@ -173,7 +174,7 @@ pub async fn verify_ios_attestation(
         let mut hasher = Sha256::new();
         hasher.update(expected_challenge.as_bytes());
         let challenge_hash = hex::encode(hasher.finalize());
-        let cache_key = format!("{}:{}", IOS_CHALLENGE_KEY, challenge_hash);
+        let cache_key = cache_key!(IOS_CHALLENGE_KEY, challenge_hash);
 
         let mut conn = pool
             .get()
@@ -303,7 +304,7 @@ pub async fn verify_ios_attestation(
                 hasher.finalize()
             };
 
-            if rp_id_hash != expected_rp_id_hash.as_slice() {
+            if rp_id_hash != &expected_rp_id_hash[..] {
                 return Ok(AttestationResult {
                     is_valid: false,
                     certificate_hash: cert_hash,
@@ -332,7 +333,7 @@ pub async fn verify_ios_attestation(
                     hasher.finalize()
                 };
 
-                if cdh != expected_challenge_hash.as_slice() {
+                if cdh != &expected_challenge_hash[..] {
                     return Ok(AttestationResult {
                         is_valid: false,
                         certificate_hash: cert_hash,
@@ -363,7 +364,7 @@ pub async fn verify_ios_attestation(
         let mut hasher = Sha256::new();
         hasher.update(expected_challenge.as_bytes());
         let challenge_hash = hex::encode(hasher.finalize());
-        let cache_key = format!("{}:{}", IOS_CHALLENGE_KEY, challenge_hash);
+        let cache_key = cache_key!(IOS_CHALLENGE_KEY, challenge_hash);
 
         let mut conn = pool
             .get()
@@ -403,7 +404,7 @@ pub async fn generate_ios_challenge(
     challenge_ttl_seconds: u64,
 ) -> Result<String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes)
+    getrandom::fill(&mut bytes)
         .map_err(|e| VaultlessError::Internal(format!("Random generation failed: {}", e)))?;
 
     let challenge = BASE64.encode(bytes);
@@ -414,7 +415,7 @@ pub async fn generate_ios_challenge(
         hex::encode(hasher.finalize())
     };
 
-    let key = format!("{}:{}", IOS_CHALLENGE_KEY, challenge_hash);
+    let key = cache_key!(IOS_CHALLENGE_KEY, challenge_hash);
 
     let mut conn = redis_pool
         .get()

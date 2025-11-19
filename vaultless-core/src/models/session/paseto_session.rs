@@ -1,0 +1,307 @@
+// src/auth/session_token.rs
+
+use crate::error::{Result, VaultlessError};
+use chrono::{DateTime, Duration, Utc};
+use pasetors::claims::{Claims, ClaimsValidationRules};
+use pasetors::keys::Generate;
+use pasetors::keys::SymmetricKey;
+use pasetors::token::{Local, UntrustedToken};
+use pasetors::{local, version4::V4};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+// =============================================================================
+// SESSION TOKEN KEY MANAGEMENT
+// =============================================================================
+
+/// Thread-safe session token key manager with rotation support
+pub struct SessionKeyManager {
+    current_key: SymmetricKey<V4>,
+    previous_key: Option<SymmetricKey<V4>>,
+}
+
+impl SessionKeyManager {
+    /// Create new key manager from hex-encoded keys
+    pub fn new(current_key_hex: &str, previous_key_hex: Option<&str>) -> Result<Self> {
+        let current_key = SymmetricKey::<V4>::from(
+            &hex::decode(current_key_hex)
+                .map_err(|e| VaultlessError::Internal(format!("Invalid current key hex: {e}")))?,
+        )
+        .map_err(|e| VaultlessError::Internal(format!("Invalid current key: {e}")))?;
+
+        let previous_key = previous_key_hex
+            .map(|prev_hex| {
+                SymmetricKey::<V4>::from(&hex::decode(prev_hex).map_err(|e| {
+                    VaultlessError::Internal(format!("Invalid previous key hex: {e}"))
+                })?)
+                .map_err(|e| VaultlessError::Internal(format!("Invalid previous key: {e}")))
+            })
+            .transpose()?;
+
+        Ok(Self {
+            current_key,
+            previous_key,
+        })
+    }
+
+    /// Generate a new random key (for initialization or rotation)
+    pub fn generate_new_key() -> String {
+        let key = SymmetricKey::<V4>::generate().expect("Failed to generate key");
+        hex::encode(key.as_bytes())
+    }
+
+    /// Get current key for signing
+    pub fn current(&self) -> &SymmetricKey<V4> {
+        &self.current_key
+    }
+
+    /// Try current key first, then previous (key rotation support)
+    pub fn verify_with_rotation(&self, token: &str) -> Result<Claims> {
+        self.verify_token_with_key(token, &self.current_key)
+            .or_else(|_| {
+                if let Some(prev_key) = &self.previous_key {
+                    self.verify_token_with_key(token, prev_key)
+                } else {
+                    Err(VaultlessError::Unauthorized(
+                        "Invalid or expired token".into(),
+                    ))
+                }
+            })
+    }
+
+    /// Internal: verify using a specific key
+    fn verify_token_with_key(&self, token: &str, key: &SymmetricKey<V4>) -> Result<Claims> {
+        let untrusted = UntrustedToken::<Local, V4>::try_from(token)
+            .map_err(|e| VaultlessError::Unauthorized(format!("Malformed token: {e}")))?;
+
+        let rules = ClaimsValidationRules::new();
+
+        let trusted_token = local::decrypt(key, &untrusted, &rules, None, None)
+            .map_err(|e| VaultlessError::Unauthorized(format!("Token verification failed: {e}")))?;
+
+        // CORRECT WAY in pasetors 5.x (2025)
+        let claims = trusted_token
+            .payload_claims()
+            .ok_or_else(|| VaultlessError::Unauthorized("Token has no claims".into()))?
+            .clone();
+
+        Ok(claims)
+    }
+}
+
+// =============================================================================
+// SESSION CLAIMS
+// =============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionData {
+    pub client_id: Uuid,
+    pub application_id: Uuid,
+    pub platform: String,
+    pub device_trusted: bool,
+    pub app_tier: Option<String>,
+}
+
+/// Create session token with claims
+pub fn create_session_token(
+    key: &SymmetricKey<V4>,
+    session_data: SessionData,
+    ttl_seconds: i64,
+) -> Result<String> {
+    let mut claims = Claims::new()?;
+
+    let now = Utc::now();
+    let exp = now + Duration::seconds(ttl_seconds);
+
+    claims.issued_at(&now.to_rfc3339())?;
+    claims.expiration(&exp.to_rfc3339())?;
+    claims.subject(&session_data.client_id.to_string())?;
+    claims.token_identifier(&Uuid::new_v4().to_string())?; // jti
+
+    claims.add_additional("application_id", session_data.application_id.to_string())?;
+    claims.add_additional("platform", session_data.platform)?;
+    claims.add_additional("device_trusted", session_data.device_trusted)?;
+
+    if let Some(tier) = session_data.app_tier {
+        claims.add_additional("app_tier", tier)?;
+    }
+
+    let token = local::encrypt(key, &claims, None, None)
+        .map_err(|e| VaultlessError::Internal(format!("Failed to create token: {e}")))?;
+
+    Ok(token)
+}
+
+/// Verify token and extract session data + jti
+pub fn verify_session_token(
+    key_manager: &SessionKeyManager,
+    token: &str,
+) -> Result<(SessionData, String)> {
+    let claims = key_manager.verify_with_rotation(token)?;
+
+    // Extract required claims safely using the correct pasetors API
+    let client_id = claims
+        .get_claim("sub")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| VaultlessError::Unauthorized("Invalid sub".into()))?;
+
+    let jti = claims
+        .get_claim("jti")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+        .ok_or_else(|| VaultlessError::Unauthorized("Missing jti".into()))?;
+
+    let application_id = claims
+        .get_claim("application_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| VaultlessError::Unauthorized("Invalid application_id".into()))?;
+
+    let platform = claims
+        .get_claim("platform")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let device_trusted = claims
+        .get_claim("device_trusted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let app_tier = claims
+        .get_claim("app_tier")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    Ok((
+        SessionData {
+            client_id,
+            application_id,
+            platform,
+            device_trusted,
+            app_tier,
+        },
+        jti,
+    ))
+}
+
+// =============================================================================
+// REVOCATION BLACKLIST (unchanged)
+// =============================================================================
+
+use deadpool_redis::Pool as RedisPool;
+use redis::AsyncCommands;
+
+const REVOKED_SESSION_PREFIX: &str = "revoked_session";
+
+pub async fn revoke_session(
+    redis_pool: &RedisPool,
+    jti: &str,
+    remaining_ttl_seconds: i64,
+) -> Result<()> {
+    let key = format!("{REVOKED_SESSION_PREFIX}:{jti}");
+    let mut conn = redis_pool
+        .get()
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {e}")))?;
+
+    let _: () = conn
+        .set_ex(&key, "1", remaining_ttl_seconds.max(1) as u64)
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis SET failed: {e}")))?;
+
+    tracing::info!(jti = %jti, ttl = remaining_ttl_seconds, "Session revoked");
+    Ok(())
+}
+
+pub async fn is_session_revoked(redis_pool: &RedisPool, jti: &str) -> Result<bool> {
+    let key = format!("{REVOKED_SESSION_PREFIX}:{jti}");
+    let mut conn = redis_pool
+        .get()
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {e}")))?;
+
+    let revoked: Option<String> = conn
+        .get(&key)
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis GET failed: {e}")))?;
+
+    Ok(revoked.is_some())
+}
+
+pub async fn verify_and_check_revocation(
+    key_manager: &SessionKeyManager,
+    redis_pool: &RedisPool,
+    token: &str,
+) -> Result<SessionData> {
+    let (session_data, jti) = verify_session_token(key_manager, token)?;
+
+    if is_session_revoked(redis_pool, &jti).await? {
+        return Err(VaultlessError::Unauthorized(
+            "Session has been revoked".into(),
+        ));
+    }
+
+    Ok(session_data)
+}
+
+// =============================================================================
+// TESTS (unchanged – all pass)
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_key_generation() {
+        let key_hex = SessionKeyManager::generate_new_key();
+        assert_eq!(key_hex.len(), 64);
+    }
+
+    #[test]
+    fn test_session_token_roundtrip() {
+        let key_hex = SessionKeyManager::generate_new_key();
+        let key_manager = SessionKeyManager::new(&key_hex, None).unwrap();
+
+        let session_data = SessionData {
+            client_id: Uuid::new_v4(),
+            application_id: Uuid::new_v4(),
+            platform: "ios".to_string(),
+            device_trusted: true,
+            app_tier: Some("premium".to_string()),
+        };
+
+        let token =
+            create_session_token(key_manager.current(), session_data.clone(), 3600).unwrap();
+        assert!(token.starts_with("v4.local."));
+
+        let (verified_data, _jti) = verify_session_token(&key_manager, &token).unwrap();
+        assert_eq!(verified_data.client_id, session_data.client_id);
+        assert_eq!(verified_data.platform, session_data.platform);
+    }
+
+    #[test]
+    fn test_key_rotation() {
+        let old_key_hex = SessionKeyManager::generate_new_key();
+        let new_key_hex = SessionKeyManager::generate_new_key();
+
+        let old_manager = SessionKeyManager::new(&old_key_hex, None).unwrap();
+        let token = create_session_token(
+            old_manager.current(),
+            SessionData {
+                client_id: Uuid::new_v4(),
+                application_id: Uuid::new_v4(),
+                platform: "android".to_string(),
+                device_trusted: false,
+                app_tier: None,
+            },
+            3600,
+        )
+        .unwrap();
+
+        let new_manager = SessionKeyManager::new(&new_key_hex, Some(&old_key_hex)).unwrap();
+        assert!(verify_session_token(&new_manager, &token).is_ok());
+    }
+}

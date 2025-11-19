@@ -205,22 +205,6 @@ impl Client {
         })
     }
 
-    /// Verify signed challenge (Ed25519/P-256/etc)
-    pub fn verify_signature(&self, challenge: &str, signature: &str) -> Result<bool> {
-        let Some(pubkey_b64) = &self.public_key else {
-            return Err(VaultlessError::Validation(
-                "Client has no registered public key".into(),
-            ));
-        };
-
-        let message = challenge.as_bytes();
-        match crate::crypto::verify_signature(message, signature, pubkey_b64) {
-            Ok(()) => Ok(true),
-            Err(VaultlessError::SignatureVerificationFailed) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-
     // =============================================================================
     // Cache Invalidation Helpers
     // =============================================================================

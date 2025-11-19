@@ -11,16 +11,31 @@ ALTER TABLE public.applications
     -- dd the new, flexible JSONB column for all platform-specific security configuration
     ADD COLUMN integrity_config jsonb NOT NULL DEFAULT '{
         "allow_unauthenticated": false,
-        
-        "web": {
+      
+        "browser": {
             "authorized_origins": ["https://app.example.com"],
-            "require_captcha": true,
-            "captcha_provider": "hcaptcha",
-            "fingerprint_tracking": true,
-            "proof_of_work_difficulty": 5,
-            "max_requests_per_ip_per_hour": 1000
-        },
-        
+            "require_origin_header": true,
+            "require_referer_header": true,
+            "cors_strict_mode": true,
+
+            "require_captcha_on_registration": true,
+            "captcha_provider": "turnstile",
+            "captcha_site_key": null,
+            "captcha_secret_key": null,
+
+            "bind_client_to_origin": true,
+            "track_origin_changes": true,
+            "max_origin_changes_per_client": 3,
+
+            "max_clients_per_ip": 5,
+            "max_registrations_per_ip_per_hour": 10,
+            "max_requests_per_ip_per_hour": 1000,
+
+            "alert_on_usage_spike": true,
+            "usage_spike_threshold": 2.0,
+            "usage_baseline_hours": 24
+        }
+
         "ios": {
             "apple_team_id": "ABCD123456",
             "allowed_bundle_ids": ["com.example.app"],
