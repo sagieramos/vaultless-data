@@ -18,11 +18,9 @@ CREATE TABLE IF NOT EXISTS clients (
     
     -- Public key for signature verification (E2EE/authentication)
     public_key TEXT UNIQUE, -- Ed25519, secp256k1, or P-256 public key (flexible format)
-
-    -- Ephemeral session management (30-day rolling sessions)
-    session_token_hash VARCHAR(64), -- SHA-256 hash of session token
-    session_expires_at TIMESTAMPTZ,
     
+    last_jti VARCHAR(36), -- Last used JWT ID for replay protection
+
     -- Privacy & security settings
     allow_anonymous_messages BOOLEAN NOT NULL DEFAULT TRUE,
     require_proof_verification BOOLEAN NOT NULL DEFAULT FALSE, -- Require signature verification
@@ -52,14 +50,6 @@ CREATE INDEX idx_clients_identifier ON clients(identifier);
 
 -- Primary lookup index (most frequent query)
 CREATE INDEX idx_clients_identifier_hash ON clients(client_identifier_hash);
-
--- Session validation index
-CREATE INDEX idx_clients_session_token ON clients(session_token_hash) 
-    WHERE session_token_hash IS NOT NULL;
-
--- Session expiry cleanup index
-CREATE INDEX idx_clients_session_expiry ON clients(session_expires_at) 
-    WHERE session_expires_at IS NOT NULL;
 
 -- Activity tracking
 CREATE INDEX idx_clients_last_seen ON clients(last_seen_at DESC NULLS LAST);
@@ -205,43 +195,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Verify and refresh session
-CREATE OR REPLACE FUNCTION verify_client_session(
-    p_session_token_hash VARCHAR(64)
-)
-RETURNS TABLE(
-    client_id UUID,
-    is_valid BOOLEAN,
-    expires_at TIMESTAMPTZ
-) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT 
-        c.id,
-        (c.session_expires_at > NOW() AND c.is_active) as is_valid,
-        c.session_expires_at
-    FROM clients c
-    WHERE c.session_token_hash = p_session_token_hash;
-END;
-$$ LANGUAGE plpgsql;
-
--- Clean up expired sessions (run as scheduled job)
-CREATE OR REPLACE FUNCTION cleanup_expired_sessions()
-RETURNS INTEGER AS $$
-DECLARE
-    v_deleted_count INTEGER;
-BEGIN
-    UPDATE clients
-    SET 
-        session_token_hash = NULL,
-        session_expires_at = NULL
-    WHERE session_expires_at < NOW() - INTERVAL '7 days';
-    
-    GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
-    RETURN v_deleted_count;
-END;
-$$ LANGUAGE plpgsql;
-
 -- Deactivate inactive clients (optional cleanup)
 CREATE OR REPLACE FUNCTION deactivate_inactive_clients(
     p_inactive_days INTEGER DEFAULT 90
@@ -288,7 +241,6 @@ COMMENT ON COLUMN clients.client_identifier_hash IS 'SHA-256 hash of client iden
 MUST be computed CLIENT-SIDE. Server never sees plaintext.';
 COMMENT ON COLUMN clients.public_key IS 'Optional public key for signature verification and E2EE. 
 Format-agnostic: supports Ed25519, secp256k1, P-256, etc.';
-COMMENT ON COLUMN clients.session_token_hash IS 'SHA-256 hash of session token. Enables stateless authentication.';
 COMMENT ON COLUMN clients.metadata IS 'Encrypted metadata storage. NEVER store PII. 
 Safe: device type, app version, locale, preferences. 
 Forbidden: names, emails, phone numbers, addresses.';

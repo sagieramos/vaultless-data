@@ -26,8 +26,7 @@ pub const MINIMAL_CLIENT_FIELDS: &str = "
     identifier,
     client_identifier_hash,
     public_key,
-    session_token_hash,
-    session_expires_at,
+    last_jti,
     allow_anonymous_messages,
     require_proof_verification,
     is_active,
@@ -53,11 +52,10 @@ pub struct Client {
 
     pub public_key: Option<String>,
 
+    /// Stores the JTI (Unique Token ID) of the last issued PASETO token.
+    /// Used to revoke the previous session when a new one is created.
     #[serde(skip_serializing)]
-    pub session_token_hash: Option<String>,
-
-    #[serde(skip_serializing)]
-    pub session_expires_at: Option<DateTime<Utc>>,
+    pub last_jti: Option<String>,
 
     pub allow_anonymous_messages: bool,
     pub require_proof_verification: bool,

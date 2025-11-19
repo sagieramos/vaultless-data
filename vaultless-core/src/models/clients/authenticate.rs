@@ -1,22 +1,25 @@
 use super::dto::*;
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use crate::{
+    crypto,
+    error::{Result, VaultlessError},
+    models::{
+        app_model::{
+            attestation::{
+                AttestationMetadata, AttestationService, check_attestation_rate_limit,
+                track_failed_attestation,
+            },
+            dto::{Application, AuthConfig},
+        },
+        session::paseto_session::{
+            self, SessionData, SessionKeyManager, revoke_session, verify_session_token,
+        },
+    },
+};
 use chrono::{Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
-
-use crate::{
-    crypto,
-    error::{Result, VaultlessError},
-    models::app_model::{
-        attestation::{
-            AttestationMetadata, AttestationService, Platform, check_attestation_rate_limit,
-            dto::IntegrityConfig, track_failed_attestation,
-        },
-        dto::Application,
-    },
-};
 
 const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
 
@@ -25,6 +28,9 @@ impl Client {
     pub async fn authenticate<'c, E>(
         exec: E,
         redis: Arc<RedisPool>,
+        key_manager: Arc<SessionKeyManager>,
+        app: Application,
+        app_resolve: (String, AuthConfig),
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
     ) -> Result<AuthenticateClientResponse>
@@ -32,6 +38,8 @@ impl Client {
         E: Executor<'c, Database = Postgres> + Clone,
     {
         let mut was_reattested = false;
+        let mut device_trusted = false;
+        let mut platform_string = "unknown".to_string();
 
         // --- 1. Atomically check and consume the challenge from Redis ---
         let challenge_hash = crypto::hash_content(input.challenge.as_bytes());
@@ -62,7 +70,7 @@ impl Client {
         }
 
         // --- 3. Attempt to find the client ---
-        let client = if let Some(ref hash) = input.client_identifier_hash {
+        let mut client = if let Some(ref hash) = input.client_identifier_hash {
             sqlx::query_as::<_, Client>(
                 r#"SELECT * FROM clients WHERE client_identifier_hash = $1 AND is_active = TRUE"#,
             )
@@ -95,14 +103,16 @@ impl Client {
             ));
         }
 
-        // --- 5. Fetch application for attestation config ---
-        let app = sqlx::query_as::<_, Application>("SELECT * FROM applications WHERE id = $1")
-            .bind(client.application_id)
-            .fetch_optional(exec.clone())
-            .await?
-            .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
+        // Load initial platform/trust state from existing metadata
+        if let Ok(Some(meta)) = AttestationMetadata::from_metadata(client.metadata.as_ref()) {
+            if let Some(p) = meta.platform {
+                platform_string = p.as_str().to_string();
+            }
+            device_trusted = meta.is_device_trusted();
+        }
 
-        // --- 6. Check if re-attestation is required ---
+        // --- 5. Check if re-attestation is required ---
+        // Note: needs_reattesation logic likely checks the metadata inside Client
         let requires_reattestation = client.needs_reattesation(30);
 
         if requires_reattestation && input.attestation.is_none() {
@@ -116,9 +126,10 @@ impl Client {
             ));
         }
 
-        // --- 7. If attestation provided, verify it ---
+        // --- 6. If attestation provided, verify it ---
         if let Some(attestation_request) = input.attestation {
             was_reattested = true;
+            platform_string = attestation_request.platform.as_str().to_string();
 
             tracing::info!(
                 client_id = %client.id,
@@ -203,6 +214,9 @@ impl Client {
                         ));
                     }
 
+                    // Update local trust state
+                    device_trusted = result.device_trusted;
+
                     // Update client metadata with new attestation
                     let mut attestation_meta =
                         AttestationMetadata::from_metadata(client.metadata.as_ref())?
@@ -213,6 +227,7 @@ impl Client {
                     let updated_metadata =
                         attestation_meta.merge_into_metadata(client.metadata.clone())?;
 
+                    // Persist metadata update
                     sqlx::query(
                         "UPDATE clients SET metadata = $1, is_platform_attested = TRUE WHERE id = $2",
                     )
@@ -220,6 +235,9 @@ impl Client {
                     .bind(client.id)
                     .execute(exec.clone())
                     .await?;
+
+                    // Update local client struct to reflect metadata change (for session token generation context)
+                    client.metadata = Some(updated_metadata);
 
                     tracing::info!(
                         client_id = %client.id,
@@ -254,46 +272,70 @@ impl Client {
             }
         }
 
-        // --- 8. Verify the signed challenge ---
+        // --- 7. Verify the signed challenge ---
         if !client.verify_signature(&input.challenge, &input.challenge_signature)? {
             return Err(VaultlessError::Unauthorized(
                 "Invalid challenge signature".into(),
             ));
         }
 
-        // --- 9. Generate new session token ---
-        let old_session_hash = client.session_token_hash.clone();
-        let token = crypto::generate_secure_token::<32>()?;
-        let session_token = BASE64.encode(token);
-        let session_token_hash = crypto::hash_content(&token);
+        // --- 8. Generate PASETO Session Token ---
+        let ttl_seconds = SESSION_DURATION_HOURS * 3600;
+
+        let (publishable_key, authconfig) = app_resolve;
+
+        // Prepare session claims
+        let session_data = SessionData {
+            client_id: client.id,
+            application_id: client.application_id,
+            platform: platform_string,
+            device_trusted,
+            app_tier: None,
+            publishable_key_plaintext: Some(publishable_key),
+            application_secret_api_key_id: Some(authconfig.sk_id),
+            pubkey: None,
+        };
+
+        // Generate the token
+        let session_token =
+            paseto_session::create_session_token(key_manager.current(), session_data, ttl_seconds)?;
+
+        // IMPORTANT: Parse the token immediately to extract the JTI (Token Identifier).
+        // We need this to store in `last_jti` for revocation support.
+        let (_, new_jti) = verify_session_token(&key_manager, &session_token)?;
+
+        // --- 9. Handle Session Revocation & DB Update ---
+
+        // If a previous session exists, revoke it in Redis
+        if let Some(old_jti) = &client.last_jti {
+            // Revoke for the duration of the remaining session window (safeguard default 30 days)
+            // We use a background spawn or just await it. Since speed matters, we await but ignore errors?
+            // Better to await to ensure security.
+            let _ = revoke_session(&redis, old_jti, ttl_seconds).await;
+            tracing::debug!(client_id = %client.id, old_jti = %old_jti, "Revoked previous session JTI");
+        }
+
         let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
+        // Update client with new JTI and last seen
         sqlx::query(
             r#"
             UPDATE clients
-            SET session_token_hash = $1,
-                session_expires_at = $2,
+            SET last_jti = $1,
                 last_seen_at = NOW()
-            WHERE id = $3
+            WHERE id = $2
             "#,
         )
-        .bind(&session_token_hash)
-        .bind(expires_at)
+        .bind(&new_jti)
         .bind(client.id)
         .execute(exec)
         .await?;
 
-        // --- 10. Invalidate old session key from cache ---
-        if let Some(old_hash) = old_session_hash {
-            let old_cache_key = cache_client_session_key(&old_hash);
-            let _ = conn.del::<_, ()>(&old_cache_key).await;
-            tracing::debug!("Invalidated old session cache key: {}", old_cache_key);
-        }
-
         tracing::info!(
             client_id = %client.id,
             was_reattested = %was_reattested,
-            "Client authenticated successfully"
+            jti = %new_jti,
+            "Client authenticated successfully via PASETO"
         );
 
         Ok(AuthenticateClientResponse {

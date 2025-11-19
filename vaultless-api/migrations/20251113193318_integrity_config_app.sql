@@ -10,61 +10,57 @@ ALTER TABLE public.applications
 
     -- dd the new, flexible JSONB column for all platform-specific security configuration
     ADD COLUMN integrity_config jsonb NOT NULL DEFAULT '{
-        "allow_unauthenticated": false,
-      
+      "allow_unauthenticated": false,
+
         "browser": {
             "authorized_origins": ["https://app.example.com"],
             "require_origin_header": true,
             "require_referer_header": true,
             "cors_strict_mode": true,
-
             "require_captcha_on_registration": true,
             "captcha_provider": "turnstile",
             "captcha_site_key": null,
             "captcha_secret_key": null,
-
             "bind_client_to_origin": true,
             "track_origin_changes": true,
             "max_origin_changes_per_client": 3,
-
             "max_clients_per_ip": 5,
             "max_registrations_per_ip_per_hour": 10,
             "max_requests_per_ip_per_hour": 1000,
-
             "alert_on_usage_spike": true,
             "usage_spike_threshold": 2.0,
             "usage_baseline_hours": 24
-        }
+        },
 
         "ios": {
             "apple_team_id": "ABCD123456",
             "allowed_bundle_ids": ["com.example.app"],
-            "allowed_certificate_hashes": [],  
+            "allowed_certificate_hashes": [],
             "min_version_code": "1.0.0",
             "reject_untrusted_device": true,
-            "challenge_ttl_seconds": 60 
+            "challenge_ttl_seconds": 60
         },
-        
+
         "android": {
-            "allowed_certificate_sha256": "AA:BB:CC:...",
+            "allowed_certificate_sha256": "",
             "allowed_bundle_ids": ["com.example.app"],
             "min_version_code": "100",
             "reject_untrusted_device": true,
-            "reject_unrecognized_version": true, 
+            "reject_unrecognized_version": true,
             "google_cloud_project": "project-123",
-            "google_api_key": "AIza...",
-            "max_token_age_seconds": 60  
+            "google_api_key": "",
+            "max_token_age_seconds": 60
         },
-        
+
         "iot": {
             "require_device_certificate": true,
             "allowed_certificate_authorities": ["base64_ca_cert_1"],
             "challenge_ttl_seconds": 30,
-            "max_devices_per_hour": 100, 
-            "require_cn_match": true 
+            "max_devices_per_hour": 100,
+            "require_cn_match": true
         },
-        
-        "rate_limits": { 
+
+        "rate_limits": {
             "max_attestations_per_user_per_hour": 100,
             "max_failed_attempts_before_lockout": 5
         }

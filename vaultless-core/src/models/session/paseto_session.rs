@@ -93,6 +93,7 @@ impl SessionKeyManager {
 // SESSION CLAIMS
 // =============================================================================
 
+/// Create session token with claims
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
     pub client_id: Uuid,
@@ -100,6 +101,11 @@ pub struct SessionData {
     pub platform: String,
     pub device_trusted: bool,
     pub app_tier: Option<String>,
+
+    // New fields
+    pub publishable_key_plaintext: Option<String>,
+    pub application_secret_api_key_id: Option<Uuid>,
+    pub pubkey: Option<String>,
 }
 
 /// Create session token with claims
@@ -113,11 +119,13 @@ pub fn create_session_token(
     let now = Utc::now();
     let exp = now + Duration::seconds(ttl_seconds);
 
+    // Standard Claims
     claims.issued_at(&now.to_rfc3339())?;
     claims.expiration(&exp.to_rfc3339())?;
     claims.subject(&session_data.client_id.to_string())?;
     claims.token_identifier(&Uuid::new_v4().to_string())?; // jti
 
+    // Custom Claims
     claims.add_additional("application_id", session_data.application_id.to_string())?;
     claims.add_additional("platform", session_data.platform)?;
     claims.add_additional("device_trusted", session_data.device_trusted)?;
@@ -125,6 +133,21 @@ pub fn create_session_token(
     if let Some(tier) = session_data.app_tier {
         claims.add_additional("app_tier", tier)?;
     }
+
+    // --- NEW FIELDS SERIALIZATION ---
+    // We use shorter keys ("pk", "ask_id", "pbk") to save bytes in the token
+    if let Some(pk) = session_data.publishable_key_plaintext {
+        claims.add_additional("pk", pk)?;
+    }
+
+    if let Some(ask_id) = session_data.application_secret_api_key_id {
+        claims.add_additional("ask_id", ask_id.to_string())?;
+    }
+
+    if let Some(pubkey) = session_data.pubkey {
+        claims.add_additional("pbk", pubkey)?;
+    }
+    // --------------------------------
 
     let token = local::encrypt(key, &claims, None, None)
         .map_err(|e| VaultlessError::Internal(format!("Failed to create token: {e}")))?;
@@ -139,7 +162,7 @@ pub fn verify_session_token(
 ) -> Result<(SessionData, String)> {
     let claims = key_manager.verify_with_rotation(token)?;
 
-    // Extract required claims safely using the correct pasetors API
+    // Standard extractions
     let client_id = claims
         .get_claim("sub")
         .and_then(|v| v.as_str())
@@ -174,6 +197,27 @@ pub fn verify_session_token(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    // --- NEW FIELDS DESERIALIZATION ---
+
+    // 1. Publishable Key
+    let publishable_key_plaintext = claims
+        .get_claim("pk")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // 2. Application Secret API Key ID (UUID)
+    let application_secret_api_key_id = claims
+        .get_claim("ask_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    // 3. Public Key (Client's pubkey)
+    let pubkey = claims
+        .get_claim("pbk")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    // ----------------------------------
+
     Ok((
         SessionData {
             client_id,
@@ -181,6 +225,9 @@ pub fn verify_session_token(
             platform,
             device_trusted,
             app_tier,
+            publishable_key_plaintext,
+            application_secret_api_key_id,
+            pubkey,
         },
         jti,
     ))
@@ -271,6 +318,9 @@ mod tests {
             platform: "ios".to_string(),
             device_trusted: true,
             app_tier: Some("premium".to_string()),
+            publishable_key_plaintext: None,
+            application_secret_api_key_id: None,
+            pubkey: None,
         };
 
         let token =
@@ -296,6 +346,9 @@ mod tests {
                 platform: "android".to_string(),
                 device_trusted: false,
                 app_tier: None,
+                publishable_key_plaintext: None,
+                application_secret_api_key_id: None,
+                pubkey: None,
             },
             3600,
         )
