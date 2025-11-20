@@ -25,7 +25,7 @@ const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
 
 impl Client {
     /// Authenticate client by hashed identifier with optional re-attestation
-    pub async fn authenticate<'c, E>(
+    pub async fn login<'c, E>(
         exec: E,
         redis: Arc<RedisPool>,
         key_manager: Arc<SessionKeyManager>,

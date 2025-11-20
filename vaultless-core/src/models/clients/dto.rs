@@ -70,6 +70,7 @@ pub struct Client {
     pub last_seen_at: Option<DateTime<Utc>>,
     pub last_message_at: Option<DateTime<Utc>>,
 
+    #[serde(skip_serializing)]
     pub metadata: Option<serde_json::Value>,
 
     #[serde(skip_serializing)]

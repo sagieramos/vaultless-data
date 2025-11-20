@@ -11,105 +11,124 @@ use uuid::Uuid;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
+    models::session::paseto_session::{
+        SessionData, SessionKeyManager, revoke_session, verify_and_check_revocation_atomic,
+        verify_session_token,
+    },
 };
 
 const CHALLENGE_EXPIRY_SECONDS: u64 = 300; // 5 minutes
+const DEFAULT_REVOCATION_TTL: i64 = 24 * 30 * 3600; // 30 days (fallback for force logout)
 
 impl Client {
-    /// Verify session token validity
+    /// Verify PASETO session token validity and return the Client
     pub async fn verify_session<'c, E>(
         exec: E,
-        redis: Option<Arc<RedisPool>>,
+        // Redis is now required for the revocation check using the atomic function
+        redis: Arc<RedisPool>,
+        key_manager: &SessionKeyManager,
         session_token: &str,
     ) -> Result<Client>
     where
-        E: Executor<'c, Database = Postgres>,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
-        let token_bytes = BASE64
-            .decode(session_token)
-            .map_err(|e| VaultlessError::Validation(e.to_string()))?;
-        let session_token_hash = crypto::hash_content(&token_bytes);
-        let cache_key = cache_client_session_key(&session_token_hash);
+        // --- 1. Verify PASETO Token and Check Revocation (Atomic) ---
+        // This function handles signature verification, claims validation, and Redis JTI blacklist check.
+        let session_data =
+            verify_and_check_revocation_atomic(key_manager, &redis, session_token).await?;
 
-        // --- 1. Redis Cache Lookup ---
-        if let Some(redis_pool) = &redis
-            && let Ok(mut conn) = redis_pool.get().await
-            && let Ok(cached_json) = conn.get::<_, String>(&cache_key).await
+        let client_id = session_data.client_id;
+
+        // --- 2. Redis Cache Lookup (Client Data) ---
+        // We verify the client still exists and is active.
+        let client_cache_key = cache_key!("client", "id", client_id);
+        if let Ok(mut conn) = redis.get().await
+            && let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await
             && let Ok(cached_client) = serde_json::from_str::<Client>(&cached_json)
         {
-            tracing::debug!("Cache hit for client session");
+            if !cached_client.is_active {
+                return Err(VaultlessError::Unauthorized("Client is deactivated".into()));
+            }
+            tracing::debug!("Cache hit for client {}", client_id);
             return Ok(cached_client);
         }
 
-        // --- 2. Database Lookup ---
+        // --- 3. Database Lookup ---
         let client = sqlx::query_as::<_, Client>(
             r#"
-        SELECT * FROM clients
-        WHERE session_token_hash = $1
-          AND session_expires_at > NOW()
-          AND is_active = TRUE
-        "#,
+            SELECT * FROM clients
+            WHERE id = $1 AND is_active = TRUE
+            "#,
         )
-        .bind(&session_token_hash)
+        .bind(client_id)
         .fetch_optional(exec)
         .await?
-        .ok_or_else(|| VaultlessError::Unauthorized("Invalid or expired session".to_string()))?;
+        .ok_or_else(|| VaultlessError::Unauthorized("Client not found or inactive".to_string()))?;
 
-        let client_clone = client.clone();
+        // --- 4. Cache Client in Redis ---
+        let _ = Self::cache_to_redis(&redis, &client).await;
 
-        // --- 3. Write-Back to Redis ---
-        if let Some(redis_pool) = &redis
-            && let Ok(mut conn) = redis_pool.get().await
-            && let Some(expiry) = client_clone.session_expires_at
-        {
-            let ttl_secs = (expiry - Utc::now()).num_seconds().max(0);
-            if ttl_secs > 0 {
-                let serialized = serde_json::to_string(&client_clone)?;
-                if let Err(e) = conn
-                    .set_ex::<_, _, ()>(&cache_key, serialized, ttl_secs as u64)
-                    .await
-                {
-                    tracing::warn!("Redis cache write failed: {}", e);
-                }
-            }
-        }
-
-        Ok(client_clone)
+        Ok(client)
     }
 
-    /// Log out a client by clearing session
+    pub async fn verify_session_fast(
+        key_manager: &SessionKeyManager,
+        redis: Arc<RedisPool>,
+        session_token: &str,
+    ) -> Result<SessionData> {
+        let session_data =
+            verify_and_check_revocation_atomic(key_manager, &redis, session_token).await?;
+
+        Ok(session_data)
+    }
+
+    /// Log out a client by revoking the session JTI
     pub async fn revoke_session<'c, E>(
         exec: E,
         redis: Option<&Arc<RedisPool>>,
+        key_manager: &SessionKeyManager,
         client_id: Uuid,
         session_token: Option<&str>,
     ) -> Result<()>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        sqlx::query(
-            r#"
-        UPDATE clients
-        SET session_token_hash = NULL,
-            session_expires_at = NULL
-        WHERE id = $1
-        "#,
-        )
-        .bind(client_id)
-        .execute(exec)
-        .await?;
+        let redis_pool = if let Some(pool) = redis {
+            pool
+        } else {
+            // If no Redis, we can't blacklist the token, so we just update DB state if needed.
+            // In stateless auth, DB update isn't strictly required for logout unless we clear last_jti.
+            return Ok(());
+        };
 
-        // --- Invalidate Redis Cache ---
-        if let (Some(redis), Some(token)) = (redis, session_token) {
-            let token_bytes = BASE64
-                .decode(token)
-                .map_err(|e| VaultlessError::Validation(e.to_string()))?;
-            let session_hash = crypto::hash_content(&token_bytes);
-            let cache_key = cache_client_session_key(&session_hash);
+        // Scenario A: We have the token (User requested logout)
+        if let Some(token) = session_token {
+            // Decode to get JTI and Expiration
+            // We ignore signature errors here because we just want to revoke what we can read.
+            // If signature fails, verify_with_rotation fails, preventing `claims` access.
+            // Ideally, we only revoke valid tokens.
+            if let Ok((_data, jti)) = verify_session_token(key_manager, token) {
+                // Calculate remaining TTL based on token exp?
+                // For simplicity in this context, we might re-verify or just use default TTL.
+                // verify_session_token checks exp, so if it passes, token is valid.
 
-            if let Ok(mut conn) = redis.get().await {
-                let _ = conn.del::<_, ()>(&cache_key).await.ok();
-                tracing::debug!("Revoked session cache for client {}", client_id);
+                // We use a safe default TTL or parse claims manually for exp.
+                // Let's use the default max session duration to be safe.
+                revoke_session(redis_pool, &jti, DEFAULT_REVOCATION_TTL).await?;
+                tracing::info!(client_id = %client_id, jti = %jti, "Explicit session revoked");
+            }
+        }
+        // Scenario B: No token (Admin force logout), revoke the last known JTI
+        else {
+            let last_jti: Option<String> =
+                sqlx::query_scalar("SELECT last_jti FROM clients WHERE id = $1")
+                    .bind(client_id)
+                    .fetch_optional(exec)
+                    .await?;
+
+            if let Some(jti) = last_jti {
+                revoke_session(redis_pool, &jti, DEFAULT_REVOCATION_TTL).await?;
+                tracing::info!(client_id = %client_id, jti = %jti, "Last active session revoked");
             }
         }
 
@@ -125,7 +144,7 @@ impl Client {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // --- 1. Fetch client data before deactivation (for cache invalidation) ---
+        // --- 1. Fetch client data before deactivation ---
         let client = sqlx::query_as::<_, Client>("SELECT * FROM clients WHERE id = $1")
             .bind(client_id)
             .fetch_optional(exec.clone())
@@ -138,10 +157,16 @@ impl Client {
             .execute(exec)
             .await?;
 
-        // --- 3. Invalidate Redis caches (all possible keys) ---
+        // --- 3. Invalidate Redis caches & Revoke Session ---
         if let Some(redis_pool) = redis
             && let Ok(mut conn) = redis_pool.get().await
         {
+            // Revoke active session if exists
+            if let Some(jti) = &client.last_jti {
+                let _ = revoke_session(redis_pool, jti, DEFAULT_REVOCATION_TTL).await;
+                tracing::info!(client_id = %client.id, jti = %jti, "Session revoked due to deactivation");
+            }
+
             let mut keys_to_delete = Vec::new();
 
             // Canonical client data key
@@ -161,11 +186,6 @@ impl Client {
                     "client_identifier_hash",
                     cid_hash
                 ));
-            }
-
-            // Session key (if exists)
-            if let Some(ref session_hash) = client.session_token_hash {
-                keys_to_delete.push(cache_client_session_key(session_hash));
             }
 
             // Delete all keys
@@ -203,30 +223,6 @@ impl Client {
             challenge: challenge_string, // Return the *original* string
             expires_at,
         })
-    }
-
-    // =============================================================================
-    // Cache Invalidation Helpers
-    // =============================================================================
-
-    /// Invalidate cached client session (after logout, session rotate, or revoke)
-    pub async fn invalidate_client_session_cache(
-        redis: &Arc<RedisPool>,
-        session_token: &str,
-    ) -> Result<()> {
-        let token_bytes = BASE64
-            .decode(session_token)
-            .map_err(|e| VaultlessError::Validation(e.to_string()))?;
-        let session_hash = crypto::hash_content(&token_bytes);
-        let cache_key = cache_client_session_key(&session_hash);
-
-        if let Ok(mut conn) = redis.get().await
-            && conn.del::<_, ()>(&cache_key).await.is_ok()
-        {
-            tracing::debug!("Invalidated session cache: {}", cache_key);
-        }
-
-        Ok(())
     }
 
     pub async fn resolve_client<'c, E>(
@@ -268,8 +264,11 @@ impl Client {
                     if let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await
                         && let Ok(cached_client) = serde_json::from_str::<Client>(&cached_json)
                     {
-                        tracing::debug!("Cache hit for client_id {}", client_id);
-                        return Ok(Some(cached_client));
+                        // Ensure we don't return deactivated clients from cache
+                        if cached_client.is_active {
+                            tracing::debug!("Cache hit for client_id {}", client_id);
+                            return Ok(Some(cached_client));
+                        }
                     }
                 }
             }

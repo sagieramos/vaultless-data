@@ -8,7 +8,6 @@ use crate::models::usage::{
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use sqlx::{Executor, Postgres};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 impl AuthConfig {

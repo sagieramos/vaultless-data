@@ -1,5 +1,5 @@
 
-pub mod client;
-pub mod registration;
+pub mod authenticates;
+pub mod signup;
 pub mod dto;
-pub mod authenticate;
+pub mod login;

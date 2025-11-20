@@ -6,31 +6,38 @@ use deadpool_redis::Pool as RedisPool;
 use redis::{AsyncCommands, Script};
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
+use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
     crypto,
     error::{Result, VaultlessError},
-    models::app_model::{
-        attestation::{
-            AttestationMetadata, AttestationService, Platform, check_attestation_rate_limit,
-            dto::IntegrityConfig, track_failed_attestation,
+    models::{
+        app_model::{
+            attestation::{
+                AttestationMetadata, AttestationService, Platform, check_attestation_rate_limit,
+                dto::IntegrityConfig, track_failed_attestation,
+            },
+            dto::Application,
         },
-        dto::Application,
+        session::paseto_session::{
+            self, SessionData, SessionKeyManager, verify_session_token,
+        },
     },
 };
 
+const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
+const IDENTIFIER_TTL_SECS: usize = 60; // Short TTL for nonce
+
 impl Client {
     /// Register new client with optional platform attestation
-    pub async fn register<'c, E>(
+    pub async fn sign_up<'c, E>(
         exec: E,
         redis: Option<Arc<RedisPool>>,
+        key_manager: Arc<SessionKeyManager>, // Added Key Manager
         attestation_service: Option<Arc<AttestationService>>,
         input: RegisterClientRequest,
         publishable_key: String,
-        // NEW: Web-specific params
-        request_headers: Option<std::collections::HashMap<String, String>>,
-        ip_address: Option<String>,
     ) -> Result<RegisterClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
@@ -96,12 +103,17 @@ impl Client {
                     "Auth configuration not found".to_string(),
                 ))?;
 
-        // ============= 5. PLATFORM ATTESTATION (NEW) =============
+        // ============= 5. PLATFORM ATTESTATION =============
 
         let mut is_platform_attested = false;
+        let mut device_trusted = false;
+        let mut platform_string = "unknown".to_string();
         let mut merged_metadata = input.metadata.clone();
 
         if let Some(attestation_request) = input.attestation {
+            // Capture platform info for session
+            platform_string = attestation_request.platform.as_str().to_string();
+
             // Validate attestation request
             attestation_request.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Invalid attestation request: {}", e))
@@ -215,6 +227,9 @@ impl Client {
                             ));
                         }
                     }
+                    
+                    // Update trust state
+                    device_trusted = result.device_trusted;
 
                     // Create attestation metadata
                     let attestation_meta = AttestationMetadata::from_result(
@@ -314,21 +329,49 @@ impl Client {
             .as_ref()
             .map(|ci| crypto::hash_content(ci.as_bytes()));
 
-        // --- 7. Generate session token ---
-        let token = crypto::generate_secure_token::<32>()?;
-        let session_token = BASE64.encode(token);
-        let session_token_hash = crypto::hash_content(&token);
-        let session_expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
+        // --- 7. Generate Client ID & PASETO Session Token ---
+        
+        // We must generate the UUID here so we can embed it in the token claims
+        let client_id = Uuid::new_v4();
+        
+        // Prepare session data
+        let session_data = SessionData {
+            client_id,
+            application_id: auth_config.app_id,
+            platform: platform_string,
+            device_trusted,
+            app_tier: None,
+            publishable_key_plaintext: Some(publishable_key),
+            // We map the app_id/sk_id logic if available in AuthConfig, 
+            // otherwise we leave it None for public registration flows.
+            // Assuming auth_config has sk_id if you added it to DTO, else None.
+            application_secret_api_key_id: None, 
+            pubkey: Some(pubkey.clone()),
+        };
+
+        let ttl_seconds = SESSION_DURATION_HOURS * 3600;
+        
+        // Create token
+        let session_token = paseto_session::create_session_token(
+            key_manager.current(), 
+            session_data, 
+            ttl_seconds
+        )?;
+
+        // Extract JTI (Join Token ID) for DB storage (revocation handle)
+        let (_, jti) = verify_session_token(&key_manager, &session_token)?;
+        
+        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
 
         // --- 8. Insert client into DB ---
         let client = sqlx::query_as::<_, Client>(
             r#"
             INSERT INTO clients (
+                id,
                 identifier,
                 client_identifier_hash,
                 public_key,
-                session_token_hash,
-                session_expires_at,
+                last_jti,
                 metadata,
                 developer_id,
                 application_id,
@@ -339,11 +382,11 @@ impl Client {
             RETURNING *
             "#,
         )
+        .bind(client_id) // Bind the pre-generated ID
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
         .bind(&pubkey)
-        .bind(&session_token_hash)
-        .bind(session_expires_at)
+        .bind(&jti) // Store the JTI
         .bind(&merged_metadata)
         .bind(auth_config.app_user_id)
         .bind(auth_config.app_id)
@@ -373,7 +416,7 @@ impl Client {
         Ok(RegisterClientResponse {
             client_id: client.id,
             session_token,
-            expires_at: session_expires_at,
+            expires_at,
         })
     }
 
@@ -474,6 +517,8 @@ impl Client {
         let updated_metadata = attestation_meta.merge_into_metadata(client.metadata.clone())?;
 
         // 8. Update database
+        // Note: re_attest does not rotate session key (that's authenticate), 
+        // so last_jti is not touched here.
         sqlx::query(
             r#"
             UPDATE clients

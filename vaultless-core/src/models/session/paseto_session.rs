@@ -197,8 +197,6 @@ pub fn verify_session_token(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    // --- NEW FIELDS DESERIALIZATION ---
-
     // 1. Publishable Key
     let publishable_key_plaintext = claims
         .get_claim("pk")
@@ -234,13 +232,33 @@ pub fn verify_session_token(
 }
 
 // =============================================================================
-// REVOCATION BLACKLIST (unchanged)
+// REVOCATION BLACKLIST
 // =============================================================================
 
 use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands;
+use redis::{AsyncCommands, Script};
 
 const REVOKED_SESSION_PREFIX: &str = "revoked_session";
+
+static REVOKE_AND_CHECK_SCRIPT: once_cell::sync::Lazy<Script> = once_cell::sync::Lazy::new(|| {
+    Script::new(
+        r#"
+        local key = KEYS[1]
+        local value = ARGV[1]  -- "1" when revoking
+        local ttl = tonumber(ARGV[2])
+
+        if value then
+            -- Revoke: SETEX and return old value (nil if wasn't revoked)
+            local old = redis.call("GET", key)
+            redis.call("SETEX", key, ttl, value)
+            return old ~= false and 1 or 0  -- 1 = was already revoked
+        else
+            -- Check only: return 1 if exists, 0 if not
+            return redis.call("EXISTS", key)
+        end
+    "#,
+    )
+});
 
 pub async fn revoke_session(
     redis_pool: &RedisPool,
@@ -251,15 +269,53 @@ pub async fn revoke_session(
     let mut conn = redis_pool
         .get()
         .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {e}")))?;
+        .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
 
-    let _: () = conn
-        .set_ex(&key, "1", remaining_ttl_seconds.max(1) as u64)
+    let was_already_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
+        .key(&key)
+        .arg("1") // value = "1" → revoke mode
+        .arg(remaining_ttl_seconds.max(1)) // TTL
+        .invoke_async(&mut conn)
         .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis SET failed: {e}")))?;
+        .map_err(|e| VaultlessError::Internal(format!("Lua revoke failed: {e}")))?;
 
-    tracing::info!(jti = %jti, ttl = remaining_ttl_seconds, "Session revoked");
+    tracing::info!(
+        jti = %jti,
+        ttl = remaining_ttl_seconds,
+        already_revoked = was_already_revoked == 1,
+        "Session revocation attempted"
+    );
     Ok(())
+}
+
+pub async fn verify_and_check_revocation_atomic(
+    key_manager: &SessionKeyManager,
+    redis_pool: &RedisPool,
+    token: &str,
+) -> Result<SessionData> {
+    let (session_data, jti) = verify_session_token(key_manager, token)?;
+
+    let key = format!("{REVOKED_SESSION_PREFIX}:{jti}");
+    let mut conn = redis_pool
+        .get()
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
+
+    let is_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
+        .key(&key)
+        .arg("") // empty value → check-only mode
+        .arg(0) // TTL ignored in check mode
+        .invoke_async(&mut conn)
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Lua check failed: {e}")))?;
+
+    if is_revoked == 1 {
+        return Err(VaultlessError::Unauthorized(
+            "Session has been revoked".into(),
+        ));
+    }
+
+    Ok(session_data)
 }
 
 pub async fn is_session_revoked(redis_pool: &RedisPool, jti: &str) -> Result<bool> {
