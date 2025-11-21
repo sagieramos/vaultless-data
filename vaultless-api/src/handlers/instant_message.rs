@@ -9,7 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
-use vaultless_core::models::Client;
+use vaultless_core::Client;
 use vaultless_core::models::instant_message::{Message, ReadReceipt};
 
 // =============================================================================
@@ -130,7 +130,7 @@ pub async fn send_message(
             input.ciphertext.clone(),
             input.nonce,
             content_size_bytes,
-            sender.0.id,
+            input.nonce,
             input.signature.clone(),
             sender_pubkey,
             input.require_proof_verification,

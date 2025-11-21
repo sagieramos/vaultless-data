@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
+use sqlx::PgPool;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -18,29 +19,14 @@ use crate::{
 };
 
 const CHALLENGE_EXPIRY_SECONDS: u64 = 300; // 5 minutes
-const DEFAULT_REVOCATION_TTL: i64 = 24 * 30 * 3600; // 30 days (fallback for force logout)
+const DEFAULT_REVOCATION_TTL: u64 = 24 * 30 * 3600; // 30 days (fallback for force logout)
 
 impl Client {
-    /// Verify PASETO session token validity and return the Client
-    pub async fn verify_session<'c, E>(
-        exec: E,
-        // Redis is now required for the revocation check using the atomic function
-        redis: Arc<RedisPool>,
-        key_manager: &SessionKeyManager,
-        session_token: &str,
-    ) -> Result<Client>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // --- 1. Verify PASETO Token and Check Revocation (Atomic) ---
-        // This function handles signature verification, claims validation, and Redis JTI blacklist check.
-        let session_data =
-            verify_and_check_revocation_atomic(key_manager, &redis, session_token).await?;
-
-        let client_id = session_data.client_id;
-
-        // --- 2. Redis Cache Lookup (Client Data) ---
-        // We verify the client still exists and is active.
+    pub async fn fetch_active_client(
+        db_pool: &PgPool,
+        redis: &Arc<RedisPool>,
+        client_id: Uuid,
+    ) -> Result<Client> {
         let client_cache_key = cache_key!("client", "id", client_id);
         if let Ok(mut conn) = redis.get().await
             && let Ok(cached_json) = conn.get::<_, String>(&client_cache_key).await
@@ -53,27 +39,34 @@ impl Client {
             return Ok(cached_client);
         }
 
-        // --- 3. Database Lookup ---
+        // --- 2. Database Lookup (Cache Miss) ---
         let client = sqlx::query_as::<_, Client>(
-            r#"
-            SELECT * FROM clients
-            WHERE id = $1 AND is_active = TRUE
-            "#,
+            r#"SELECT * FROM clients WHERE id = $1 AND is_active = TRUE"#,
         )
         .bind(client_id)
-        .fetch_optional(exec)
+        .fetch_optional(db_pool)
         .await?
         .ok_or_else(|| VaultlessError::Unauthorized("Client not found or inactive".to_string()))?;
 
-        // --- 4. Cache Client in Redis ---
-        let _ = Self::cache_to_redis(&redis, &client).await;
+        let redis_for_cache = redis.clone();
+        let client_for_cache = client.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = Self::cache_to_redis(&redis_for_cache, &client_for_cache).await {
+                tracing::warn!(
+                    "Background cache update failed for client {}: {}",
+                    client_for_cache.id,
+                    e
+                );
+            }
+        });
 
         Ok(client)
     }
 
     pub async fn verify_session_fast(
-        key_manager: &SessionKeyManager,
         redis: Arc<RedisPool>,
+        key_manager: &SessionKeyManager,
         session_token: &str,
     ) -> Result<SessionData> {
         let session_data =
@@ -82,8 +75,7 @@ impl Client {
         Ok(session_data)
     }
 
-    /// Log out a client by revoking the session JTI
-    pub async fn revoke_session<'c, E>(
+    pub async fn revoke_client_session<'c, E>(
         exec: E,
         redis: Option<&Arc<RedisPool>>,
         key_manager: &SessionKeyManager,
@@ -96,39 +88,34 @@ impl Client {
         let redis_pool = if let Some(pool) = redis {
             pool
         } else {
-            // If no Redis, we can't blacklist the token, so we just update DB state if needed.
-            // In stateless auth, DB update isn't strictly required for logout unless we clear last_jti.
-            return Ok(());
+            return Err(VaultlessError::Config(
+                "Internal; session logout not possible".into(),
+            ));
         };
 
-        // Scenario A: We have the token (User requested logout)
         if let Some(token) = session_token {
-            // Decode to get JTI and Expiration
-            // We ignore signature errors here because we just want to revoke what we can read.
-            // If signature fails, verify_with_rotation fails, preventing `claims` access.
-            // Ideally, we only revoke valid tokens.
             if let Ok((_data, jti)) = verify_session_token(key_manager, token) {
-                // Calculate remaining TTL based on token exp?
-                // For simplicity in this context, we might re-verify or just use default TTL.
-                // verify_session_token checks exp, so if it passes, token is valid.
-
-                // We use a safe default TTL or parse claims manually for exp.
-                // Let's use the default max session duration to be safe.
                 revoke_session(redis_pool, &jti, DEFAULT_REVOCATION_TTL).await?;
                 tracing::info!(client_id = %client_id, jti = %jti, "Explicit session revoked");
-            }
-        }
-        // Scenario B: No token (Admin force logout), revoke the last known JTI
-        else {
-            let last_jti: Option<String> =
-                sqlx::query_scalar("SELECT last_jti FROM clients WHERE id = $1")
-                    .bind(client_id)
-                    .fetch_optional(exec)
-                    .await?;
 
-            if let Some(jti) = last_jti {
+                sqlx::query("UPDATE clients SET last_jti = NULL WHERE id = $1 AND last_jti = $2")
+                    .bind(client_id)
+                    .bind(jti)
+                    .execute(exec)
+                    .await?;
+            }
+        } else {
+            let killed_jti: Option<String> = sqlx::query_scalar(
+                "UPDATE clients SET last_jti = NULL WHERE id = $1 RETURNING last_jti",
+            )
+            .bind(client_id)
+            .fetch_optional(exec)
+            .await?
+            .flatten();
+
+            if let Some(jti) = killed_jti {
                 revoke_session(redis_pool, &jti, DEFAULT_REVOCATION_TTL).await?;
-                tracing::info!(client_id = %client_id, jti = %jti, "Last active session revoked");
+                tracing::info!(client_id = %client_id, jti = %jti, "Last active session revoked via DB lookup");
             }
         }
 

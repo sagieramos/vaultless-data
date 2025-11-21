@@ -1,3 +1,11 @@
+use crate::{
+    middleware::{
+        client::{AuthConfigExt, ClientExt, SessionDataExt},
+        error::ApiError,
+    },
+    state::AppState,
+};
+use axum::extract::Extension;
 use axum::{
     Json,
     extract::{Query, State},
@@ -5,15 +13,6 @@ use axum::{
 use chrono::Utc;
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
-use axum::extract::Extension;
-use crate::middleware::client::AuthenticatedClient;
-use crate::{
-    middleware::{
-        client::{AuthenticatedClientWithToken, XPublishableKey},
-        error::ApiError,
-    },
-    state::AppState,
-};
 use vaultless_core::{
     AuthenticateClientRequest, AuthenticateClientResponse, Client, RegisterClientRequest,
     RegisterClientResponse,
@@ -62,7 +61,7 @@ pub async fn register_client(
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
     tracing::info!("Client registration attempt");
     // Call secure register with Redis (for nonce & caching)
-    let response = Client::register(
+    let response = Client::sign_up(
         state.db.as_ref(),
         Some(state.redis_pool.clone()),
         input,
@@ -197,29 +196,27 @@ pub async fn health_check() -> Json<serde_json::Value> {
 /// Get current authenticated client info
 /// GET /api/clients/me
 #[axum::debug_handler]
-pub async fn get_current_client(
-    Extension(auth_client): Extension<AuthenticatedClient>
-) -> Json<Client> {
-    Json(auth_client.0)
+pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Client> {
+    Json(client)
 }
 
 /// Logout (revoke current session)
 /// POST /api/clients/logout
-#[tracing::instrument(skip(state, client, token), fields(endpoint = "logout_client", client_id = %client.id))]
 #[axum::debug_handler]
 pub async fn logout_client(
     State(state): State<AppState>,
-    AuthenticatedClientWithToken { client, token }: AuthenticatedClientWithToken,
+    SessionDataExt(session_data): SessionDataExt,
 ) -> Result<Json<SuccessResponse>, ApiError> {
-    Client::revoke_session(
+    Client::revoke_client_session(
         state.db.as_ref(),
         Some(&state.redis_pool),
-        client.id,
-        Some(&token),
+        &state.session_key_manager,
+        session_data.client_id,
+        None,
     )
     .await?;
 
-    tracing::info!("Client {} logged out", client.id);
+    tracing::info!("Client {} logged out", session_data.client_id);
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -232,13 +229,25 @@ pub async fn logout_client(
 #[axum::debug_handler]
 pub async fn deactivate_client(
     State(state): State<AppState>,
-    Extension(client): Extension<Client>,
+    SessionDataExt(session_data): SessionDataExt,
 ) -> Result<Json<SuccessResponse>, ApiError> {
-    Client::deactivate(state.db.as_ref(), Some(&state.redis_pool), client.id)
-        .await
-        .map_err(ApiError::from)?; // map your VaultlessError to ApiError
+    Client::revoke_client_session(
+        state.db.as_ref(),
+        Some(&state.redis_pool),
+        &state.session_key_manager,
+        session_data.client_id,
+        None,
+    )
+    .await?;
+    Client::deactivate(
+        state.db.as_ref(),
+        Some(&state.redis_pool),
+        session_data.client_id,
+    )
+    .await
+    .map_err(ApiError::from)?;
 
-    tracing::info!("Client {} deactivated", client.id);
+    tracing::info!("Client {} deactivated", session_data.client_id);
 
     Ok(Json(SuccessResponse {
         success: true,

@@ -175,7 +175,7 @@ impl AnalyticsService {
         let total_cost = messages_cost + storage_cost_val + verification_cost;
 
         // Calculate overage cost
-        let api_key = ApiKey::find_by_id(self.db.as_ref(), None, api_key_id)
+        let api_key = ApiKey::find_by_id(self.db.as_ref(), api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -199,7 +199,7 @@ impl AnalyticsService {
 
     /// Get tier information
     async fn get_tier_info(&self, api_key_id: Uuid) -> Result<TierInfo, ApiError> {
-        let api_key = ApiKey::find_by_id(self.db.as_ref(), None, api_key_id)
+        let api_key = ApiKey::find_by_id(self.db.as_ref(), api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))
@@ -219,7 +219,7 @@ impl AnalyticsService {
 
     /// Get quota status with percentage calculation
     pub async fn get_quota_status(&self, api_key_id: Uuid) -> Result<QuotaStatus, ApiError> {
-        let api_key = ApiKey::find_by_id(self.db.as_ref(), None, api_key_id)
+        let api_key = ApiKey::find_by_id(self.db.as_ref(), api_key_id)
             .await
             .map_err(|e| {
                 ApiError::internal_server_error(format!("Failed to fetch API key: {}", e))

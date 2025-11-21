@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::error::{Result, VaultlessError};
+use crate::middleware::error::{Result, ApiError};
 use crate::models::app_model::attestation::{
     AttestationRequest, AttestationService, Platform,
     check_attestation_rate_limit, track_failed_attestation,

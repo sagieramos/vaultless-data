@@ -160,7 +160,7 @@ impl From<VaultlessError> for ApiError {
                 ApiError::too_many_requests(msg).with_code("QUOTA_EXCEEDED")
             }
 
-            VaultlessError::RateLimitExceeded => {
+            VaultlessError::RateLimitExceeded(_) => {
                 ApiError::too_many_requests("Rate limit exceeded").with_code("RATE_LIMIT_EXCEEDED")
             }
 

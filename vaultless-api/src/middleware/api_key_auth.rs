@@ -36,25 +36,6 @@ pub async fn extract_api_key(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(api_key.to_string())
 }
 
-/// Validate API key (relies on core's internal caching via find_by_hash)
-pub async fn validate_api_key(state: &AppState, api_key: &str) -> Result<ApiKey, ApiError> {
-    tracing::debug!("Validating API key: {}", api_key);
-
-    let key_hash = crypto::hash_content(api_key.as_bytes());
-
-    let api_key_record = ApiKey::find_by_hash(state.db.as_ref(), Some(state.redis_pool.clone()), key_hash)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Validate key is usable (e.g., active, not expired)
-    api_key_record
-        .validate(state.db.as_ref(), Some(state.redis_pool.clone()))
-        .await
-        .map_err(ApiError::from)?;
-
-    tracing::debug!("API key validated successfully");
-    Ok(api_key_record)
-}
 
 /// Middleware to require API key authentication
 pub async fn require_client_api_key(

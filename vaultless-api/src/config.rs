@@ -1,6 +1,7 @@
 // vaultless-api/src/config.rs
 use serde::Deserialize;
 use std::env;
+use vaultless_core::SessionKeyManager;
 
 pub struct AuthHeader;
 
@@ -39,6 +40,13 @@ pub struct DatabaseConfig {
 pub struct SecurityConfig {
     pub api_key_salt: String,
     pub admin_api_key: String,
+    /// Raw hex keys loaded from env
+    pub paseto_client_session_current_key: String,
+    pub paseto_client_session_previous_key: Option<String>,
+
+    /// Not deserialized — injected after config load
+    #[serde(skip)]
+    pub paseto_client_session_key_manager: SessionKeyManager,
 }
 
 /// Dragonfly/Redis cache configuration
@@ -56,6 +64,12 @@ impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok(); // Load .env file if it exists
+
+        // Raw keys from environment
+        let current_key_hex = env::var("PASETO_CLIENT_SESSION_CURRENT_KEY")
+            .expect("PASETO_CLIENT_SESSION_CURRENT_KEY must be set");
+
+        let previous_key_hex = env::var("PASETO_CLIENT_SESSION_PREVIOUS_KEY").ok();
 
         let config = Config {
             server: ServerConfig {
@@ -75,6 +89,12 @@ impl Config {
             security: SecurityConfig {
                 api_key_salt: env::var("API_KEY_SALT").expect("API_KEY_SALT must be set"),
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
+                paseto_client_session_current_key: current_key_hex.clone(),
+                paseto_client_session_previous_key: previous_key_hex.clone(),
+                paseto_client_session_key_manager: SessionKeyManager::new(
+                    &current_key_hex,
+                    previous_key_hex.as_deref(),
+                )?,
             },
             cache: CacheConfig {
                 url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
@@ -137,6 +157,12 @@ mod tests {
             security: SecurityConfig {
                 api_key_salt: "test-salt".to_string(),
                 admin_api_key: "test-admin".to_string(),
+                paseto_client_session_current_key: "aabbccddeeff00112233445566778899".to_string(),
+                paseto_client_session_previous_key: None,
+                paseto_client_session_key_manager: SessionKeyManager::new(
+                    "aabbccddeeff00112233445566778899",
+                    None,
+                ).unwrap(),
             },
             cache: CacheConfig {
                 url: "redis://127.0.0.1:6379".to_string(),

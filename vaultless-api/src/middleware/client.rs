@@ -1,7 +1,9 @@
+use super::helper::*;
+use axum::http::HeaderMap;
 use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::{Application, Client};
+use vaultless_core::{AuthConfig, Client, SessionData};
 
 use axum::{
     extract::{Request, State},
@@ -9,204 +11,64 @@ use axum::{
     response::Response,
 };
 
-
-
-// Validated Application Extractor (Recommended)
-
 #[derive(Debug, Clone)]
-pub struct ValidatedApplication(pub Application);
+pub struct AuthConfigExt(pub AuthConfig);
 
-impl<S> FromRequestParts<S> for ValidatedApplication
-where
-    S: Send + Sync,
-    AppState: axum::extract::FromRef<S>,
-{
-    type Rejection = ApiError;
+pub async fn api_key_auth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let api_key = extract_api_key(&headers)?;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let publishable_key = parts
-            .headers
-            .get("X-Publishable-Key")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::unauthorized("Missing X-Publishable-Key header")
-                    .with_code("MISSING_PUBLISHABLE_KEY")
-            })?;
+    let app = AuthConfig::resolve_and_validate(&*state.db, state.redis_pool, api_key).await?;
 
-        if !publishable_key.starts_with("pk_") {
-            return Err(ApiError::unauthorized("Invalid publishable key format")
-                .with_code("INVALID_PUBLISHABLE_KEY_FORMAT"));
-        }
+    req.extensions_mut().insert(AuthConfigExt(app));
 
-        let app_state: AppState = axum::extract::FromRef::from_ref(state);
-
-        let app = Application::find_by_publishable_key(
-            &*app_state.db,
-            Some(app_state.redis_pool.clone()),
-            publishable_key,
-        )
-        .await
-        .map_err(|e| {
-            tracing::warn!("Publishable key validation failed: {}", e);
-            ApiError::unauthorized("Invalid or inactive publishable key")
-                .with_code("INVALID_PUBLISHABLE_KEY")
-        })?;
-
-        if !app.is_active {
-            return Err(ApiError::unauthorized("Application is deactivated")
-                .with_code("APPLICATION_INACTIVE"));
-        }
-
-        Ok(ValidatedApplication(app))
-    }
-}
-
-/// Extractor with token included (for logout operations)
-pub struct AuthenticatedClientWithToken {
-    pub client: Client,
-    pub token: String,
-}
-
-impl<S> FromRequestParts<S> for AuthenticatedClientWithToken
-where
-    S: Send + Sync,
-    AppState: axum::extract::FromRef<S>,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::unauthorized("Missing Authorization header")
-                    .with_code("MISSING_AUTH_HEADER")
-            })?;
-
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| {
-                ApiError::unauthorized("Invalid Authorization format")
-                    .with_code("INVALID_AUTH_FORMAT")
-            })?
-            .to_string();
-
-        let app_state: AppState = axum::extract::FromRef::from_ref(state);
-
-        let client = Client::verify_session(&*app_state.db, Some(app_state.redis_pool), &token)
-            .await
-            .map_err(|e| {
-                tracing::warn!("Session verification failed: {}", e);
-                ApiError::from(e)
-            })?;
-
-        Ok(AuthenticatedClientWithToken { client, token })
-    }
-}
-
-/// Optional extractor - doesn't fail if no auth header present
-pub struct OptionalAuthenticatedClient(pub Option<Client>);
-
-impl<S> FromRequestParts<S> for OptionalAuthenticatedClient
-where
-    S: Send + Sync,
-    AppState: axum::extract::FromRef<S>,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        // Try to extract Authorization header
-        let auth_header = match parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-        {
-            Some(header) => header,
-            None => return Ok(OptionalAuthenticatedClient(None)),
-        };
-
-        let token = match auth_header.strip_prefix("Bearer ") {
-            Some(t) => t,
-            None => return Ok(OptionalAuthenticatedClient(None)),
-        };
-
-        // Get app state
-        let app_state: AppState = axum::extract::FromRef::from_ref(state);
-
-        // Try to verify session
-        match Client::verify_session(&*app_state.db, Some(app_state.redis_pool), token).await {
-            Ok(client) => Ok(OptionalAuthenticatedClient(Some(client))),
-            Err(e) => {
-                tracing::debug!("Optional auth failed (non-critical): {}", e);
-                Ok(OptionalAuthenticatedClient(None))
-            }
-        }
-    }
-}
-
-// Simple Publishable Key Extractor
-#[derive(Debug, Clone)]
-pub struct XPublishableKey(pub String);
-
-impl<S> FromRequestParts<S> for XPublishableKey
-where
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let publishable_key = parts
-            .headers
-            .get("X-Publishable-Key")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::unauthorized("Missing X-Publishable-Key header")
-                    .with_code("MISSING_PUBLISHABLE_KEY")
-            })?;
-
-        // Basic validation
-        if !publishable_key.starts_with("pk_") {
-            return Err(ApiError::unauthorized("Invalid publishable key format")
-                .with_code("INVALID_PUBLISHABLE_KEY_FORMAT"));
-        }
-
-        Ok(XPublishableKey(publishable_key.to_string()))
-    }
+    Ok(next.run(req).await)
 }
 
 #[derive(Debug, Clone)]
-pub struct AuthenticatedClient(pub Client);
+pub struct SessionDataExt(pub SessionData);
 
-pub async fn require_authenticated_client(
+pub async fn client_auth(
     State(state): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    // Extract session token from Authorization header
-    let auth_header = req
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            ApiError::unauthorized("Missing Authorization header").with_code("MISSING_AUTH_HEADER")
-        })?;
+    let token = extract_bearer_token(req.headers())?;
 
-    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-        ApiError::unauthorized("Invalid Authorization format. Expected: Bearer <token>")
-            .with_code("INVALID_AUTH_FORMAT")
-    })?;
+    let session_data =
+        Client::verify_session_fast(state.redis_pool.clone(), &state.session_key_manager, token)
+            .await
+            .map_err(ApiError::from)?;
 
-    // Verify session
-    let client = Client::verify_session(&*state.db, Some(state.redis_pool.clone()), token)
-        .await
-        .map_err(|e| {
-            tracing::warn!("Session verification failed: {}", e);
-            ApiError::from(e)
-        })?;
-
-    // Inject authenticated client into request extensions
-    req.extensions_mut().insert(AuthenticatedClient(client));
+    req.extensions_mut().insert(SessionDataExt(session_data));
 
     Ok(next.run(req).await)
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientExt(pub Client);
+
+impl FromRequestParts<AppState> for ClientExt {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session_data = parts
+            .extensions
+            .get::<SessionDataExt>()
+            .ok_or(ApiError::unauthorized("Missing session"))?;
+
+        let client =
+            Client::fetch_active_client(&state.db, &state.redis_pool, session_data.0.client_id)
+                .await
+                .map_err(ApiError::from)?;
+
+        Ok(ClientExt(client))
+    }
 }

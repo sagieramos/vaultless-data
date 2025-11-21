@@ -20,13 +20,11 @@ use crate::{
             },
             dto::Application,
         },
-        session::paseto_session::{
-            self, SessionData, SessionKeyManager, verify_session_token,
-        },
+        session::paseto_session::{self, SessionData, SessionKeyManager, verify_session_token},
     },
 };
 
-const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
+const SESSION_DURATION_HOURS: u64 = 24 * 30; // 30 days
 const IDENTIFIER_TTL_SECS: usize = 60; // Short TTL for nonce
 
 impl Client {
@@ -227,7 +225,7 @@ impl Client {
                             ));
                         }
                     }
-                    
+
                     // Update trust state
                     device_trusted = result.device_trusted;
 
@@ -330,10 +328,10 @@ impl Client {
             .map(|ci| crypto::hash_content(ci.as_bytes()));
 
         // --- 7. Generate Client ID & PASETO Session Token ---
-        
+
         // We must generate the UUID here so we can embed it in the token claims
         let client_id = Uuid::new_v4();
-        
+
         // Prepare session data
         let session_data = SessionData {
             client_id,
@@ -342,23 +340,20 @@ impl Client {
             device_trusted,
             app_tier: None,
             publishable_key_plaintext: Some(publishable_key),
-            application_secret_api_key_id: None, 
+            application_secret_api_key_id: None,
             pubkey: Some(pubkey.clone()),
         };
 
         let ttl_seconds = SESSION_DURATION_HOURS * 3600;
-        
+
         // Create token
-        let session_token = paseto_session::create_session_token(
-            key_manager.current(), 
-            session_data, 
-            ttl_seconds
-        )?;
+        let session_token =
+            paseto_session::create_session_token(key_manager.current(), session_data, ttl_seconds)?;
 
         // Extract JTI (Join Token ID) for DB storage (revocation handle)
         let (_, jti) = verify_session_token(&key_manager, &session_token)?;
-        
-        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
+
+        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS as i64);
 
         // --- 8. Insert client into DB ---
         let client = sqlx::query_as::<_, Client>(
@@ -454,7 +449,9 @@ impl Client {
 
         // 4. Rate limiting
         if let Some(redis_pool) = &redis {
-            let rate_limit = app.integrity().get_attestation_rate_limit(attestation_request.platform);
+            let rate_limit = app
+                .integrity()
+                .get_attestation_rate_limit(attestation_request.platform);
 
             check_attestation_rate_limit(
                 redis_pool,
@@ -498,7 +495,9 @@ impl Client {
 
         // 6. Check device trust
         if !attestation_result.device_trusted
-            && app.integrity().should_reject_untrusted_device(attestation_request.platform)
+            && app
+                .integrity()
+                .should_reject_untrusted_device(attestation_request.platform)
         {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Device did not pass integrity checks".to_string(),
@@ -514,7 +513,7 @@ impl Client {
         let updated_metadata = attestation_meta.merge_into_metadata(client.metadata.clone())?;
 
         // 8. Update database
-        // Note: re_attest does not rotate session key (that's authenticate), 
+        // Note: re_attest does not rotate session key (that's authenticate),
         // so last_jti is not touched here.
         sqlx::query(
             r#"

@@ -21,7 +21,7 @@ use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 
-const SESSION_DURATION_HOURS: i64 = 24 * 30; // 30 days
+const SESSION_DURATION_HOURS: u64 = 24 * 30; // 30 days
 
 impl Client {
     /// Authenticate client by hashed identifier with optional re-attestation
@@ -318,7 +318,7 @@ impl Client {
             tracing::debug!(client_id = %client.id, old_jti = %old_jti, "Revoked previous session JTI");
         }
 
-        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS);
+        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS as i64);
 
         // Update client with new JTI and last seen
         sqlx::query(

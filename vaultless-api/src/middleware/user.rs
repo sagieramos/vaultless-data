@@ -1,4 +1,3 @@
-// vaultless-api/src/middleware/token_auth.rs
 use axum::{
     extract::{Request, State},
     http::HeaderMap,
@@ -16,39 +15,6 @@ use crate::{
 
 use crate::config::AuthHeader;
 
-use axum::{
-    extract::{FromRequestParts},
-    http::request::Parts,
-};
-
-use std::sync::Arc;
-
-
-/// Extract Bearer token from Authorization header
-fn extract_bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
-    let auth_header = headers
-        .get("Authorization")
-        .ok_or_else(|| ApiError::unauthorized("Missing Authorization header"))?;
-
-    let auth_str = auth_header
-        .to_str()
-        .map_err(|_| ApiError::unauthorized("Invalid Authorization header"))?;
-
-    // Must be "Bearer <token>"
-    if !auth_str.starts_with(AuthHeader::BEARER) {
-        return Err(ApiError::unauthorized(
-            "Invalid Authorization format. Expected: Bearer <token>",
-        ));
-    }
-
-    let token = auth_str.trim_start_matches(AuthHeader::BEARER).trim();
-
-    if token.is_empty() {
-        return Err(ApiError::unauthorized("Empty bearer token"));
-    }
-
-    Ok(token.to_string())
-}
 
 /// Middleware to require token-based authentication (for user endpoints)
 pub async fn require_user_auth(
@@ -57,7 +23,7 @@ pub async fn require_user_auth(
     next: Next,
 ) -> Result<Response, ApiError> {
     // Extract bearer token
-    let token = extract_bearer_token(request.headers())?;
+    let token = super::helper::extract_bearer_token(request.headers())?;
 
     // Verify token and get session
     let token_service = TokenService::new(state.db, state.redis_pool);

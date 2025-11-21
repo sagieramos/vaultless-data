@@ -10,22 +10,21 @@ use deadpool_redis::Pool as RedisPool;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 
+const PUBLISHABLE_KEY_PREFIX: &str = "pk_";
+const SECRET_KEY_PREFIX: &str = "sk_";
+
 impl AuthConfig {
-    /// Hot-path optimized validation
     pub async fn validate_hot(&self, redis_pool: Arc<RedisPool>) -> Result<()> {
-        // 1. In-memory fast checks
         if !self.app_is_active {
             return Err(VaultlessError::Forbidden(
                 "Associated application is deactivated.".into(),
             ));
         }
-        // 3. QUOTA AND RATE LIMIT CHECKS
         let monthly_key = ApiKey::quota_cache_key(self.sk_id);
         let now = Utc::now();
         let period_key = MetricKey::new(self.sk_id, now, MetricGranularity::Minute)
             .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
 
-        // Fetch monthly quota and period metrics
         let mut conn = redis_pool.get().await?;
 
         let results: Vec<Option<i64>> = redis::pipe()
@@ -41,7 +40,6 @@ impl AuthConfig {
         let messages_received = results.get(2).copied().flatten().unwrap_or(0);
         let total_requests = messages_sent + messages_received;
 
-        // Validate quotas
         let monthly_quota = self.sk_monthly_message_quota.unwrap_or(i32::MAX) as i64;
         if monthly_messages >= monthly_quota {
             return Err(VaultlessError::QuotaExceeded(
@@ -49,7 +47,6 @@ impl AuthConfig {
             ));
         }
 
-        // Validate rate limits
         let rate_limit = self.sk_rate_limit_per_minute.unwrap_or(i32::MAX) as i64;
         if total_requests >= rate_limit {
             let sk_id = self.sk_id;
@@ -69,29 +66,35 @@ impl AuthConfig {
         Ok(())
     }
 
-    /// Resolve and validate an API key on the hot path
     pub async fn resolve_and_validate<'c, E>(
         exec: E,
         redis_pool: Arc<RedisPool>,
-        key_plaintext: &str,
-        granularity: &KeyGranularity,
+        api_key: &str,
     ) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // Step 1: Resolve the key based on granularity
-        let auth_config = match granularity {
+        let key_type = if api_key.starts_with(PUBLISHABLE_KEY_PREFIX) {
+            KeyGranularity::Publishable
+        } else if api_key.starts_with(SECRET_KEY_PREFIX) {
+            KeyGranularity::Secret
+        } else {
+            return Err(VaultlessError::Unauthorized(
+                "API key must start with 'pk_' or 'sk_' prefix.".into(),
+            ));
+        };
+
+        let auth_config = match key_type {
             KeyGranularity::Publishable => {
                 super::Application::fetch_auth_config_by_publishable_key(
                     exec.clone(),
                     Some(redis_pool.clone()),
-                    key_plaintext,
+                    api_key,
                 )
                 .await?
             }
             KeyGranularity::Secret => {
-                // For secret keys, we need to hash the key first
-                let secret_hash = hash_content(key_plaintext.as_bytes());
+                let secret_hash = hash_content(api_key.as_bytes());
                 super::Application::fetch_auth_config_by_secret_hash(
                     exec.clone(),
                     Some(redis_pool.clone()),
@@ -101,18 +104,15 @@ impl AuthConfig {
             }
         };
 
-        // Step 2: Check if the key was found
         let auth_config = auth_config.ok_or_else(|| {
-            VaultlessError::NotFound(match granularity {
+            VaultlessError::NotFound(match key_type {
                 KeyGranularity::Publishable => "Publishable key not found.".into(),
                 KeyGranularity::Secret => "Secret key not found.".into(),
             })
         })?;
 
-        // Step 3: Run hot validation
         auth_config.validate_hot(redis_pool.clone()).await?;
 
-        // Step 4: Return the validated auth config
         Ok(auth_config)
     }
 }

@@ -11,14 +11,15 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use vaultless_core::models::usage::MetricsConfig;
 
 mod config;
+mod extractor;
 mod handlers;
 mod middleware;
 mod routes;
 mod services;
 mod state;
-mod extractor;
 
 use crate::config::Config;
 use crate::middleware::track_metrics;
@@ -67,7 +68,17 @@ async fn main() -> anyhow::Result<()> {
     //----------------------------------------------------
     // 4. Build AppState
     //----------------------------------------------------
-    let app_state = AppState::new(db.clone(), redis_pool.clone(), config.clone())?;
+
+    let metrics_config = MetricsConfig {
+        max_batch_size: config.metrics_max_batch_size.unwrap_or(1000),
+        metric_ttl_secs: config.metrics_ttl_secs.unwrap_or(2592000),
+        flush_interval_secs: config.metrics_flush_interval_secs.unwrap_or(60),
+        redis_operation_timeout_secs: config.metrics_redis_timeout_secs.unwrap_or(5),
+    };
+
+    let session_key_manager = config.security.paseto_client_session_key_manager.clone();
+
+    let app_state = AppState::new(db, redis_pool, metrics_config, session_key_manager)?;
 
     //----------------------------------------------------
     // 5. Routers

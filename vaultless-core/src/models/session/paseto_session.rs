@@ -1,5 +1,6 @@
-// src/auth/session_token.rs
+use super::claims_keys as ck;
 
+use crate::cache_key;
 use crate::error::{Result, VaultlessError};
 use chrono::{DateTime, Duration, Utc};
 use pasetors::claims::{Claims, ClaimsValidationRules};
@@ -112,40 +113,38 @@ pub struct SessionData {
 pub fn create_session_token(
     key: &SymmetricKey<V4>,
     session_data: SessionData,
-    ttl_seconds: i64,
+    ttl_seconds: u64,
 ) -> Result<String> {
     let mut claims = Claims::new()?;
 
     let now = Utc::now();
-    let exp = now + Duration::seconds(ttl_seconds);
+    let exp = now + Duration::seconds(ttl_seconds as i64);
 
     // Standard Claims
     claims.issued_at(&now.to_rfc3339())?;
     claims.expiration(&exp.to_rfc3339())?;
     claims.subject(&session_data.client_id.to_string())?;
-    claims.token_identifier(&Uuid::new_v4().to_string())?; // jti
+    claims.token_identifier(&Uuid::new_v4().to_string())?;
 
     // Custom Claims
-    claims.add_additional("application_id", session_data.application_id.to_string())?;
-    claims.add_additional("platform", session_data.platform)?;
-    claims.add_additional("device_trusted", session_data.device_trusted)?;
+    claims.add_additional(ck::APPLICATION_ID, session_data.application_id.to_string())?;
+    claims.add_additional(ck::PLATFORM, session_data.platform)?;
+    claims.add_additional(ck::DEVICE_TRUSTED, session_data.device_trusted)?;
 
     if let Some(tier) = session_data.app_tier {
-        claims.add_additional("app_tier", tier)?;
+        claims.add_additional(ck::APP_TIER, tier)?;
     }
 
-    // --- NEW FIELDS SERIALIZATION ---
-    // We use shorter keys ("pk", "ask_id", "pbk") to save bytes in the token
     if let Some(pk) = session_data.publishable_key_plaintext {
-        claims.add_additional("pk", pk)?;
+        claims.add_additional(ck::PUBLISHABLE_KEY, pk)?;
     }
 
     if let Some(ask_id) = session_data.application_secret_api_key_id {
-        claims.add_additional("ask_id", ask_id.to_string())?;
+        claims.add_additional(ck::APP_SECRET_KEY_ID, ask_id.to_string())?;
     }
 
     if let Some(pubkey) = session_data.pubkey {
-        claims.add_additional("pbk", pubkey)?;
+        claims.add_additional(ck::PUBKEY, pubkey)?;
     }
     // --------------------------------
 
@@ -164,54 +163,54 @@ pub fn verify_session_token(
 
     // Standard extractions
     let client_id = claims
-        .get_claim("sub")
+        .get_claim(ck::SUBJECT)
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or_else(|| VaultlessError::Unauthorized("Invalid sub".into()))?;
 
     let jti = claims
-        .get_claim("jti")
+        .get_claim(ck::TOKEN_ID)
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
         .ok_or_else(|| VaultlessError::Unauthorized("Missing jti".into()))?;
 
     let application_id = claims
-        .get_claim("application_id")
+        .get_claim(ck::APPLICATION_ID)
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or_else(|| VaultlessError::Unauthorized("Invalid application_id".into()))?;
 
     let platform = claims
-        .get_claim("platform")
+        .get_claim(ck::PLATFORM)
         .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| "unknown".to_string());
 
     let device_trusted = claims
-        .get_claim("device_trusted")
+        .get_claim(ck::DEVICE_TRUSTED)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     let app_tier = claims
-        .get_claim("app_tier")
+        .get_claim(ck::APP_TIER)
         .and_then(|v| v.as_str())
         .map(String::from);
 
     // 1. Publishable Key
     let publishable_key_plaintext = claims
-        .get_claim("pk")
+        .get_claim(ck::PUBLISHABLE_KEY)
         .and_then(|v| v.as_str())
         .map(String::from);
 
     // 2. Application Secret API Key ID (UUID)
     let application_secret_api_key_id = claims
-        .get_claim("ask_id")
+        .get_claim(ck::APP_SECRET_KEY_ID)
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok());
 
     // 3. Public Key (Client's pubkey)
     let pubkey = claims
-        .get_claim("pbk")
+        .get_claim(ck::PUBKEY)
         .and_then(|v| v.as_str())
         .map(String::from);
     // ----------------------------------
@@ -263,9 +262,9 @@ static REVOKE_AND_CHECK_SCRIPT: once_cell::sync::Lazy<Script> = once_cell::sync:
 pub async fn revoke_session(
     redis_pool: &RedisPool,
     jti: &str,
-    remaining_ttl_seconds: i64,
+    remaining_ttl_seconds: u64,
 ) -> Result<()> {
-    let key = format!("{REVOKED_SESSION_PREFIX}:{jti}");
+    let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
     let mut conn = redis_pool
         .get()
         .await
@@ -273,8 +272,8 @@ pub async fn revoke_session(
 
     let was_already_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
         .key(&key)
-        .arg("1") // value = "1" → revoke mode
-        .arg(remaining_ttl_seconds.max(1)) // TTL
+        .arg("1")
+        .arg(remaining_ttl_seconds.max(1))
         .invoke_async(&mut conn)
         .await
         .map_err(|e| VaultlessError::Internal(format!("Lua revoke failed: {e}")))?;
@@ -295,7 +294,7 @@ pub async fn verify_and_check_revocation_atomic(
 ) -> Result<SessionData> {
     let (session_data, jti) = verify_session_token(key_manager, token)?;
 
-    let key = format!("{REVOKED_SESSION_PREFIX}:{jti}");
+    let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
     let mut conn = redis_pool
         .get()
         .await
@@ -303,8 +302,8 @@ pub async fn verify_and_check_revocation_atomic(
 
     let is_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
         .key(&key)
-        .arg("") // empty value → check-only mode
-        .arg(0) // TTL ignored in check mode
+        .arg("")
+        .arg(0)
         .invoke_async(&mut conn)
         .await
         .map_err(|e| VaultlessError::Internal(format!("Lua check failed: {e}")))?;
@@ -319,7 +318,8 @@ pub async fn verify_and_check_revocation_atomic(
 }
 
 pub async fn is_session_revoked(redis_pool: &RedisPool, jti: &str) -> Result<bool> {
-    let key = format!("{REVOKED_SESSION_PREFIX}:{jti}");
+    let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
+
     let mut conn = redis_pool
         .get()
         .await

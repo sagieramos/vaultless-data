@@ -7,5 +7,6 @@ pub mod rate_limit;
 pub mod user;
 pub mod application;
 pub mod global;
+pub mod helper;
 
 pub use metrics::track_metrics;

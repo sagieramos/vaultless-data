@@ -134,7 +134,7 @@ impl VaultlessError {
                 | VaultlessError::NotFound(_)
                 | VaultlessError::Duplicate(_)
                 | VaultlessError::Conflict(_)
-                | VaultlessError::Timeout(_) // Timeout can be a client error in some contexts
+                | VaultlessError::Timeout(_) 
                 | VaultlessError::Serialization(_)
         )
     }
@@ -150,7 +150,7 @@ impl VaultlessError {
             VaultlessError::ApiKeyInactive => 403,
             VaultlessError::QuotaExceeded(_) => 429,
             VaultlessError::RateLimitExceeded(_) => 429,
-            VaultlessError::IntegrityCheckFailed(_) => 403, // ⭐ ADDED HERE (Forbidden) ⭐
+            VaultlessError::IntegrityCheckFailed(_) => 403, 
             VaultlessError::Validation(_)
             | VaultlessError::BadRequest(_)
             | VaultlessError::InvalidInput(_)
@@ -159,7 +159,7 @@ impl VaultlessError {
             VaultlessError::MessageExpired => 410,
             VaultlessError::MessageAccessLimitReached => 410,
             VaultlessError::Timeout(_) => 408,
-            VaultlessError::Serialization(_) => 500, // Typically 400 if it's external JSON, but 500 is fine if it's internal
+            VaultlessError::Serialization(_) => 500,
             _ => 500,
         }
     }
