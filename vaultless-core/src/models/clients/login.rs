@@ -29,8 +29,8 @@ impl Client {
         exec: E,
         redis: Arc<RedisPool>,
         key_manager: Arc<SessionKeyManager>,
-        app: Application,
-        app_resolve: (String, AuthConfig),
+        app_resolved: AuthConfig,
+        publishable_key: String,
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
     ) -> Result<AuthenticateClientResponse>
@@ -139,7 +139,9 @@ impl Client {
             );
 
             // Rate limiting check
-            let rate_limit = app.get_attestation_rate_limit(attestation_request.platform);
+            let rate_limit = app_resolved
+                .integrity()
+                .get_attestation_rate_limit(attestation_request.platform);
 
             if let Err(e) = check_attestation_rate_limit(
                 &redis,
@@ -163,18 +165,19 @@ impl Client {
                 VaultlessError::Internal("Attestation service not configured".into())
             })?;
 
-            let integrity_config = serde_json::to_value(&app.get_integrity_config()?)
-                .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
+            let integrity_config =
+                serde_json::to_value(&app_resolved.integrity().get_integrity_config()?)
+                    .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
             let attestation_result = attestation_svc
-                .verify_attestation(&attestation_request, &integrity_config, app.id)
+                .verify_attestation(&attestation_request, &integrity_config, app_resolved.app_id)
                 .await;
 
             match attestation_result {
                 Ok(result) => {
                     if !result.is_valid {
                         // Track failed attempt
-                        let max_failures = app.get_max_failed_attempts();
+                        let max_failures = app_resolved.integrity().get_max_failed_attempts();
                         let _ = track_failed_attestation(
                             &redis,
                             &attestation_request.device_id,
@@ -200,7 +203,9 @@ impl Client {
 
                     // Check if untrusted devices should be rejected
                     if !result.device_trusted
-                        && app.should_reject_untrusted_device(attestation_request.platform)
+                        && app_resolved
+                            .integrity()
+                            .should_reject_untrusted_device(attestation_request.platform)
                     {
                         tracing::warn!(
                             client_id = %client.id,
@@ -249,7 +254,7 @@ impl Client {
                 }
                 Err(e) => {
                     // Track failed attempt
-                    let max_failures = app.get_max_failed_attempts();
+                    let max_failures = app_resolved.integrity().get_max_failed_attempts();
                     let _ = track_failed_attestation(
                         &redis,
                         &attestation_request.device_id,
@@ -282,8 +287,6 @@ impl Client {
         // --- 8. Generate PASETO Session Token ---
         let ttl_seconds = SESSION_DURATION_HOURS * 3600;
 
-        let (publishable_key, authconfig) = app_resolve;
-
         // Prepare session claims
         let session_data = SessionData {
             client_id: client.id,
@@ -292,7 +295,7 @@ impl Client {
             device_trusted,
             app_tier: None,
             publishable_key_plaintext: Some(publishable_key),
-            application_secret_api_key_id: Some(authconfig.sk_id),
+            application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,
         };
 

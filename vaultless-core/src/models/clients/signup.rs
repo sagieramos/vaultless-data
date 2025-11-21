@@ -342,9 +342,6 @@ impl Client {
             device_trusted,
             app_tier: None,
             publishable_key_plaintext: Some(publishable_key),
-            // We map the app_id/sk_id logic if available in AuthConfig, 
-            // otherwise we leave it None for public registration flows.
-            // Assuming auth_config has sk_id if you added it to DTO, else None.
             application_secret_api_key_id: None, 
             pubkey: Some(pubkey.clone()),
         };
@@ -457,7 +454,7 @@ impl Client {
 
         // 4. Rate limiting
         if let Some(redis_pool) = &redis {
-            let rate_limit = app.get_attestation_rate_limit(attestation_request.platform);
+            let rate_limit = app.integrity().get_attestation_rate_limit(attestation_request.platform);
 
             check_attestation_rate_limit(
                 redis_pool,
@@ -483,7 +480,7 @@ impl Client {
         if !attestation_result.is_valid {
             // Track failed attempt
             if let Some(redis_pool) = &redis {
-                let max_failures = app.get_max_failed_attempts();
+                let max_failures = app.integrity().get_max_failed_attempts();
                 let _ = track_failed_attestation(
                     redis_pool,
                     &attestation_request.device_id,
@@ -501,7 +498,7 @@ impl Client {
 
         // 6. Check device trust
         if !attestation_result.device_trusted
-            && app.should_reject_untrusted_device(attestation_request.platform)
+            && app.integrity().should_reject_untrusted_device(attestation_request.platform)
         {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Device did not pass integrity checks".to_string(),

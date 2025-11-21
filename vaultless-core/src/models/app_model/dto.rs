@@ -1,14 +1,14 @@
+use super::attestation::dto::*;
 use crate::cache_key;
 use crate::types::{KeyType, SubscriptionTier};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::clone::Clone;
-use std::default::Default;
+use std::sync::OnceLock;
 use std::fmt::Debug;
 use uuid::Uuid;
 use validator::Validate;
-use super::attestation::dto::*;
 
 /// Application table model — matches the `public.applications` schema.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -174,7 +174,6 @@ impl From<AuthConfig> for CachedAuthConfig {
         }
     }
 }
-
 
 pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
     cache_key!("res", "sk", key_hash)
