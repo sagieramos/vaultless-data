@@ -52,9 +52,9 @@ impl Application {
         .fetch_one(exec.clone())
         .await?;
 
-        super::helper::trigger_view_refresh_debounced(exec.clone());
-
         if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            
             tokio::spawn(async move {
                 if let Err(e) = Self::invalidate_auth_cache(app_id, exec, redis_pool).await {
                     tracing::error!(

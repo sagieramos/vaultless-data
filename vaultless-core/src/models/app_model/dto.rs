@@ -129,8 +129,6 @@ pub struct AuthConfig {
     pub sk_rate_limit_per_minute: Option<i32>,
 }
 
-// Add to dto.rs
-
 #[derive(Debug, Clone, FromRow)]
 pub struct ApplicationWithKeysFromView {
     pub application_id: Uuid,

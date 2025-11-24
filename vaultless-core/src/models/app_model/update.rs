@@ -6,6 +6,7 @@ use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 use validator::Validate;
 use super::attestation::dto::IntegrityConfig;
+
 impl Application {
     pub async fn update<'c, E>(
         exec: E,

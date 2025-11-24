@@ -1,19 +1,23 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Extension,
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json,
+    http::{self, HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Json},
+    body::Body
 };
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vaultless_core::{
+    PaginatedApplicationsWithKeys,
     models::{Application, ApplicationWithTier, CreateApplication, UpdateApplication},
     types::SubscriptionTier,
 };
 
 use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
+use vaultless_core::get_global_mv_etag;
 use vaultless_core::models::usage::MetricCounters;
 
 // =============================================================================
@@ -97,20 +101,73 @@ pub async fn create_application(
     })))
 }
 
+#[derive(Deserialize)]
+pub struct PaginationParams {
+    page: Option<i64>,
+    page_size: Option<i64>,
+}
+
 /// List user's applications with tier information
 /// GET /api/applications
 pub async fn list_applications(
     State(state): State<AppState>,
     Extension(user): Extension<SessionData>,
-) -> Result<Json<ApplicationListResponse>, ApiError> {
-    let applications = Application::find_by_user_with_tier(&*state.db, user.user_id)
+    Query(params): Query<PaginationParams>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let page_size = params.page_size.unwrap_or(20).clamp(1, 200);
+
+    // Fetch data from materialized view (fast)
+    let paged = Application::list_user_applications(&*state.db, user.user_id, page, page_size)
         .await
         .map_err(ApiError::from)?;
 
-    Ok(Json(ApplicationListResponse {
-        total: applications.len(),
-        applications,
-    }))
+    // 1) Try to read canonical ETag timestamp from Redis
+    let redis_pool = Arc::clone(&state.redis_pool);
+    let maybe_ts = match get_global_mv_etag(&redis_pool).await {
+        Ok(Some(ts)) => Some(ts),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!("Redis unavailable for MV ETag: {}", err);
+            None
+        }
+    };
+
+    // 2) If Redis has an ETag ts, use it. Otherwise derive a fallback ts:
+    //    fallback: use max(updated_at) across the page to be conservative
+    let ts = if let Some(ts) = maybe_ts {
+        ts
+    } else {
+        // fallback: max(updated_at) of items in this page
+        paged
+            .data
+            .iter()
+            .map(|a| a.updated_at.timestamp_millis())
+            .max()
+            .unwrap_or_else(|| Utc::now().timestamp_millis())
+    };
+
+    let etag = format!("W/\"{}\"", ts);
+
+    // Compare with client-provided If-None-Match
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
+        if let Ok(s) = if_none_match.to_str() {
+            if s == etag {
+               return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
+            }
+        }
+    }
+
+    // Return full JSON with ETag + caching headers
+    let mut resp = Json(paged).into_response();
+    resp.headers_mut()
+        .insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60"),
+    );
+    Ok(resp)
 }
 
 /// Get application by ID with tier info
@@ -131,7 +188,6 @@ pub async fn get_application(
 
     Ok(Json(ApplicationResponse { application: app }))
 }
-
 
 /// Update application metadata
 /// PATCH /api/applications/:id

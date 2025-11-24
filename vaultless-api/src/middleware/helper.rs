@@ -28,7 +28,6 @@ pub fn extract_bearer_token<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiEr
 }
 
 pub fn extract_api_key<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
-    // HeaderName is case-insensitive by default in HTTP/2 spec
     static API_KEY_HEADER: HeaderName = HeaderName::from_static("x-api-key");
 
     let api_key_header = headers.get(&API_KEY_HEADER).ok_or_else(|| {

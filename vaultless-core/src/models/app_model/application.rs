@@ -332,9 +332,9 @@ impl Application {
         .execute(exec_keys)
         .await?;
 
-        super::helper::trigger_view_refresh_debounced(exec.clone());
-
         if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+
             tokio::spawn(async move {
                 if let Err(e) = Self::invalidate_auth_cache(id, exec, redis_pool).await {
                     tracing::error!("Background cache invalidation failed for app {}: {}", id, e);
@@ -377,15 +377,11 @@ impl Application {
             )));
         };
 
-        // (Optional) refresh your materialized view
-        super::helper::trigger_view_refresh_debounced(exec.clone());
-
         // 3. Invalidate cache using spawned worker
         if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
             tokio::spawn(async move {
-                if let Err(e) =
-                    Self::invalidate_auth_cache(app_row.id, exec, redis_pool).await
-                {
+                if let Err(e) = Self::invalidate_auth_cache(app_row.id, exec, redis_pool).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
                         app_row.id,

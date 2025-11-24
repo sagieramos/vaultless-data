@@ -21,9 +21,12 @@ pub use models::{
     UserSession,
     VerifyProofRequest,
     app_model::attestation::AttestationService,
-    app_model::dto::{
-        Application, ApplicationWithTier, AuthConfig, CreateApplication, CreateApplicationResponse,
-        UpdateApplication,
+    app_model::{
+        dto::{
+            Application, ApplicationWithTier, AuthConfig, CreateApplication,
+            CreateApplicationResponse, PaginatedApplicationsWithKeys, UpdateApplication,
+        },
+        helper::get_global_mv_etag,
     },
 
     // application::{Application, CreateApplication},
@@ -58,7 +61,6 @@ pub use crypto::{
 };
 
 pub use getrandom;
-
 
 // Version info
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
