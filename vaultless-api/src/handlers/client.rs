@@ -5,7 +5,6 @@ use crate::{
     },
     state::AppState,
 };
-use axum::extract::Extension;
 use axum::{
     Json,
     extract::{Query, State},
@@ -13,10 +12,13 @@ use axum::{
 use chrono::Utc;
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
+use vaultless_core::models::session::extract_token_expiration;
 use vaultless_core::{
     AuthenticateClientRequest, AuthenticateClientResponse, Client, RegisterClientRequest,
     RegisterClientResponse,
 };
+
+use vaultless_core::models::session::paseto_session::{is_session_revoked, verify_session_token};
 
 // =============================================================================
 // Request/Response Types
@@ -50,85 +52,100 @@ pub struct ChallengeResponse {
 // Public Endpoints (No Authentication Required)
 // =============================================================================
 
-/// Register a new anonymous client
+/// Register new client with optional platform attestation
 /// POST /api/clients/register
-#[tracing::instrument(skip(state, input), fields(endpoint = "register_client"))]
 #[axum::debug_handler]
 pub async fn register_client(
     State(state): State<AppState>,
-    XPublishableKey(publishable_key): XPublishableKey,
+    AuthConfigExt(auth_config): AuthConfigExt,
     Json(input): Json<RegisterClientRequest>,
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
-    tracing::info!("Client registration attempt");
-    // Call secure register with Redis (for nonce & caching)
+    tracing::info!(
+        platform = ?input.attestation.as_ref().map(|a| &a.platform),
+        has_attestation = input.attestation.is_some(),
+        "Client registration attempt"
+    );
+
     let response = Client::sign_up(
         state.db.as_ref(),
-        Some(state.redis_pool.clone()),
+        Some(state.redis_pool),
+        state.session_key_manager,
+        state.attestation_service,
         input,
-        publishable_key,
+        auth_config,
     )
     .await
     .map_err(ApiError::from)?;
 
-    tracing::info!("Client registered successfully: {}", response.client_id);
+    tracing::info!(
+        client_id = %response.client_id,
+        "Client registered successfully"
+    );
 
     Ok(Json(response))
 }
 
 /// Authenticate existing client (issue new session or refresh)
-/// POST /api/clients/authenticate
-#[tracing::instrument(skip(state, headers, input), fields(endpoint = "authenticate_client"))]
+/// POST /api/clients/login
+
+/// Login handler - uses fast verification
+#[tracing::instrument(skip(state, headers, input), fields(endpoint = "login_client"))]
 #[axum::debug_handler]
-pub async fn authenticate_client(
+pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
+    AuthConfigExt(auth_config): AuthConfigExt,
     Json(input): Json<AuthenticateClientRequest>,
 ) -> Result<Json<AuthenticateClientResponse>, ApiError> {
-    tracing::info!("Client authentication attempt");
+    tracing::info!(
+        application_id = %auth_config.app_id,
+        "Client authentication attempt"
+    );
 
-    // 1️⃣ Try verifying existing session token
-    if let Some(auth_header) = headers.get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            let auth_str = auth_str.trim();
-            if let Some(token) = auth_str
-                .strip_prefix("Bearer ")
-                .or_else(|| auth_str.strip_prefix("bearer "))
-            {
-                let token = token.trim();
+    // 1 Try verifying existing session token (FAST PATH with caching)
+    if let Ok(token) = crate::middleware::helper::extract_bearer_token(&headers) {
+        if let Ok(session_data) = state.session_verifier.verify_fast(token).await {
+            tracing::info!(
+                client_id = %session_data.client_id,
+                device_trusted = session_data.device_trusted,
+                platform = %session_data.platform,
+                "Valid session found - reusing token"
+            );
 
-                match Client::verify_session(&*state.db, Some(state.redis_pool.clone()), token)
-                    .await
-                {
-                    Ok(verified) => {
-                        tracing::info!("Valid session for client {}", verified.id);
+            // Extract expiration only when needed
+            let expires_at = extract_token_expiration(&state.session_key_manager, token)
+                .unwrap_or_else(|_| Utc::now() + chrono::Duration::days(30));
 
-                        let response = AuthenticateClientResponse {
-                            client_id: verified.id,
-                            session_token: "".to_string(),
-                            expires_at: verified.session_expires_at.unwrap_or_else(|| Utc::now()),
-                            is_new_session: false,
-                        };
-                        return Ok(Json(response));
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "Session invalid: {e}. Falling back to challenge-based auth."
-                        );
-                    }
-                }
-            }
+            let response = AuthenticateClientResponse {
+                client_id: session_data.client_id,
+                session_token: token.to_string(),
+                expires_at,
+                is_new_session: false,
+                was_reattested: false,
+            };
+
+            return Ok(Json(response));
         }
     }
 
-    // 2️⃣ Fallback to challenge-based authentication
-    let response = Client::authenticate(state.db.as_ref(), state.redis_pool.clone(), input)
-        .await
-        .map_err(ApiError::from)?;
+    // 2 Challenge-based authentication
+    tracing::info!("Authenticating with challenge-based flow");
+
+    let response = Client::login(
+        state.db.as_ref(),
+        state.redis_pool.clone(),
+        state.session_key_manager.clone(),
+        auth_config,
+        state.attestation_service.clone(),
+        input,
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     tracing::info!(
-        "Client authenticated: {} (new_session: {})",
-        response.client_id,
-        response.is_new_session
+        client_id = %response.client_id,
+        was_reattested = %response.was_reattested,
+        "Client authenticated successfully"
     );
 
     Ok(Json(response))
@@ -202,26 +219,43 @@ pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Client> {
 
 /// Logout (revoke current session)
 /// POST /api/clients/logout
+/// Logout handler - uses secure verification
+#[tracing::instrument(skip(state, headers), fields(endpoint = "logout_client"))]
 #[axum::debug_handler]
-pub async fn logout_client(
+pub async fn logout(
     State(state): State<AppState>,
-    SessionDataExt(session_data): SessionDataExt,
-) -> Result<Json<SuccessResponse>, ApiError> {
-    Client::revoke_client_session(
-        state.db.as_ref(),
-        Some(&state.redis_pool),
-        &state.session_key_manager,
-        session_data.client_id,
-        None,
-    )
-    .await?;
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = crate::middleware::helper::extract_bearer_token(&headers)?;
 
-    tracing::info!("Client {} logged out", session_data.client_id);
+    // Use SECURE verification for logout (bypasses cache)
+    let session_data = state
+        .session_verifier
+        .verify_secure(token)
+        .await
+        .map_err(ApiError::from)?;
 
-    Ok(Json(SuccessResponse {
-        success: true,
-        message: "Session revoked successfully".to_string(),
-    }))
+    // Extract JTI for revocation
+    let (_, jti) =
+        verify_session_token(&state.session_key_manager, token).map_err(ApiError::from)?;
+
+    // Revoke session (broadcasts to all nodes)
+    state
+        .session_verifier
+        .revoke_session(&jti, 2592000)
+        .await // 30 days TTL
+        .map_err(ApiError::from)?;
+
+    tracing::info!(
+        client_id = %session_data.client_id,
+        jti = %jti,
+        "Client logged out successfully"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Logged out successfully"
+    })))
 }
 
 /// Deactivate client account

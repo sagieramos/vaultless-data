@@ -13,8 +13,7 @@ use crate::{
     crypto,
     error::{Result, VaultlessError},
     models::session::paseto_session::{
-        SessionData, SessionKeyManager, revoke_session, verify_and_check_revocation_atomic,
-        verify_session_token,
+        SessionData, SessionKeyManager, revoke_session, verify_session_token,
     },
 };
 
@@ -62,17 +61,6 @@ impl Client {
         });
 
         Ok(client)
-    }
-
-    pub async fn verify_session_fast(
-        redis: Arc<RedisPool>,
-        key_manager: &SessionKeyManager,
-        session_token: &str,
-    ) -> Result<SessionData> {
-        let session_data =
-            verify_and_check_revocation_atomic(key_manager, &redis, session_token).await?;
-
-        Ok(session_data)
     }
 
     pub async fn revoke_client_session<'c, E>(

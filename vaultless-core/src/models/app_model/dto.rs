@@ -110,17 +110,6 @@ pub enum KeyGranularity {
     Secret,
 }
 
-// --- CORRECTED VALIDATION FUNCTION ---
-
-/// Custom validator for an optional SHA256 string.
-/// Accepts `&Option<String>` and validates only if Some.
-fn validate_sha256_format(h: &str) -> std::result::Result<(), validator::ValidationError> {
-    if h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(validator::ValidationError::new("invalid_sha256"));
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, FromRow, Deserialize)]
 pub struct AuthConfig {
     pub app_id: Uuid,
@@ -138,6 +127,59 @@ pub struct AuthConfig {
     pub sk_monthly_message_quota: Option<i32>,
     pub sk_message_retention_seconds: Option<i32>,
     pub sk_rate_limit_per_minute: Option<i32>,
+}
+
+// Add to dto.rs
+
+#[derive(Debug, Clone, FromRow)]
+pub struct ApplicationWithKeysFromView {
+    pub application_id: Uuid,
+    pub user_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub max_ttl_seconds: i32,
+    pub is_key_rotation_forced: bool,
+    pub deletion_requested_at: Option<DateTime<Utc>>,
+    pub internal_notes: Option<String>,
+    pub integrity_config: serde_json::Value,
+    pub publishable_keys: serde_json::Value,
+    pub publishable_key_count: i64,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct ApplicationKeysInfo {
+    pub secret_key_id: Uuid,
+    pub publishable_keys: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplicationWithKeysResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub max_ttl_seconds: i32,
+    pub is_key_rotation_forced: bool,
+    pub deletion_requested_at: Option<DateTime<Utc>>,
+    pub internal_notes: Option<String>,
+    pub integrity_config: serde_json::Value,
+    pub publishable_keys: serde_json::Value,
+    // Note: secret_key_id is intentionally NOT included
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginatedApplicationsWithKeys {
+    pub data: Vec<ApplicationWithKeysResponse>,
+    pub total_count: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_pages: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

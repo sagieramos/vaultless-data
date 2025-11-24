@@ -4,7 +4,7 @@ use axum::{
 };
 
 use crate::{
-    AppState, handlers::client::*, middleware::client::require_authenticated_client, state,
+    AppState, handlers::client::*, middleware::client::client_auth, state,
 };
 
 pub fn client_routes(state: AppState) -> Router<AppState> {
@@ -20,6 +20,6 @@ pub fn client_routes(state: AppState) -> Router<AppState> {
         .route("/health", get(health_check))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_authenticated_client,
+            client_auth,
         ))
 }

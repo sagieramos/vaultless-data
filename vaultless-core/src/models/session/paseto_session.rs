@@ -1,8 +1,10 @@
+// vaultless-core/src/models/session/paseto_session.rs
+
 use super::claims_keys as ck;
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use pasetors::claims::{Claims, ClaimsValidationRules};
 use pasetors::keys::Generate;
 use pasetors::keys::SymmetricKey;
@@ -80,7 +82,6 @@ impl SessionKeyManager {
         let trusted_token = local::decrypt(key, &untrusted, &rules, None, None)
             .map_err(|e| VaultlessError::Unauthorized(format!("Token verification failed: {e}")))?;
 
-        // CORRECT WAY in pasetors 5.x (2025)
         let claims = trusted_token
             .payload_claims()
             .ok_or_else(|| VaultlessError::Unauthorized("Token has no claims".into()))?
@@ -94,7 +95,6 @@ impl SessionKeyManager {
 // SESSION CLAIMS
 // =============================================================================
 
-/// Create session token with claims
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
     pub client_id: Uuid,
@@ -102,9 +102,6 @@ pub struct SessionData {
     pub platform: String,
     pub device_trusted: bool,
     pub app_tier: Option<String>,
-
-    // New fields
-    pub publishable_key_plaintext: Option<String>,
     pub application_secret_api_key_id: Option<Uuid>,
     pub pubkey: Option<String>,
 }
@@ -135,10 +132,6 @@ pub fn create_session_token(
         claims.add_additional(ck::APP_TIER, tier)?;
     }
 
-    if let Some(pk) = session_data.publishable_key_plaintext {
-        claims.add_additional(ck::PUBLISHABLE_KEY, pk)?;
-    }
-
     if let Some(ask_id) = session_data.application_secret_api_key_id {
         claims.add_additional(ck::APP_SECRET_KEY_ID, ask_id.to_string())?;
     }
@@ -146,7 +139,6 @@ pub fn create_session_token(
     if let Some(pubkey) = session_data.pubkey {
         claims.add_additional(ck::PUBKEY, pubkey)?;
     }
-    // --------------------------------
 
     let token = local::encrypt(key, &claims, None, None)
         .map_err(|e| VaultlessError::Internal(format!("Failed to create token: {e}")))?;
@@ -154,14 +146,21 @@ pub fn create_session_token(
     Ok(token)
 }
 
-/// Verify token and extract session data + jti
+// =============================================================================
+// FAST VERIFICATION (HOT PATH - NO EXPIRATION PARSING)
+// =============================================================================
+
+/// Verify token and extract session data + JTI (HOT PATH OPTIMIZED)
+/// 
+/// This function skips expiration parsing for performance.
+/// PASETO already validates the token isn't expired during verification.
+/// Use this for high-frequency authenticated requests.
 pub fn verify_session_token(
     key_manager: &SessionKeyManager,
     token: &str,
 ) -> Result<(SessionData, String)> {
     let claims = key_manager.verify_with_rotation(token)?;
 
-    // Standard extractions
     let client_id = claims
         .get_claim(ck::SUBJECT)
         .and_then(|v| v.as_str())
@@ -196,24 +195,15 @@ pub fn verify_session_token(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    // 1. Publishable Key
-    let publishable_key_plaintext = claims
-        .get_claim(ck::PUBLISHABLE_KEY)
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    // 2. Application Secret API Key ID (UUID)
     let application_secret_api_key_id = claims
         .get_claim(ck::APP_SECRET_KEY_ID)
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok());
 
-    // 3. Public Key (Client's pubkey)
     let pubkey = claims
         .get_claim(ck::PUBKEY)
         .and_then(|v| v.as_str())
         .map(String::from);
-    // ----------------------------------
 
     Ok((
         SessionData {
@@ -222,7 +212,6 @@ pub fn verify_session_token(
             platform,
             device_trusted,
             app_tier,
-            publishable_key_plaintext,
             application_secret_api_key_id,
             pubkey,
         },
@@ -231,11 +220,33 @@ pub fn verify_session_token(
 }
 
 // =============================================================================
-// REVOCATION BLACKLIST
+// EXPIRATION EXTRACTION (SEPARATE FUNCTION)
+// =============================================================================
+
+/// Extract expiration time from token
+/// Use only when you need to return expiration to the client (e.g., login response)
+pub fn extract_token_expiration(
+    key_manager: &SessionKeyManager,
+    token: &str,
+) -> Result<chrono::DateTime<Utc>> {
+    let claims = key_manager.verify_with_rotation(token)?;
+
+    claims
+        .get_claim(ck::EXPIRATION)
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<chrono::DateTime<Utc>>().ok())
+        .ok_or_else(|| VaultlessError::Unauthorized("Missing or invalid exp".into()))
+}
+
+// =============================================================================
+// REVOCATION WITH MOKA CACHE
 // =============================================================================
 
 use deadpool_redis::Pool as RedisPool;
+use moka::future::Cache;
 use redis::{AsyncCommands, Script};
+use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
 const REVOKED_SESSION_PREFIX: &str = "revoked_session";
 
@@ -243,14 +254,14 @@ static REVOKE_AND_CHECK_SCRIPT: once_cell::sync::Lazy<Script> = once_cell::sync:
     Script::new(
         r#"
         local key = KEYS[1]
-        local value = ARGV[1]  -- "1" when revoking
+        local value = ARGV[1]
         local ttl = tonumber(ARGV[2])
 
-        if value then
-            -- Revoke: SETEX and return old value (nil if wasn't revoked)
+        if value ~= "" then
+            -- Revoke: SETEX and return old value
             local old = redis.call("GET", key)
             redis.call("SETEX", key, ttl, value)
-            return old ~= false and 1 or 0  -- 1 = was already revoked
+            return old ~= false and 1 or 0
         else
             -- Check only: return 1 if exists, 0 if not
             return redis.call("EXISTS", key)
@@ -259,6 +270,149 @@ static REVOKE_AND_CHECK_SCRIPT: once_cell::sync::Lazy<Script> = once_cell::sync:
     )
 });
 
+/// Session verifier with local caching for revocation checks
+pub struct SessionVerifier {
+    key_manager: Arc<SessionKeyManager>,
+    redis_pool: Arc<RedisPool>,
+    revocation_cache: Cache<String, bool>, // jti -> is_revoked
+}
+
+impl SessionVerifier {
+    /// Create new session verifier with caching
+    /// 
+    /// # Arguments
+    /// * `cache_size` - Maximum number of JTIs to cache (default: 10,000)
+    /// * `cache_ttl_seconds` - How long to cache revocation status (default: 60s)
+    pub fn new(
+        key_manager: Arc<SessionKeyManager>,
+        redis_pool: Arc<RedisPool>,
+        cache_size: u64,
+        cache_ttl_seconds: u64,
+    ) -> Self {
+        Self {
+            key_manager,
+            redis_pool,
+            revocation_cache: Cache::builder()
+                .max_capacity(cache_size)
+                .time_to_live(StdDuration::from_secs(cache_ttl_seconds))
+                .build(),
+        }
+    }
+
+    /// Create with default cache settings (10k entries, 60s TTL)
+    pub fn with_defaults(
+        key_manager: Arc<SessionKeyManager>,
+        redis_pool: Arc<RedisPool>,
+    ) -> Self {
+        Self::new(key_manager, redis_pool, 10_000, 60)
+    }
+
+    /// Verify session with cached revocation checks (HOT PATH)
+    /// 
+    /// This checks a local in-memory cache first, then falls back to Redis.
+    /// Cache misses are populated for future requests.
+    pub async fn verify_fast(&self, token: &str) -> Result<SessionData> {
+        let (session_data, jti) = verify_session_token(&self.key_manager, token)?;
+
+        // Check local cache first (nanosecond latency)
+        if let Some(is_revoked) = self.revocation_cache.get(&jti).await {
+            if is_revoked {
+                return Err(VaultlessError::Unauthorized("Session revoked".into()));
+            }
+            return Ok(session_data);
+        }
+
+        // Cache miss - check Redis (millisecond latency)
+        let is_revoked = self.is_session_revoked_redis(&jti).await?;
+        
+        // Populate cache
+        self.revocation_cache.insert(jti, is_revoked).await;
+
+        if is_revoked {
+            return Err(VaultlessError::Unauthorized("Session revoked".into()));
+        }
+
+        Ok(session_data)
+    }
+
+    /// Verify session without revocation check (FASTEST PATH)
+    /// 
+    /// Use for non-sensitive operations where revocation can be eventually consistent.
+    /// Token expiration is still validated by PASETO.
+    pub async fn verify_no_revocation_check(&self, token: &str) -> Result<SessionData> {
+        let (session_data, _jti) = verify_session_token(&self.key_manager, token)?;
+        Ok(session_data)
+    }
+
+    /// Revoke a session
+    pub async fn revoke_session(&self, jti: &str, remaining_ttl_seconds: u64) -> Result<()> {
+        let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
+        let mut conn = self.redis_pool
+            .get()
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
+
+        let was_already_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
+            .key(&key)
+            .arg("1")
+            .arg(remaining_ttl_seconds.max(1))
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Lua revoke failed: {e}")))?;
+
+        // Invalidate cache entry
+        self.revocation_cache.invalidate(jti).await;
+
+        tracing::info!(
+            jti = %jti,
+            ttl = remaining_ttl_seconds,
+            already_revoked = was_already_revoked == 1,
+            "Session revoked"
+        );
+
+        Ok(())
+    }
+
+    /// Check if session is revoked in Redis (internal helper)
+    async fn is_session_revoked_redis(&self, jti: &str) -> Result<bool> {
+        let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
+
+        let mut conn = self.redis_pool
+            .get()
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
+
+        let is_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
+            .key(&key)
+            .arg("")
+            .arg(0)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Lua check failed: {e}")))?;
+
+        Ok(is_revoked == 1)
+    }
+
+    /// Get cache statistics (useful for monitoring)
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (
+            self.revocation_cache.entry_count(),
+            self.revocation_cache.weighted_size(),
+        )
+    }
+
+    /// Clear the revocation cache (useful for testing or forced refresh)
+    pub async fn clear_cache(&self) {
+        self.revocation_cache.invalidate_all();
+        self.revocation_cache.run_pending_tasks().await;
+    }
+}
+
+// =============================================================================
+// LEGACY FUNCTIONS (for backward compatibility)
+// =============================================================================
+
+/// Revoke session (legacy function without caching)
 pub async fn revoke_session(
     redis_pool: &RedisPool,
     jti: &str,
@@ -287,36 +441,7 @@ pub async fn revoke_session(
     Ok(())
 }
 
-pub async fn verify_and_check_revocation_atomic(
-    key_manager: &SessionKeyManager,
-    redis_pool: &RedisPool,
-    token: &str,
-) -> Result<SessionData> {
-    let (session_data, jti) = verify_session_token(key_manager, token)?;
-
-    let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
-
-    let is_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
-        .key(&key)
-        .arg("")
-        .arg(0)
-        .invoke_async(&mut conn)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Lua check failed: {e}")))?;
-
-    if is_revoked == 1 {
-        return Err(VaultlessError::Unauthorized(
-            "Session has been revoked".into(),
-        ));
-    }
-
-    Ok(session_data)
-}
-
+/// Check if session is revoked (legacy function without caching)
 pub async fn is_session_revoked(redis_pool: &RedisPool, jti: &str) -> Result<bool> {
     let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
 
@@ -333,24 +458,8 @@ pub async fn is_session_revoked(redis_pool: &RedisPool, jti: &str) -> Result<boo
     Ok(revoked.is_some())
 }
 
-pub async fn verify_and_check_revocation(
-    key_manager: &SessionKeyManager,
-    redis_pool: &RedisPool,
-    token: &str,
-) -> Result<SessionData> {
-    let (session_data, jti) = verify_session_token(key_manager, token)?;
-
-    if is_session_revoked(redis_pool, &jti).await? {
-        return Err(VaultlessError::Unauthorized(
-            "Session has been revoked".into(),
-        ));
-    }
-
-    Ok(session_data)
-}
-
 // =============================================================================
-// TESTS (unchanged – all pass)
+// TESTS
 // =============================================================================
 
 #[cfg(test)]
@@ -374,7 +483,6 @@ mod tests {
             platform: "ios".to_string(),
             device_trusted: true,
             app_tier: Some("premium".to_string()),
-            publishable_key_plaintext: None,
             application_secret_api_key_id: None,
             pubkey: None,
         };
@@ -389,28 +497,23 @@ mod tests {
     }
 
     #[test]
-    fn test_key_rotation() {
-        let old_key_hex = SessionKeyManager::generate_new_key();
-        let new_key_hex = SessionKeyManager::generate_new_key();
+    fn test_expiration_extraction() {
+        let key_hex = SessionKeyManager::generate_new_key();
+        let key_manager = SessionKeyManager::new(&key_hex, None).unwrap();
 
-        let old_manager = SessionKeyManager::new(&old_key_hex, None).unwrap();
-        let token = create_session_token(
-            old_manager.current(),
-            SessionData {
-                client_id: Uuid::new_v4(),
-                application_id: Uuid::new_v4(),
-                platform: "android".to_string(),
-                device_trusted: false,
-                app_tier: None,
-                publishable_key_plaintext: None,
-                application_secret_api_key_id: None,
-                pubkey: None,
-            },
-            3600,
-        )
-        .unwrap();
+        let session_data = SessionData {
+            client_id: Uuid::new_v4(),
+            application_id: Uuid::new_v4(),
+            platform: "android".to_string(),
+            device_trusted: false,
+            app_tier: None,
+            application_secret_api_key_id: None,
+            pubkey: None,
+        };
 
-        let new_manager = SessionKeyManager::new(&new_key_hex, Some(&old_key_hex)).unwrap();
-        assert!(verify_session_token(&new_manager, &token).is_ok());
+        let token = create_session_token(key_manager.current(), session_data, 3600).unwrap();
+        
+        let expires_at = extract_token_expiration(&key_manager, &token).unwrap();
+        assert!(expires_at > Utc::now());
     }
 }

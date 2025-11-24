@@ -14,7 +14,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use vaultless_core::models::usage::MetricsConfig;
 
 mod config;
-mod extractor;
 mod handlers;
 mod middleware;
 mod routes;
@@ -78,7 +77,13 @@ async fn main() -> anyhow::Result<()> {
 
     let session_key_manager = config.security.paseto_client_session_key_manager.clone();
 
-    let app_state = AppState::new(db, redis_pool, metrics_config, session_key_manager)?;
+    let app_state = AppState::new(
+        db,
+        redis_pool,
+        metrics_config,
+        redis_cfg,
+        session_key_manager,
+    )?;
 
     //----------------------------------------------------
     // 5. Routers

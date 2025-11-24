@@ -124,7 +124,7 @@ impl Application {
         if let Some(pool) = redis {
             tracing::info!(application_id = %update.id, "Attempting cache invalidation after application update.");
             let invalidate_result =
-                Self::invalidate_auth_cache(&updated_app, exec.clone(), pool).await;
+                Self::invalidate_auth_cache(update.id, exec.clone(), pool).await;
 
             if let Err(e) = invalidate_result {
                 tracing::debug!(application_id = %update.id, "Non-critical: Cache invalidation failed: {:?}", e);

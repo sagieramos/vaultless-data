@@ -30,7 +30,6 @@ impl Client {
         redis: Arc<RedisPool>,
         key_manager: Arc<SessionKeyManager>,
         app_resolved: AuthConfig,
-        publishable_key: String,
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
     ) -> Result<AuthenticateClientResponse>
@@ -294,7 +293,6 @@ impl Client {
             platform: platform_string,
             device_trusted,
             app_tier: None,
-            publishable_key_plaintext: Some(publishable_key),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,
         };

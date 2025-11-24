@@ -16,7 +16,7 @@ impl Application {
         config: UpdateIntegrityConfigRequest,
     ) -> Result<Application>
     where
-        E: Executor<'c, Database = Postgres> + Clone,
+        E: Executor<'c, Database = Postgres> + Clone + 'static,
     {
         // 1. Validate the configuration
         config
@@ -52,9 +52,18 @@ impl Application {
         .fetch_one(exec.clone())
         .await?;
 
-        // 5. Invalidate cache
-        if let Some(pool) = redis {
-            let _ = Self::invalidate_auth_cache(&updated_app, exec, pool).await;
+        super::helper::trigger_view_refresh_debounced(exec.clone());
+
+        if let Some(redis_pool) = redis {
+            tokio::spawn(async move {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, exec, redis_pool).await {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_id,
+                        e
+                    );
+                }
+            });
         }
 
         tracing::info!(

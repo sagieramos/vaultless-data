@@ -1,6 +1,6 @@
 use super::helper::*;
-use axum::http::HeaderMap;
 use axum::{extract::FromRequestParts, http::request::Parts};
+use vaultless_core::models::session::{HybridSessionVerifier, SessionKeyManager};
 
 use crate::{middleware::error::ApiError, state::AppState};
 use vaultless_core::{AuthConfig, Client, SessionData};
@@ -14,23 +14,51 @@ use axum::{
 #[derive(Debug, Clone)]
 pub struct AuthConfigExt(pub AuthConfig);
 
+#[derive(Debug, Clone)]
+pub struct ClientExt(pub Client);
+
+#[derive(Debug, Clone)]
+pub struct SessionDataExt(pub SessionData);
+
 pub async fn api_key_auth(
     State(state): State<AppState>,
-    headers: HeaderMap,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let api_key = extract_api_key(&headers)?;
+    let api_key = extract_api_key(req.headers())?;
 
-    let app = AuthConfig::resolve_and_validate(&*state.db, state.redis_pool, api_key).await?;
+    let auth_config = AuthConfig::resolve_and_validate(&*state.db, state.redis_pool, api_key)
+        .await
+        .map_err(ApiError::from)?;
 
-    req.extensions_mut().insert(AuthConfigExt(app));
+    tracing::debug!(
+        app_id = %auth_config.app_id,
+        developer_id = %auth_config.app_user_id,
+        "API key validated successfully"
+    );
+
+    req.extensions_mut().insert(AuthConfigExt(auth_config));
 
     Ok(next.run(req).await)
 }
 
-#[derive(Debug, Clone)]
-pub struct SessionDataExt(pub SessionData);
+impl FromRequestParts<AppState> for AuthConfigExt {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<AuthConfigExt>()
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::unauthorized("Missing API key authentication")
+                    .with_code("MISSING_API_KEY_AUTH")
+            })
+    }
+}
 
 pub async fn client_auth(
     State(state): State<AppState>,
@@ -39,18 +67,20 @@ pub async fn client_auth(
 ) -> Result<Response, ApiError> {
     let token = extract_bearer_token(req.headers())?;
 
-    let session_data =
-        Client::verify_session_fast(state.redis_pool.clone(), &state.session_key_manager, token)
-            .await
-            .map_err(ApiError::from)?;
+    let session_data = HybridSessionVerifier::verify_fast(&state.session_verifier, token)
+        .await
+        .map_err(ApiError::from)?;
+
+    tracing::debug!(
+        client_id = %session_data.client_id,
+        device_trusted = session_data.device_trusted,
+        "Session validated successfully"
+    );
 
     req.extensions_mut().insert(SessionDataExt(session_data));
 
     Ok(next.run(req).await)
 }
-
-#[derive(Debug, Clone)]
-pub struct ClientExt(pub Client);
 
 impl FromRequestParts<AppState> for ClientExt {
     type Rejection = ApiError;

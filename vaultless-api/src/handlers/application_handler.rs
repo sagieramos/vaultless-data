@@ -13,11 +13,8 @@ use vaultless_core::{
     types::SubscriptionTier,
 };
 
-use crate::{
-    middleware::{application::OwnedApplication, error::ApiError},
-    services::token::SessionData,
-    state::AppState,
-};
+use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
+use vaultless_core::models::usage::MetricCounters;
 
 // =============================================================================
 // Request/Response DTOs
@@ -77,7 +74,7 @@ pub async fn create_application(
         description: req.description,
         max_ttl_seconds: None,
         is_key_rotation_forced: Some(false),
-        integrity_config: req.integrity_config, // NEW: Pass integrity config if provided
+        integrity_config: None,
     };
 
     // Create application
@@ -135,39 +132,6 @@ pub async fn get_application(
     Ok(Json(ApplicationResponse { application: app }))
 }
 
-/// Get application health check
-/// GET /api/applications/:id/health
-pub async fn get_application_health(
-    Extension(OwnedApplication(app)): Extension<OwnedApplication>,
-    State(state): State<AppState>,
-) -> Result<Json<ApplicationHealth>, ApiError> {
-    let health = app
-        .health_check(&*state.db, Some(state.redis_pool.clone()))
-        .await
-        .map_err(ApiError::from)?;
-
-    Ok(Json(health))
-}
-
-/// Update application tier
-/// PUT /api/applications/:id/tier
-pub async fn update_application_tier(
-    Extension(OwnedApplication(app)): Extension<OwnedApplication>,
-    State(state): State<AppState>,
-    Json(req): Json<UpdateTierRequest>,
-) -> Result<Json<ApplicationResponse>, ApiError> {
-    Application::update_tier(&*state.db, None, app.id, req.tier)
-        .await
-        .map_err(ApiError::from)?;
-
-    let updated_app = Application::find_by_id_with_tier(&*state.db, app.id)
-        .await
-        .map_err(ApiError::from)?;
-
-    Ok(Json(ApplicationResponse {
-        application: updated_app,
-    }))
-}
 
 /// Update application metadata
 /// PATCH /api/applications/:id

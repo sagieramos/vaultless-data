@@ -20,10 +20,12 @@ pub use models::{
     User,
     UserSession,
     VerifyProofRequest,
+    app_model::attestation::AttestationService,
     app_model::dto::{
         Application, ApplicationWithTier, AuthConfig, CreateApplication, CreateApplicationResponse,
         UpdateApplication,
     },
+
     // application::{Application, CreateApplication},
     billing::*,
     client_token::*,
@@ -57,7 +59,6 @@ pub use crypto::{
 
 pub use getrandom;
 
-pub use utils::{create_redis_conn, create_redis_pool};
 
 // Version info
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

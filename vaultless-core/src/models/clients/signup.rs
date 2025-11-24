@@ -1,5 +1,5 @@
 use super::dto::*;
-use crate::cache_key;
+use crate::{AuthConfig, cache_key};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
@@ -32,13 +32,13 @@ impl Client {
     pub async fn sign_up<'c, E>(
         exec: E,
         redis: Option<Arc<RedisPool>>,
-        key_manager: Arc<SessionKeyManager>, // Added Key Manager
+        key_manager: Arc<SessionKeyManager>,
         attestation_service: Option<Arc<AttestationService>>,
         input: RegisterClientRequest,
-        publishable_key: String,
+        auth_config: AuthConfig,
     ) -> Result<RegisterClientResponse>
     where
-        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+        E: Executor<'c, Database = Postgres> + Clone,
     {
         // --- 1. Validate input ---
         input
@@ -92,14 +92,6 @@ impl Client {
                 }
             }
         }
-
-        // --- 4. Fetch application ---
-        let auth_config =
-            Application::fetch_full_auth_by_publishable_key(exec.clone(), &publishable_key)
-                .await?
-                .ok_or(VaultlessError::NotFound(
-                    "Auth configuration not found".to_string(),
-                ))?;
 
         // ============= 5. PLATFORM ATTESTATION =============
 
@@ -339,7 +331,6 @@ impl Client {
             platform: platform_string,
             device_trusted,
             app_tier: None,
-            publishable_key_plaintext: Some(publishable_key),
             application_secret_api_key_id: None,
             pubkey: Some(pubkey.clone()),
         };

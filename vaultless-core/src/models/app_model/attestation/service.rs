@@ -5,10 +5,10 @@ use super::config::*;
 use super::ios::{generate_ios_challenge, verify_ios_attestation};
 use super::iot::{IoTAttestationRequest, generate_iot_challenge, verify_iot_certificate};
 use super::types::*;
+use crate::cache_key;
 use crate::error::{Result, VaultlessError};
 use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -213,7 +213,7 @@ pub async fn check_attestation_rate_limit(
 ) -> Result<()> {
     use redis::AsyncCommands;
 
-    let key = format!("rate_limit:attestation:{}:{}", platform.as_str(), client_id);
+    let key = cache_key!("rate_limit", "attestation", platform.as_str(), client_id);
 
     let mut conn = redis_pool
         .get()
@@ -253,7 +253,7 @@ pub async fn track_failed_attestation(
 ) -> Result<()> {
     use redis::AsyncCommands;
 
-    let key = format!("failed_attestations:{}", client_id);
+    let key = cache_key!("failed_attestations", client_id);
 
     let mut conn = redis_pool
         .get()

@@ -1,16 +1,14 @@
 use super::dto::*;
+use crate::crypto;
 use crate::error::{Result, VaultlessError};
 use crate::models::{ApiKey, CreateApiKey};
 use crate::types::KeyType;
-use crate::crypto;
 use deadpool_redis::Pool as RedisPool;
-use sqlx::QueryBuilder;
-use sqlx::{Acquire, Executor, Postgres};
+use sqlx::types::chrono::{DateTime, Utc};
+use sqlx::{Acquire, Executor, FromRow, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
-
-const RESOLUTION_CACHE_TTL: u64 = 3600;
 
 // --- CRITICAL CHANGE 1: Update PROJECTION to remove deleted columns ---
 const PROJECTION: &str = "id, user_id, name, 
@@ -147,7 +145,7 @@ impl Application {
         // 5. RETURN RESPONSE
         // ============================================================
         Ok(CreateApplicationResponse {
-            application: app,
+            application: app.into(),
             secret_key: Some(secret_key), // plaintext
             publishable_key_plaintext: publishable_key,
         })
@@ -170,6 +168,89 @@ impl Application {
         .fetch_optional(exec)
         .await?
         .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
+    }
+
+    pub async fn list_user_applications<'c, E>(
+        exec: E,
+        user_id: Uuid,
+        page: i64,
+        page_size: i64,
+    ) -> Result<PaginatedApplicationsWithKeys>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let offset = (page - 1).max(0) * page_size;
+
+        // Query the materialized view directly - much faster!
+        let rows: Vec<ApplicationWithKeysFromView> =
+            sqlx::query_as::<_, ApplicationWithKeysFromView>(
+                r#"
+        SELECT 
+            application_id,
+            user_id,
+            name,
+            description,
+            is_active,
+            created_at,
+            updated_at,
+            max_ttl_seconds,
+            is_key_rotation_forced,
+            deletion_requested_at,
+            integrity_config,
+            publishable_keys,
+            publishable_key_count,
+            COUNT(*) OVER() AS total_count
+        FROM mv_applications_with_keys
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+        "#,
+            )
+            .bind(user_id)
+            .bind(page_size)
+            .bind(offset)
+            .fetch_all(exec)
+            .await
+            .map_err(VaultlessError::Database)?;
+
+        if rows.is_empty() {
+            return Ok(PaginatedApplicationsWithKeys {
+                data: vec![],
+                total_count: 0,
+                page,
+                page_size,
+                total_pages: 0,
+            });
+        }
+
+        let total_count = rows[0].total_count;
+        let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
+
+        let data = rows
+            .into_iter()
+            .map(|r| ApplicationWithKeysResponse {
+                id: r.application_id,
+                name: r.name,
+                description: r.description,
+                is_active: r.is_active,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+                max_ttl_seconds: r.max_ttl_seconds,
+                is_key_rotation_forced: r.is_key_rotation_forced,
+                deletion_requested_at: r.deletion_requested_at,
+                internal_notes: r.internal_notes,
+                integrity_config: r.integrity_config,
+                publishable_keys: r.publishable_keys,
+            })
+            .collect();
+
+        Ok(PaginatedApplicationsWithKeys {
+            data,
+            total_count,
+            page,
+            page_size,
+            total_pages,
+        })
     }
 
     /// Find application by publishable key (for client registration) (UNCHANGED logic)
@@ -202,8 +283,6 @@ impl Application {
         Ok(app)
     }
 
-    // --- CRITICAL CHANGE 3: RESOLUTION AND CACHE RECONSTRUCTION ---
-
     /// Helper to find the secret key ID associated with this application.
     /// This is needed because `secret_key_id` was removed from the Application struct.
     pub async fn find_secret_key_id<'c, E>(exec: E, app_id: Uuid) -> Result<Uuid>
@@ -224,22 +303,26 @@ impl Application {
     }
 
     /// Deactivate application (UNCHANGED logic)
-    pub async fn deactivate<'c, E>(exec: E, redis: Option<Arc<RedisPool>>, id: Uuid) -> Result<()>
+    pub async fn deactivate_deep<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPool>>,
+        id: Uuid,
+    ) -> Result<()>
     where
         E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
     {
-        // Logic remains correct: It finds the app, then deactivates the app and ALL its keys via `application_id`.
-        // ... (function body remains the same) ...
-        // 1. Find the application to get the necessary details for caching
-        let exec_find = exec.clone();
-        let app = Self::find_by_id(exec_find, id).await?;
+        let row = sqlx::query(
+            "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(exec.clone())
+        .await?;
 
-        // 2. Perform critical database updates
-        let exec_app = exec.clone();
-        sqlx::query("UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1")
-            .bind(id)
-            .execute(exec_app)
-            .await?;
+        let Some(_) = row else {
+            return Err(VaultlessError::NotFound(format!(
+                "Application not found: {id}"
+            )));
+        };
 
         let exec_keys = exec.clone();
         sqlx::query(
@@ -249,20 +332,12 @@ impl Application {
         .execute(exec_keys)
         .await?;
 
-        // 3. Cache Invalidation (NON-CRITICAL - use tokio::spawn)
+        super::helper::trigger_view_refresh_debounced(exec.clone());
+
         if let Some(redis_pool) = redis {
-            let app_clone = app.clone();
-            let redis_pool_clone = Arc::clone(&redis_pool);
-            let exec_clone = exec.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    Self::invalidate_auth_cache(&app_clone, exec_clone, redis_pool_clone).await
-                {
-                    tracing::error!(
-                        "Background cache invalidation failed for app {}: {}",
-                        app_clone.id,
-                        e
-                    );
+                if let Err(e) = Self::invalidate_auth_cache(id, exec, redis_pool).await {
+                    tracing::error!("Background cache invalidation failed for app {}: {}", id, e);
                 }
             });
         } else {
@@ -271,6 +346,55 @@ impl Application {
                 id
             );
         }
+        Ok(())
+    }
+
+    pub async fn deactivate_weak<'c, E>(
+        exec: E,
+        redis: Option<Arc<RedisPool>>,
+        id: Uuid,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
+    {
+        // 1. Update + return ID if row exists
+        let row = sqlx::query!(
+            r#"
+        UPDATE applications
+        SET is_active = false, updated_at = NOW()
+        WHERE id = $1
+        RETURNING id
+        "#,
+            id
+        )
+        .fetch_optional(exec.clone())
+        .await?;
+
+        // 2. If not found → return NotFound
+        let Some(app_row) = row else {
+            return Err(VaultlessError::NotFound(format!(
+                "Application not found: {id}"
+            )));
+        };
+
+        // (Optional) refresh your materialized view
+        super::helper::trigger_view_refresh_debounced(exec.clone());
+
+        // 3. Invalidate cache using spawned worker
+        if let Some(redis_pool) = redis {
+            tokio::spawn(async move {
+                if let Err(e) =
+                    Self::invalidate_auth_cache(app_row.id, exec, redis_pool).await
+                {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_row.id,
+                        e
+                    );
+                }
+            });
+        }
+
         Ok(())
     }
 

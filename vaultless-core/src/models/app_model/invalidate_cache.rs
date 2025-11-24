@@ -4,11 +4,12 @@ use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
+use uuid::Uuid;
 
 impl Application {
     /// Invalidate cached auth entries (SK and PK) for this application
     pub async fn invalidate_auth_cache<'c, E>(
-        &self,
+        app_id: Uuid,
         exec: E,
         redis: Arc<RedisPool>,
     ) -> Result<()>
@@ -23,7 +24,7 @@ impl Application {
             WHERE application_id = $1
             "#,
         )
-        .bind(self.id)
+        .bind(app_id)
         .fetch_all(exec)
         .await
         .map_err(VaultlessError::Database)?;
