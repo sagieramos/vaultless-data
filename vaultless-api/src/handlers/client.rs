@@ -212,7 +212,6 @@ pub async fn health_check() -> Json<serde_json::Value> {
 
 /// Get current authenticated client info
 /// GET /api/clients/me
-#[axum::debug_handler]
 pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Client> {
     Json(client)
 }
@@ -260,7 +259,6 @@ pub async fn logout(
 
 /// Deactivate client account
 /// DELETE /api/clients/me
-#[axum::debug_handler]
 pub async fn deactivate_client(
     State(state): State<AppState>,
     SessionDataExt(session_data): SessionDataExt,

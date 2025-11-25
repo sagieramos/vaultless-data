@@ -47,7 +47,6 @@ impl Default for HybridVerifierConfig {
 pub struct HybridSessionVerifier {
     key_manager: Arc<SessionKeyManager>,
     redis_pool: Arc<RedisPool>,
-    redis_url: String,
     local_cache: Cache<String, bool>,
     health: PubSubHealth,
     config: HybridVerifierConfig,
@@ -70,7 +69,6 @@ impl HybridSessionVerifier {
         let verifier = Self {
             key_manager,
             redis_pool: redis_pool.clone(),
-            redis_url: redis_url.clone(),
             local_cache,
             health: health.clone(),
             config: config.clone(),

@@ -26,28 +26,29 @@ impl AppState {
         redis_pool: RedisPool,
         metrics_config: MetricsConfig,
         redis_url: String,
-        session_key_manager: SessionKeyManager,
+        session_key_manager: Arc<SessionKeyManager>,
     ) -> anyhow::Result<Self> {
-        let instant_message = InstantMessage::new(redis_pool, db, metrics_config)?;
-        let attestation_service = AttestationService::new(redis_pool, db)?;
+        let instant_message = InstantMessage::new(redis_pool.clone(), db.clone(), metrics_config)?;
+        let attestation_service =
+            AttestationService::new(Arc::new(redis_pool.clone()), Arc::new(db.clone()));
 
         let session_verifier = Arc::new(HybridSessionVerifier::with_defaults(
             session_key_manager.clone(),
-            redis_pool.clone(),
+            Arc::new(redis_pool.clone()),
             redis_url,
         ));
 
         Ok(Self {
             db: Arc::new(db),
             redis_pool: Arc::new(redis_pool),
-            session_key_manager: Arc::new(session_key_manager),
+            session_key_manager: session_key_manager,
             instant_message: Arc::new(instant_message),
             session_verifier,
-            attestation_service: Arc::new(attestation_service),
+            attestation_service: Some(Arc::new(attestation_service)),
         })
     }
 
     pub fn cache_service(&self) -> CacheService {
-        CacheService::new(self.redis_pool, 3600)
+        CacheService::new(self.redis_pool.clone(), 3600)
     }
 }

@@ -1,7 +1,7 @@
 // vaultless-core/src/models/session/paseto_session.rs
 
 use super::claims_keys as ck;
-
+use std::fmt;
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
 use chrono::{Duration, Utc};
@@ -21,6 +21,15 @@ use uuid::Uuid;
 pub struct SessionKeyManager {
     current_key: SymmetricKey<V4>,
     previous_key: Option<SymmetricKey<V4>>,
+}
+
+impl fmt::Debug for SessionKeyManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionKeyManager")
+            .field("current_key", &"<redacted>") // Hide the key bytes
+            .field("previous_key", &self.previous_key.is_some()) // Bool: true/false if present
+            .finish()
+    }
 }
 
 impl SessionKeyManager {
@@ -151,7 +160,7 @@ pub fn create_session_token(
 // =============================================================================
 
 /// Verify token and extract session data + JTI (HOT PATH OPTIMIZED)
-/// 
+///
 /// This function skips expiration parsing for performance.
 /// PASETO already validates the token isn't expired during verification.
 /// Use this for high-frequency authenticated requests.
@@ -279,7 +288,7 @@ pub struct SessionVerifier {
 
 impl SessionVerifier {
     /// Create new session verifier with caching
-    /// 
+    ///
     /// # Arguments
     /// * `cache_size` - Maximum number of JTIs to cache (default: 10,000)
     /// * `cache_ttl_seconds` - How long to cache revocation status (default: 60s)
@@ -300,15 +309,12 @@ impl SessionVerifier {
     }
 
     /// Create with default cache settings (10k entries, 60s TTL)
-    pub fn with_defaults(
-        key_manager: Arc<SessionKeyManager>,
-        redis_pool: Arc<RedisPool>,
-    ) -> Self {
+    pub fn with_defaults(key_manager: Arc<SessionKeyManager>, redis_pool: Arc<RedisPool>) -> Self {
         Self::new(key_manager, redis_pool, 10_000, 60)
     }
 
     /// Verify session with cached revocation checks (HOT PATH)
-    /// 
+    ///
     /// This checks a local in-memory cache first, then falls back to Redis.
     /// Cache misses are populated for future requests.
     pub async fn verify_fast(&self, token: &str) -> Result<SessionData> {
@@ -324,7 +330,7 @@ impl SessionVerifier {
 
         // Cache miss - check Redis (millisecond latency)
         let is_revoked = self.is_session_revoked_redis(&jti).await?;
-        
+
         // Populate cache
         self.revocation_cache.insert(jti, is_revoked).await;
 
@@ -336,7 +342,7 @@ impl SessionVerifier {
     }
 
     /// Verify session without revocation check (FASTEST PATH)
-    /// 
+    ///
     /// Use for non-sensitive operations where revocation can be eventually consistent.
     /// Token expiration is still validated by PASETO.
     pub async fn verify_no_revocation_check(&self, token: &str) -> Result<SessionData> {
@@ -347,7 +353,8 @@ impl SessionVerifier {
     /// Revoke a session
     pub async fn revoke_session(&self, jti: &str, remaining_ttl_seconds: u64) -> Result<()> {
         let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
-        let mut conn = self.redis_pool
+        let mut conn = self
+            .redis_pool
             .get()
             .await
             .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
@@ -377,7 +384,8 @@ impl SessionVerifier {
     async fn is_session_revoked_redis(&self, jti: &str) -> Result<bool> {
         let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
 
-        let mut conn = self.redis_pool
+        let mut conn = self
+            .redis_pool
             .get()
             .await
             .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
@@ -512,7 +520,7 @@ mod tests {
         };
 
         let token = create_session_token(key_manager.current(), session_data, 3600).unwrap();
-        
+
         let expires_at = extract_token_expiration(&key_manager, &token).unwrap();
         assert!(expires_at > Utc::now());
     }

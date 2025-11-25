@@ -22,13 +22,14 @@ impl Application {
     /// Create a new application with secret and publishable keys
     pub async fn create<'c, E>(
         exec: E,
+        redis: Option<Arc<RedisPool>>,
         input: CreateApplication,
     ) -> Result<CreateApplicationResponse>
     where
-        E: Executor<'c, Database = Postgres> + Clone + Acquire<'c, Database = Postgres>,
+        E: Executor<'c, Database = Postgres> + Clone + Acquire<'c, Database = Postgres> + 'static,
     {
         // Start transaction
-        let mut tx = exec.begin().await?;
+        let mut tx = exec.clone().begin().await?;
 
         // Validate input
         input
@@ -136,6 +137,15 @@ impl Application {
         // Commit
         tx.commit().await?;
 
+        if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh(exec.clone(), redis_pool.clone());
+        } else {
+            tracing::warn!(
+                "Redis pool not provided. Skipping cache invalidation for deactivated app {}.",
+                app.id
+            );
+        }
+
         tracing::info!(
             application_id = %app.id,
             "Application created with new secret + publishable keys"
@@ -168,89 +178,6 @@ impl Application {
         .fetch_optional(exec)
         .await?
         .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
-    }
-
-    pub async fn list_user_applications<'c, E>(
-        exec: E,
-        user_id: Uuid,
-        page: i64,
-        page_size: i64,
-    ) -> Result<PaginatedApplicationsWithKeys>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        let offset = (page - 1).max(0) * page_size;
-
-        // Query the materialized view directly - much faster!
-        let rows: Vec<ApplicationWithKeysFromView> =
-            sqlx::query_as::<_, ApplicationWithKeysFromView>(
-                r#"
-        SELECT 
-            application_id,
-            user_id,
-            name,
-            description,
-            is_active,
-            created_at,
-            updated_at,
-            max_ttl_seconds,
-            is_key_rotation_forced,
-            deletion_requested_at,
-            integrity_config,
-            publishable_keys,
-            publishable_key_count,
-            COUNT(*) OVER() AS total_count
-        FROM mv_applications_with_keys
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2 OFFSET $3
-        "#,
-            )
-            .bind(user_id)
-            .bind(page_size)
-            .bind(offset)
-            .fetch_all(exec)
-            .await
-            .map_err(VaultlessError::Database)?;
-
-        if rows.is_empty() {
-            return Ok(PaginatedApplicationsWithKeys {
-                data: vec![],
-                total_count: 0,
-                page,
-                page_size,
-                total_pages: 0,
-            });
-        }
-
-        let total_count = rows[0].total_count;
-        let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
-
-        let data = rows
-            .into_iter()
-            .map(|r| ApplicationWithKeysResponse {
-                id: r.application_id,
-                name: r.name,
-                description: r.description,
-                is_active: r.is_active,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-                max_ttl_seconds: r.max_ttl_seconds,
-                is_key_rotation_forced: r.is_key_rotation_forced,
-                deletion_requested_at: r.deletion_requested_at,
-                internal_notes: r.internal_notes,
-                integrity_config: r.integrity_config,
-                publishable_keys: r.publishable_keys,
-            })
-            .collect();
-
-        Ok(PaginatedApplicationsWithKeys {
-            data,
-            total_count,
-            page,
-            page_size,
-            total_pages,
-        })
     }
 
     /// Find application by publishable key (for client registration) (UNCHANGED logic)

@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::clone::Clone;
-use std::sync::OnceLock;
 use std::fmt::Debug;
+use std::sync::OnceLock;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -169,6 +169,66 @@ pub struct ApplicationWithKeysResponse {
     pub integrity_config: serde_json::Value,
     pub publishable_keys: serde_json::Value,
     // Note: secret_key_id is intentionally NOT included
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct ApplicationWithUsageResponse {
+    pub application_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub max_ttl_seconds: i32,
+    pub is_key_rotation_forced: bool,
+    pub deletion_requested_at: Option<DateTime<Utc>>,
+    pub integrity_config: serde_json::Value,
+
+    // Key info
+    pub tier: Option<String>,
+    pub monthly_message_quota: Option<i32>,
+    pub rate_limit_per_minute: Option<i32>,
+    pub message_retention_seconds: Option<i32>,
+    pub publishable_keys: serde_json::Value,
+
+    // Webhooks
+    pub webhooks: serde_json::Value,
+
+    // Current month usage
+    pub current_month_messages_sent: i64,
+    pub current_month_messages_received: i64,
+    pub current_month_proofs_verified: i64,
+    pub current_month_bytes_stored: i64,
+    pub current_month_bytes_sent: i64,     
+    pub current_month_bytes_received: i64,
+    pub current_month_rate_limit_hits: i64,
+    pub current_month_cost_cents: i64,
+    pub quota_usage_percentage: f64,
+
+    // Lifetime usage
+    pub lifetime_messages_sent: i64,
+    pub lifetime_messages_received: i64,
+    pub lifetime_proofs_verified: i64,
+    pub lifetime_bytes_stored: i64,
+    pub lifetime_bytes_sent: i64,     
+    pub lifetime_bytes_received: i64, 
+    pub lifetime_rate_limit_hits: i64,
+    pub lifetime_cost_cents: i64,
+
+    // Last 7 days (for trends)
+    pub last_7d_messages_sent: i64,
+    pub last_7d_messages_received: i64,
+    pub last_7d_proofs_verified: i64,
+    pub last_7d_bytes_sent: i64,    
+    pub last_7d_bytes_received: i64, 
+    pub last_7d_cost_cents: i64,
+
+    // Last 30 days
+    pub last_30d_messages_sent: i64,
+    pub last_30d_messages_received: i64,
+    pub last_30d_bytes_sent: i64,     
+    pub last_30d_bytes_received: i64, 
+    pub last_30d_cost_cents: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

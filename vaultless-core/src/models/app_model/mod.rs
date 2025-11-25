@@ -8,6 +8,7 @@ pub mod integrity_config_handler;
 pub mod invalidate_cache;
 pub mod resolve;
 pub mod update;
+pub mod material_view;
 
 pub use dto::{
     Application, ApplicationWithTier, AuthConfig, CreateApplication, CreateApplicationResponse,

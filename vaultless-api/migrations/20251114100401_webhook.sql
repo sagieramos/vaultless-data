@@ -1,88 +1,71 @@
--- Add migration script here
+-- =================================================================================================
+-- MIGRATION: Webhooks Table + Updated Timestamp Trigger
+-- Description:
+--   - Create generic updated_at trigger function
+--   - Create "webhooks" table
+--   - Add indexes
+--   - Add BEFORE UPDATE triggers for updated_at tracking
+-- =================================================================================================
 
--- 1. Define the Generic Utility Function (MUST be defined first)
+----------------------------------------------------------------------------------------------------
+-- 1. Generic Utility Function (must exist before triggers)
 ----------------------------------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.update_updated_at()
-    RETURNS TRIGGER AS
-$$
+RETURNS TRIGGER AS $$
 BEGIN
-    -- Ensure the 'updated_at' column is set to the current time
     NEW.updated_at = NOW();
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-
--- 2. Create the Webhooks Table
 ----------------------------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.webhooks
-(
-    -- Primary Key
-    id uuid NOT NULL DEFAULT uuid_generate_v4(),
-    
-    -- Foreign Key to the parent application
-    application_id uuid NOT NULL,
+-- 2. Webhooks Table
+----------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.webhooks (
+    id              uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
 
-    -- The destination URL where the webhook payload will be sent
-    url text COLLATE pg_catalog."default" NOT NULL,
+    application_id  uuid NOT NULL,
 
-    -- The type of event that triggers this webhook (e.g., KEY_EXPIRED, QUOTA_EXCEEDED)
-    event_type character varying(100) COLLATE pg_catalog."default" NOT NULL,
+    url             text NOT NULL,
+    event_type      varchar(100) NOT NULL,
+    signing_secret  varchar(255) NOT NULL,
 
-    -- A secret used to sign the webhook payload for verification by the recipient
-    signing_secret character varying(255) COLLATE pg_catalog."default" NOT NULL,
+    is_active       boolean NOT NULL DEFAULT TRUE,
 
-    -- Whether this specific webhook subscription is active or paused
-    is_active boolean NOT NULL DEFAULT true,
+    created_at      timestamptz NOT NULL DEFAULT NOW(),
+    updated_at      timestamptz NOT NULL DEFAULT NOW(),
 
-    -- Tracking information
-    created_at timestamp with time zone NOT NULL DEFAULT now(),
-    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    CONSTRAINT webhooks_app_url_type_unique
+        UNIQUE (application_id, url, event_type),
 
-    -- Constraints
-    CONSTRAINT webhooks_pkey PRIMARY KEY (id),
-    
-    -- Enforce that the URL for a specific event type is unique per application
-    CONSTRAINT webhooks_app_url_type_unique UNIQUE (application_id, url, event_type),
-
-    -- Foreign Key Constraint to the applications table
-    CONSTRAINT webhooks_application_id_fkey FOREIGN KEY (application_id)
-        REFERENCES public.applications (id) MATCH SIMPLE
-        ON UPDATE NO ACTION
+    CONSTRAINT webhooks_application_id_fkey
+        FOREIGN KEY (application_id)
+        REFERENCES public.applications(id)
         ON DELETE CASCADE
-)
+);
 
-TABLESPACE pg_default;
+ALTER TABLE public.webhooks OWNER TO vaultless;
 
-ALTER TABLE public.webhooks
-    OWNER to vaultless;
-
-
--- 3. Add Indexes
 ----------------------------------------------------------------------------------------------------
--- Index: public.idx_webhooks_application_id
+-- 3. Indexes
+----------------------------------------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_webhooks_application_id
-    ON public.webhooks USING btree
-    (application_id ASC NULLS LAST)
-    TABLESPACE pg_default;
+    ON public.webhooks (application_id);
 
-
--- 4. Define/Redefine Triggers to use the generic function
 ----------------------------------------------------------------------------------------------------
--- Trigger for the 'applications' table
+-- 4. BEFORE UPDATE triggers for updated_at
+----------------------------------------------------------------------------------------------------
+
+-- Applications table
 DROP TRIGGER IF EXISTS trigger_applications_updated_at ON public.applications;
-CREATE OR REPLACE TRIGGER trigger_applications_updated_at
-    BEFORE UPDATE 
-    ON public.applications
+CREATE TRIGGER trigger_applications_updated_at
+    BEFORE UPDATE ON public.applications
     FOR EACH ROW
     EXECUTE FUNCTION public.update_updated_at();
 
--- Trigger for the new 'webhooks' table
--- NOTE: The original script had a temporary function name here that was removed.
+-- Webhooks table
 DROP TRIGGER IF EXISTS trigger_webhooks_updated_at ON public.webhooks;
-CREATE OR REPLACE TRIGGER trigger_webhooks_updated_at
-    BEFORE UPDATE 
-    ON public.webhooks
+CREATE TRIGGER trigger_webhooks_updated_at
+    BEFORE UPDATE ON public.webhooks
     FOR EACH ROW
-    -- CORRECT CALL: Use the generic function
     EXECUTE FUNCTION public.update_updated_at();

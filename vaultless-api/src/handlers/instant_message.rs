@@ -1,7 +1,10 @@
-// vaultless-api/src/handlers/instant_message.rs
-use crate::AppState;
-use crate::middleware::client::AuthenticatedClient;
-use crate::middleware::error::ApiError;
+use crate::{
+    middleware::{
+        client::{AuthConfigExt, ClientExt, SessionDataExt},
+        error::ApiError,
+    },
+    state::AppState,
+};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -84,15 +87,14 @@ pub struct HealthStatusResponse {
 
 /// Send an instant message (P2P)
 /// POST /api/messages/send#
-#[axum::debug_handler]
 pub async fn send_message(
     State(state): State<AppState>,
-    Extension(sender): Extension<AuthenticatedClient>,
+    SessionDataExt(sender): SessionDataExt,
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Compute content size server-side ---
     let content_size_bytes = input.ciphertext.as_bytes().len() as i32;
-    
+
     // Validate input
     input
         .validate()
@@ -115,7 +117,7 @@ pub async fn send_message(
     })?;
 
     tracing::info!(
-        sender = %sender.0.id,
+        sender = %sender.client_id,
         recipient = %recipient.id,
         size = content_size_bytes,
         "Sending instant message"
@@ -125,7 +127,7 @@ pub async fn send_message(
     let message_id = state
         .instant_message
         .send_instant_message(
-            sender.0.id,
+            sender.client_id,
             recipient.id,
             input.ciphertext.clone(),
             input.nonce,
@@ -138,7 +140,7 @@ pub async fn send_message(
         .await
         .map_err(|e| {
             tracing::error!(
-                sender = %sender.0.id,
+                sender = %sender.client_id,
                 error = %e,
                 "Failed to send message"
             );
@@ -154,22 +156,21 @@ pub async fn send_message(
 
 /// Fetch messages for current user (inbox)
 /// GET /api/messages/inbox
-#[axum::debug_handler]
 pub async fn fetch_inbox(
     State(state): State<AppState>,
-    Extension(client): Extension<AuthenticatedClient>,
+    SessionDataExt(client_info): SessionDataExt,
     Query(_query): Query<FetchMessagesQuery>,
 ) -> Result<Json<FetchMessagesResponse>, ApiError> {
-    tracing::debug!(recipient = %client.0.id, "Fetching inbox");
+    tracing::debug!(recipient = %client_info.client_id, "Fetching inbox");
 
     // Fetch messages from InstantMessage service
     let messages = state
         .instant_message
-        .fetch_messages_for_recipient(client.0.id)
+        .fetch_messages_for_recipient(client_info.client_id)
         .await
         .map_err(|e| {
             tracing::error!(
-                recipient = %client.0.id,
+                recipient = %client_info.client_id,
                 error = %e,
                 "Failed to fetch messages"
             );
@@ -179,7 +180,7 @@ pub async fn fetch_inbox(
     let count = messages.len();
 
     tracing::info!(
-        recipient = %client.0.id,
+        recipient = %client_info.client_id,
         count,
         "Fetched messages successfully"
     );
@@ -193,25 +194,24 @@ pub async fn fetch_inbox(
 
 /// Mark a message as read
 /// POST /api/messages/{message_id}/read
-#[axum::debug_handler]
 pub async fn mark_message_read(
     State(state): State<AppState>,
-    Extension(client): Extension<AuthenticatedClient>,
+    SessionDataExt(client_info): SessionDataExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<MarkReadResponse>, ApiError> {
     tracing::debug!(
-        reader = %client.0.id,
+        reader = %client_info.client_id,
         message_id = %message_id,
         "Marking message as read"
     );
 
     state
         .instant_message
-        .mark_read_instant_message(client.0.id, message_id)
+        .mark_read_instant_message(client_info.client_id, message_id)
         .await
         .map_err(|e| {
             tracing::error!(
-                reader = %client.0.id,
+                reader = %client_info.client_id,
                 message_id = %message_id,
                 error = %e,
                 "Failed to mark message as read"
@@ -220,7 +220,7 @@ pub async fn mark_message_read(
         })?;
 
     tracing::info!(
-        reader = %client.0.id,
+        reader = %client_info.client_id,
         message_id = %message_id,
         "Message marked as read"
     );
@@ -233,14 +233,13 @@ pub async fn mark_message_read(
 
 /// Get read receipts for a message
 /// GET /api/messages/{message_id}/receipts
-#[axum::debug_handler]
 pub async fn get_read_receipts(
     State(state): State<AppState>,
-    Extension(client): Extension<AuthenticatedClient>,
+      SessionDataExt(client_info): SessionDataExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<ReadReceiptsResponse>, ApiError> {
     tracing::debug!(
-        requester = %client.0.id,
+        requester = %client_info.client_id,
         message_id = %message_id,
         "Fetching read receipts"
     );

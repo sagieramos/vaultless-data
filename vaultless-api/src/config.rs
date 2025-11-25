@@ -1,7 +1,11 @@
 // vaultless-api/src/config.rs
-use serde::Deserialize;
 use std::env;
+use std::fmt;
+use std::sync::Arc;
 use vaultless_core::SessionKeyManager;
+// Note: We only need Deserialize for nested configs if you plan to use something like 'config' crate later.
+// For manual env loading, we don't strictly need it, but I'll leave it on leaf structs just in case.
+use serde::Deserialize;
 
 pub struct AuthHeader;
 
@@ -10,7 +14,7 @@ impl AuthHeader {
     pub const BEARER: &'static str = "Bearer ";
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -36,7 +40,7 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone)]
 pub struct SecurityConfig {
     pub api_key_salt: String,
     pub admin_api_key: String,
@@ -45,8 +49,37 @@ pub struct SecurityConfig {
     pub paseto_client_session_previous_key: Option<String>,
 
     /// Not deserialized — injected after config load
-    #[serde(skip)]
-    pub paseto_client_session_key_manager: SessionKeyManager,
+    pub paseto_client_session_key_manager: Arc<SessionKeyManager>,
+}
+
+impl fmt::Debug for SecurityConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecurityConfig")
+            .field(
+                "api_key_salt",
+                &format!("<redacted: {} chars>", self.api_key_salt.len()),
+            )
+            .field("admin_api_key", &"<redacted>")
+            .field(
+                "paseto_client_session_current_key",
+                &format!(
+                    "<redacted: {} chars>",
+                    self.paseto_client_session_current_key.len()
+                ),
+            )
+            .field(
+                "paseto_client_session_previous_key",
+                &self
+                    .paseto_client_session_previous_key
+                    .as_ref()
+                    .map(|k| format!("<redacted: {} chars>", k.len())),
+            )
+            .field(
+                "paseto_client_session_key_manager",
+                &self.paseto_client_session_key_manager,
+            )
+            .finish()
+    }
 }
 
 /// Dragonfly/Redis cache configuration
@@ -71,6 +104,9 @@ impl Config {
 
         let previous_key_hex = env::var("PASETO_CLIENT_SESSION_PREVIOUS_KEY").ok();
 
+        // Create the manager first to catch errors early
+        let key_manager = SessionKeyManager::new(&current_key_hex, previous_key_hex.as_deref())?;
+
         let config = Config {
             server: ServerConfig {
                 host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
@@ -91,10 +127,8 @@ impl Config {
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
                 paseto_client_session_current_key: current_key_hex.clone(),
                 paseto_client_session_previous_key: previous_key_hex.clone(),
-                paseto_client_session_key_manager: SessionKeyManager::new(
-                    &current_key_hex,
-                    previous_key_hex.as_deref(),
-                )?,
+                // 3. Wrap in Arc here
+                paseto_client_session_key_manager: Arc::new(key_manager),
             },
             cache: CacheConfig {
                 url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
@@ -144,6 +178,9 @@ mod tests {
 
     #[test]
     fn test_bind_address() {
+        // 4. Update the test to wrap in Arc
+        let key_manager = SessionKeyManager::new("aabbccddeeff00112233445566778899", None).unwrap();
+
         let config = Config {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
@@ -159,10 +196,7 @@ mod tests {
                 admin_api_key: "test-admin".to_string(),
                 paseto_client_session_current_key: "aabbccddeeff00112233445566778899".to_string(),
                 paseto_client_session_previous_key: None,
-                paseto_client_session_key_manager: SessionKeyManager::new(
-                    "aabbccddeeff00112233445566778899",
-                    None,
-                ).unwrap(),
+                paseto_client_session_key_manager: Arc::new(key_manager), // Corrected here
             },
             cache: CacheConfig {
                 url: "redis://127.0.0.1:6379".to_string(),

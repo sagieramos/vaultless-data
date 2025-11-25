@@ -216,9 +216,9 @@ impl ApiKey {
                     rate_limit_per_minute,
                     expires_at,
                     is_active,
-                    application_id, -- New
-                    key_type,       -- New
-                    publishable_key_plaintext -- New
+                    application_id, 
+                    key_type,       
+                    publishable_key_plaintext 
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12, $13)
                 RETURNING {}

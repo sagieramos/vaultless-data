@@ -474,25 +474,26 @@ SELECT add_retention_policy('usage_metrics', INTERVAL '90 days');
 -- ============================================================================
 -- CONTINUOUS AGGREGATE: daily summary (fast daily rollups)
 -- ============================================================================
+-- ============================================================================
 
--- Create continuous aggregate (materialized view) for daily totals
-CREATE MATERIALIZED VIEW IF NOT EXISTS usage_metrics_daily
+-- Recreate with ALL fields
+CREATE MATERIALIZED VIEW usage_metrics_daily
 WITH (timescaledb.continuous) AS
 SELECT
     api_key_id,
     time_bucket(INTERVAL '1 day', period_start) AS day,
-    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
-    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
-    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
-    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
-    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(messages_sent), 0)::BIGINT AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT AS total_bytes_stored,
+    COALESCE(SUM(total_bytes_sent), 0)::BIGINT AS total_bytes_sent,
+    COALESCE(SUM(total_bytes_received), 0)::BIGINT AS total_bytes_received,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT AS total_rate_limit_hits,
     COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
 FROM usage_metrics
 GROUP BY api_key_id, time_bucket(INTERVAL '1 day', period_start)
 WITH NO DATA;
 
-
--- Schedule automatic refresh policy (keeps data up-to-date; adjust offsets as desired)
 SELECT add_continuous_aggregate_policy(
     'usage_metrics_daily',
     start_offset => INTERVAL '2 day',
@@ -500,23 +501,22 @@ SELECT add_continuous_aggregate_policy(
     schedule_interval => INTERVAL '1 hour'
 );
 
--- 🚀 Composite index for high-performance time-series lookups per API key
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_daily_api_key_day ON usage_metrics_daily (api_key_id, day DESC);
+CREATE INDEX idx_usage_metrics_daily_api_key_day 
+    ON usage_metrics_daily (api_key_id, day DESC);
 
--- ============================================================================
--- CONTINUOUS AGGREGATE: weekly summary (long-term rollups)
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS usage_metrics_weekly
+-- Same for weekly
+CREATE MATERIALIZED VIEW usage_metrics_weekly
 WITH (timescaledb.continuous) AS
 SELECT
     api_key_id,
     time_bucket(INTERVAL '7 days', period_start) AS week_start,
-    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
-    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
-    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
-    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
-    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(messages_sent), 0)::BIGINT AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT AS total_bytes_stored,
+    COALESCE(SUM(total_bytes_sent), 0)::BIGINT AS total_bytes_sent,
+    COALESCE(SUM(total_bytes_received), 0)::BIGINT AS total_bytes_received,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT AS total_rate_limit_hits,
     COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
 FROM usage_metrics
 GROUP BY api_key_id, time_bucket(INTERVAL '7 days', period_start)
@@ -529,8 +529,8 @@ SELECT add_continuous_aggregate_policy(
     schedule_interval => INTERVAL '1 day'
 );
 
--- Useful indexes on the weekly aggregate
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_weekly_api_key_week_start ON usage_metrics_weekly (api_key_id, week_start DESC);
+CREATE INDEX idx_usage_metrics_weekly_api_key_week_start 
+    ON usage_metrics_weekly (api_key_id, week_start DESC);
 
 -- ============================================================================
 -- HELPER FUNCTIONS
@@ -584,31 +584,6 @@ $$ LANGUAGE plpgsql;
 
 -- Note: This trigger would be activated by a "message_accesses" event table if needed
 
--- ============================================================================
--- SEED DATA (Development Only)
--- ============================================================================
-
--- Create a development API key (hash of "dev_test_key_12345")
-/* INSERT INTO api_keys (
-    key_hash,
-    key_prefix,
-    tier,
-    monthly_message_quota,
-    message_retention_seconds,
-    owner_email,
-    owner_name,
-    rate_limit_per_minute,
-) VALUES (
-    'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', -- SHA-256 of "dev_test_key_12345"
-    'vlt_dev_',
-    'pro',
-    500000,
-    7776000, -- 90 days
-    'dev@vaultless.local',
-    'Development User',
-    1000,
-    'Development API key - DO NOT USE IN PRODUCTION'
-) ON CONFLICT (key_hash) DO NOTHING; */
 
 -- ============================================================================
 -- COMMENTS FOR DOCUMENTATION

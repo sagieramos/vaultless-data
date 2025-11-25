@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         redis_pool,
         metrics_config,
-        redis_cfg,
+        config.cache.url,
         session_key_manager,
     )?;
 
