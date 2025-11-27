@@ -61,6 +61,7 @@ pub use crypto::{
 };
 
 pub use getrandom;
+pub use bigdecimal::BigDecimal as Decimal;
 
 // Version info
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

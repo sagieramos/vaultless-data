@@ -17,9 +17,9 @@ RETURNS TABLE (
     sk_id uuid,
     sk_key_prefix character varying,
     sk_tier subscription_tier,
-    sk_monthly_message_quota integer,
-    sk_message_retention_seconds integer,
-    sk_rate_limit_per_minute integer
+    sk_monthly_message_quota BIGINT,
+    sk_message_retention_seconds BIGINT,
+    sk_rate_limit_per_minute BIGINT
 )
 LANGUAGE sql
 AS $$
@@ -64,8 +64,8 @@ RETURNS TABLE (
     sk_id uuid,
     sk_key_prefix character varying,
     sk_tier subscription_tier,
-    sk_monthly_message_quota integer,
-    sk_message_retention_seconds integer,
+    sk_monthly_message_quota BIGINT,
+    sk_message_retention_seconds BIGINT,
     sk_rate_limit_per_minute integer
 )
 LANGUAGE sql

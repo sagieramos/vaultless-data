@@ -1,14 +1,19 @@
 // user handlers: registration, login, logout, token refresh, email verification, password reset
 use axum::{
-    Extension, Json, extract::{ConnectInfo, State}, http::StatusCode
+    Extension, Json,
+    extract::{ConnectInfo, State},
+    http::StatusCode,
 };
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::json;
 use std::net::SocketAddr;
+use uuid::Uuid;
 use validator::Validate;
 use vaultless_core::models::user::User;
 
 use crate::{
-    middleware::error::ApiError,
+    middleware::{error::ApiError, user::UserExt},
     services::token::{SessionData, TokenService},
     state::AppState,
 };
@@ -18,6 +23,39 @@ use std::collections::HashMap;
 use vaultless_core::VaultlessError;
 
 use super::dto::*;
+
+#[derive(Serialize)]
+pub struct UserResponse {
+    pub id: Uuid,
+    pub email: String,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub email_verified: bool,
+    pub is_active: bool,
+    pub is_admin: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub metadata: Option<serde_json::Value>,
+}
+
+impl From<User> for UserResponse {
+    fn from(user: User) -> Self {
+        UserResponse {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            avatar_url: user.avatar_url,
+            email_verified: user.email_verified,
+            is_active: user.is_active,
+            is_admin: user.is_admin,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+            last_login_at: user.last_login_at,
+            metadata: user.metadata,
+        }
+    }
+}
 
 // ============================================================================
 // REGISTRATION
@@ -74,7 +112,6 @@ pub async fn login(
 
     let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
-    // ✅ Fast rate limit check from Dragonfly
     if token_service
         .is_rate_limited(&ip_str)
         .await
@@ -85,17 +122,14 @@ pub async fn login(
         ));
     }
 
-    // ✅ Perform transactional login
     let user_result = User::login_with_transaction(&state.db, &req.email, &req.password, ip).await;
 
-    // ✅ Handle errors and rate-limit failures
     let user = match user_result {
         Ok(u) => {
             let _ = token_service.clear_login_failures(&ip_str).await;
             u
         }
         Err(VaultlessError::EmailNotVerified(token)) => {
-            // Resend verification email
             let verification_url = token
                 .as_ref()
                 .map(|t| format!("http://localhost:8080/auth/verify-email?token={}", t))
@@ -117,9 +151,8 @@ pub async fn login(
             return Err(ApiError::from(e));
         }
     };
-    // ✅ Create access + refresh token pair (Dragonfly)
     let token_pair = token_service
-        .create_token_pair(user.id, user.email.clone(), None, user.is_admin)
+        .create_token_pair(user.id, None, user.is_admin)
         .await
         .map_err(|e| {
             tracing::error!(
@@ -345,20 +378,9 @@ pub async fn reset_password(
 // ============================================================================
 
 pub async fn get_current_user(
-    State(state): State<AppState>,
-   Extension(session): Extension<SessionData>,
-) -> Result<Json<CurrentUserResponse>, ApiError> {
-    let user_id = session.user_id;
-    let user = User::find_by_id(&state.db, user_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    Ok(Json(CurrentUserResponse {
-        user: UserInfo {
-            email: user.email,
-            name: user.name,
-            email_verified: user.email_verified,
-            is_admin: user.is_admin,
-        },
-    }))
+    State(_state): State<AppState>,
+    UserExt(user): UserExt,
+) -> Result<Json<UserResponse>, ApiError> {
+    
+    Ok(Json(UserResponse::from(user)))
 }

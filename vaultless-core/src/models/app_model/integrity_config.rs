@@ -9,21 +9,16 @@ use uuid::Uuid;
 use validator::Validate;
 
 impl Application {
-    pub async fn update_integrity_config<'c, E>(
-        exec: E,
+    pub async fn update_integrity_config(
+        db: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
         app_id: Uuid,
         config: UpdateIntegrityConfigRequest,
-    ) -> Result<Application>
-    where
-        E: Executor<'c, Database = Postgres> + Clone + 'static,
-    {
-        // 1. Validate the configuration
+    ) -> Result<Application> {
         config
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid integrity config: {}", e)))?;
 
-        // 2. Convert to IntegrityConfig struct
         let integrity_config = IntegrityConfig {
             allow_unauthenticated: config.allow_unauthenticated,
             browser: config.browser,
@@ -33,30 +28,30 @@ impl Application {
             rate_limits: config.rate_limits,
         };
 
-        // 3. Serialize to JSON
         let config_json = serde_json::to_value(&integrity_config)
             .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
-        // 4. Update in database
         let updated_app = sqlx::query_as::<_, Application>(
             r#"
-            UPDATE applications
-            SET integrity_config = $1,
-                updated_at = NOW()
-            WHERE id = $2
-            RETURNING *
-            "#,
+        UPDATE applications
+        SET integrity_config = $1,
+            updated_at = NOW()
+        WHERE id = $2
+        RETURNING *
+        "#,
         )
         .bind(&config_json)
         .bind(app_id)
-        .fetch_one(exec.clone())
+        .fetch_one(&*db)
         .await?;
 
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
-            
+            super::helper::trigger_view_refresh_debounced(db.clone(), redis_pool.clone());
+
+            let db_clone = db.clone();
+            let redis_clone = redis_pool.clone();
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_id, exec, redis_pool).await {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &*db_clone, redis_clone).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
                         app_id,

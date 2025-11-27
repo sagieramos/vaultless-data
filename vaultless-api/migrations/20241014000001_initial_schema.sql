@@ -296,8 +296,8 @@ CREATE TABLE api_keys (
     
     -- Subscription & Billing
     tier subscription_tier NOT NULL DEFAULT 'free',
-    monthly_message_quota INTEGER NOT NULL DEFAULT 1000,
-    message_retention_seconds INTEGER NOT NULL DEFAULT 604800, -- 7 days
+    monthly_message_quota BIGINT NOT NULL DEFAULT 1000,
+    message_retention_seconds BIGINT NOT NULL DEFAULT 604800, -- 7 days
     
     -- Metadata
     description TEXT,                                   -- User-friendly description
@@ -339,7 +339,7 @@ CREATE TABLE messages (
     
     -- Message Metadata (encrypted or public)
     content_type VARCHAR(100) DEFAULT 'application/octet-stream',
-    content_size_bytes INTEGER NOT NULL,
+    content_size_bytes BIGINT NOT NULL,
     
     -- Authentication
     api_key_id UUID NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
@@ -348,14 +348,14 @@ CREATE TABLE messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL,
     accessed_at TIMESTAMPTZ, -- NULL = never accessed
-    access_count INTEGER NOT NULL DEFAULT 0,
+    access_count BIGINT NOT NULL DEFAULT 0,
     
     -- Delivery tracking
     is_delivered BOOLEAN NOT NULL DEFAULT false,
     delivered_at TIMESTAMPTZ,
     
     -- Optional features
-    max_access_count INTEGER, -- NULL = unlimited
+    max_access_count BIGINT, -- NULL = unlimited
     require_proof_verification BOOLEAN NOT NULL DEFAULT false,
     
     -- Indexes
@@ -425,7 +425,7 @@ CREATE TABLE usage_metrics (
     rate_limit_hits INTEGER NOT NULL DEFAULT 0,
     
     -- Cost tracking (for billing)
-    estimated_cost_cents INTEGER,
+    estimated_cost_cents BIGINT,
     
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     

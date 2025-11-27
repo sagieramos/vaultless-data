@@ -1,16 +1,39 @@
 -- ============================================================================
--- MATERIALIZED VIEW: APPLICATIONS WITH KEYS AND USAGE
+-- Migration: Complete Applications with Keys, Webhooks, and Usage
 -- ============================================================================
--- Combines application metadata, keys, and leverages existing TimescaleDB 
--- continuous aggregates (usage_metrics_daily, usage_metrics_weekly)
--- 
--- Refresh this view ONLY after application/key changes, NOT after usage changes
--- (TimescaleDB continuous aggregates handle usage auto-refresh)
+-- SQLx migration file: migrations/{timestamp}_applications_with_usage_view.sql
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS public.mv_applications_with_usage AS
+-- ============================================================================
+-- 1. UNIQUE CONSTRAINT: One secret key per application
+-- ============================================================================
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_one_secret_per_app
+    ON public.api_keys (application_id)
+    WHERE key_type = 'secret' AND is_active = true;
+
+COMMENT ON INDEX idx_api_keys_one_secret_per_app IS 
+    'Ensures exactly one active secret key exists per application at database level';
+
+-- ============================================================================
+-- 2. Remove old publishable key limit trigger (if exists)
+-- ============================================================================
+DROP TRIGGER IF EXISTS trigger_check_max_publishable_keys ON public.api_keys;
+
+COMMENT ON TABLE public.api_keys IS 
+    'API keys table: One secret key per application (enforced by partial unique index), unlimited publishable keys for rotation';
+
+-- ============================================================================
+-- 3. Drop old views if they exist
+-- ============================================================================
+DROP MATERIALIZED VIEW IF EXISTS mv_applications_with_keys CASCADE;
+DROP MATERIALIZED VIEW IF EXISTS mv_applications_with_usage CASCADE;
+
+-- ============================================================================
+-- 4. Create complete materialized view with LATERAL joins
+-- ============================================================================
+CREATE MATERIALIZED VIEW public.mv_applications_with_usage AS
 SELECT 
     -- ========================================================================
-    -- APPLICATION METADATA (single row per application)
+    -- APPLICATION METADATA
     -- ========================================================================
     a.id AS application_id,
     a.user_id,
@@ -22,10 +45,11 @@ SELECT
     a.max_ttl_seconds,
     a.is_key_rotation_forced,
     a.deletion_requested_at,
+    a.internal_notes,
     a.integrity_config,
     
     -- ========================================================================
-    -- SECRET KEY (1:1 relationship - no aggregation needed)
+    -- SECRET KEY INFO
     -- ========================================================================
     sk.id AS secret_key_id,
     sk.tier,
@@ -34,19 +58,19 @@ SELECT
     sk.message_retention_seconds,
     
     -- ========================================================================
-    -- PUBLISHABLE KEYS (1:many - use LATERAL to avoid GROUP BY)
+    -- PUBLISHABLE KEYS (using LATERAL for efficiency)
     -- ========================================================================
     COALESCE(pk_data.count, 0) AS publishable_key_count,
     COALESCE(pk_data.keys_json, '[]'::jsonb) AS publishable_keys,
     
     -- ========================================================================
-    -- WEBHOOKS (1:many - use LATERAL to avoid GROUP BY)
+    -- WEBHOOKS (using LATERAL for efficiency)
     -- ========================================================================
     COALESCE(webhook_data.count, 0) AS webhook_count,
     COALESCE(webhook_data.webhooks_json, '[]'::jsonb) AS webhooks,
     
     -- ========================================================================
-    -- USAGE METRICS (already in LATERAL - no change needed)
+    -- CURRENT MONTH USAGE
     -- ========================================================================
     COALESCE(current_month.total_messages_sent, 0) AS current_month_messages_sent,
     COALESCE(current_month.total_messages_received, 0) AS current_month_messages_received,
@@ -57,13 +81,16 @@ SELECT
     COALESCE(current_month.total_rate_limit_hits, 0) AS current_month_rate_limit_hits,
     COALESCE(current_month.total_estimated_cost_cents, 0) AS current_month_cost_cents,
     
+    -- Quota percentage
     CASE 
         WHEN sk.monthly_message_quota > 0 THEN 
             (COALESCE(current_month.total_messages_sent, 0)::float / sk.monthly_message_quota * 100)::numeric(5,2)
         ELSE 0
     END AS quota_usage_percentage,
     
-    -- Lifetime usage
+    -- ========================================================================
+    -- LIFETIME USAGE
+    -- ========================================================================
     COALESCE(lifetime.total_messages_sent, 0) AS lifetime_messages_sent,
     COALESCE(lifetime.total_messages_received, 0) AS lifetime_messages_received,
     COALESCE(lifetime.total_proofs_verified, 0) AS lifetime_proofs_verified,
@@ -73,7 +100,9 @@ SELECT
     COALESCE(lifetime.total_rate_limit_hits, 0) AS lifetime_rate_limit_hits,
     COALESCE(lifetime.total_estimated_cost_cents, 0) AS lifetime_cost_cents,
     
-    -- Trends
+    -- ========================================================================
+    -- TREND USAGE (7d, 30d)
+    -- ========================================================================
     COALESCE(last_7d.total_messages_sent, 0) AS last_7d_messages_sent,
     COALESCE(last_7d.total_bytes_sent, 0) AS last_7d_bytes_sent,
     COALESCE(last_7d.total_bytes_received, 0) AS last_7d_bytes_received,
@@ -107,7 +136,8 @@ LEFT JOIN LATERAL (
                 'description', pk.description,
                 'is_active', pk.is_active,
                 'created_at', pk.created_at,
-                'expires_at', pk.expires_at
+                'expires_at', pk.expires_at,
+                'last_used_at', pk.last_used_at
             ) ORDER BY pk.created_at DESC
         ) AS keys_json
     FROM public.api_keys pk
@@ -117,7 +147,7 @@ LEFT JOIN LATERAL (
 ) pk_data ON true
 
 -- ============================================================================
--- LATERAL: Webhooks (NEW - avoids GROUP BY explosion)
+-- LATERAL: Webhooks
 -- ============================================================================
 LEFT JOIN LATERAL (
     SELECT 
@@ -138,7 +168,7 @@ LEFT JOIN LATERAL (
 ) webhook_data ON true
 
 -- ============================================================================
--- LATERAL: Usage Aggregates
+-- LATERAL: Current Month Usage
 -- ============================================================================
 LEFT JOIN LATERAL (
     SELECT 
@@ -155,6 +185,9 @@ LEFT JOIN LATERAL (
       AND day >= date_trunc('month', NOW())
 ) current_month ON true
 
+-- ============================================================================
+-- LATERAL: Lifetime Usage
+-- ============================================================================
 LEFT JOIN LATERAL (
     SELECT 
         SUM(total_messages_sent) AS total_messages_sent,
@@ -169,6 +202,9 @@ LEFT JOIN LATERAL (
     WHERE api_key_id = sk.id
 ) lifetime ON true
 
+-- ============================================================================
+-- LATERAL: Last 7 Days
+-- ============================================================================
 LEFT JOIN LATERAL (
     SELECT 
         SUM(total_messages_sent) AS total_messages_sent,
@@ -180,6 +216,9 @@ LEFT JOIN LATERAL (
       AND day >= NOW() - INTERVAL '7 days'
 ) last_7d ON true
 
+-- ============================================================================
+-- LATERAL: Last 30 Days
+-- ============================================================================
 LEFT JOIN LATERAL (
     SELECT 
         SUM(total_messages_sent) AS total_messages_sent,
@@ -191,39 +230,32 @@ LEFT JOIN LATERAL (
       AND day >= NOW() - INTERVAL '30 days'
 ) last_30d ON true;
 
--- ============================================================================
--- INDEXES for mv_applications_with_usage
--- ============================================================================
+-- No GROUP BY needed with LATERAL! 🎉
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_app_usage_app_id 
+-- ============================================================================
+-- 5. Create indexes for the materialized view
+-- ============================================================================
+CREATE UNIQUE INDEX idx_mv_app_usage_app_id 
     ON public.mv_applications_with_usage (application_id);
 
-CREATE INDEX IF NOT EXISTS idx_mv_app_usage_user_id 
+CREATE INDEX idx_mv_app_usage_user_id 
     ON public.mv_applications_with_usage (user_id);
 
-CREATE INDEX IF NOT EXISTS idx_mv_app_usage_is_active 
+CREATE INDEX idx_mv_app_usage_is_active 
     ON public.mv_applications_with_usage (is_active)
     WHERE is_active = true;
 
--- Index for quota warning queries (apps approaching limits)
-CREATE INDEX IF NOT EXISTS idx_mv_app_usage_quota_warning
+CREATE INDEX idx_mv_app_usage_quota_warning
     ON public.mv_applications_with_usage (user_id, quota_usage_percentage DESC)
     WHERE quota_usage_percentage >= 80;
 
--- Index for cost tracking queries
-CREATE INDEX IF NOT EXISTS idx_mv_app_usage_lifetime_cost
+CREATE INDEX idx_mv_app_usage_lifetime_cost
     ON public.mv_applications_with_usage (user_id, lifetime_cost_cents DESC);
 
-COMMENT ON MATERIALIZED VIEW public.mv_applications_with_usage IS 
-    'Combined view of applications with keys and usage metrics. Leverages existing TimescaleDB continuous aggregates (usage_metrics_daily). Refresh ONLY after app/key changes, NOT usage changes.';
-
-
 -- ============================================================================
--- FUNCTION: Get Single Application with Real-time Usage
+-- 6. Create helper function for single application lookup
 -- ============================================================================
--- Use this when you need absolutely current usage data (e.g., immediately after message send)
-
-CREATE OR REPLACE FUNCTION public.get_application_with_realtime_usage(p_application_id UUID)
+CREATE OR REPLACE FUNCTION public.get_application_with_keys(p_application_id UUID)
 RETURNS TABLE (
     application_id UUID,
     user_id UUID,
@@ -235,23 +267,11 @@ RETURNS TABLE (
     max_ttl_seconds INTEGER,
     is_key_rotation_forced BOOLEAN,
     deletion_requested_at TIMESTAMPTZ,
+    internal_notes TEXT,
     integrity_config JSONB,
-    
     secret_key_id UUID,
-    tier TEXT,
-    monthly_message_quota INTEGER,
-    rate_limit_per_minute INTEGER,
-    message_retention_seconds INTEGER,
-    
     publishable_keys JSONB,
-    
-    -- Real-time current month usage (from raw usage_metrics table)
-    current_month_messages_sent BIGINT,
-    current_month_messages_received BIGINT,
-    current_month_proofs_verified BIGINT,
-    current_month_bytes_stored BIGINT,
-    current_month_cost_cents BIGINT,
-    quota_usage_percentage NUMERIC(5,2)
+    webhooks JSONB
 )
 LANGUAGE plpgsql
 STABLE
@@ -270,14 +290,9 @@ BEGIN
         a.max_ttl_seconds,
         a.is_key_rotation_forced,
         a.deletion_requested_at,
+        a.internal_notes,
         a.integrity_config,
-        
         sk.id AS secret_key_id,
-        sk.tier::TEXT,
-        sk.monthly_message_quota,
-        sk.rate_limit_per_minute,
-        sk.message_retention_seconds,
-        
         COALESCE(
             (
                 SELECT jsonb_agg(
@@ -288,7 +303,8 @@ BEGIN
                         'description', pk.description,
                         'is_active', pk.is_active,
                         'created_at', pk.created_at,
-                        'expires_at', pk.expires_at
+                        'expires_at', pk.expires_at,
+                        'last_used_at', pk.last_used_at
                     )
                     ORDER BY pk.created_at DESC
                 )
@@ -299,53 +315,38 @@ BEGIN
             ),
             '[]'::jsonb
         ) AS publishable_keys,
-        
-        -- Real-time current month usage from RAW usage_metrics table (not aggregated)
-        COALESCE(um.messages_sent, 0) AS current_month_messages_sent,
-        COALESCE(um.messages_received, 0) AS current_month_messages_received,
-        COALESCE(um.proofs_verified, 0) AS current_month_proofs_verified,
-        COALESCE(um.bytes_stored, 0) AS current_month_bytes_stored,
-        COALESCE(um.estimated_cost_cents, 0) AS current_month_cost_cents,
-        
-        CASE 
-            WHEN sk.monthly_message_quota > 0 THEN 
-                (COALESCE(um.messages_sent, 0)::float / sk.monthly_message_quota * 100)::numeric(5,2)
-            ELSE 0
-        END AS quota_usage_percentage
-        
+        COALESCE(
+            (
+                SELECT jsonb_agg(
+                    jsonb_build_object(
+                        'id', w.id,
+                        'url', w.url,
+                        'event_type', w.event_type,
+                        'is_active', w.is_active,
+                        'created_at', w.created_at,
+                        'updated_at', w.updated_at
+                    )
+                    ORDER BY w.created_at DESC
+                )
+                FROM public.webhooks w
+                WHERE w.application_id = p_application_id
+                  AND w.is_active = true
+            ),
+            '[]'::jsonb
+        ) AS webhooks
     FROM public.applications a
-    
     LEFT JOIN public.api_keys sk ON (
         sk.application_id = a.id 
         AND sk.key_type = 'secret' 
         AND sk.is_active = true
     )
-    
-    -- Real-time aggregation from RAW usage_metrics table (bypasses continuous aggregates)
-    LEFT JOIN LATERAL (
-        SELECT 
-            SUM(messages_sent) AS messages_sent,
-            SUM(messages_received) AS messages_received,
-            SUM(proofs_verified) AS proofs_verified,
-            SUM(total_bytes_stored) AS bytes_stored,
-            SUM(estimated_cost_cents) AS estimated_cost_cents
-        FROM usage_metrics
-        WHERE api_key_id = sk.id
-          AND period_start >= date_trunc('month', NOW())
-    ) um ON true
-    
     WHERE a.id = p_application_id;
 END;
 $$;
 
-COMMENT ON FUNCTION public.get_application_with_realtime_usage(UUID) IS 
-    'Returns application with real-time current month usage from raw usage_metrics table. Use ONLY when you need sub-minute freshness (e.g., right after message send). For dashboards, prefer mv_applications_with_usage.';
-
-
 -- ============================================================================
--- FUNCTION: Refresh Applications Usage View
+-- 7. Create refresh helper function
 -- ============================================================================
-
 CREATE OR REPLACE FUNCTION public.refresh_applications_usage_view()
 RETURNS void
 LANGUAGE plpgsql
@@ -356,15 +357,9 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.refresh_applications_usage_view() IS 
-    'Refreshes mv_applications_with_usage. Call this ONLY after application/key changes (create, update, delete). DO NOT call after usage metric changes - TimescaleDB continuous aggregates handle that automatically.';
-
-
 -- ============================================================================
--- HELPER FUNCTION: Get Quota Warnings
+-- 8. Create helper functions for quota warnings and user summaries
 -- ============================================================================
--- Returns applications approaching their quota limits
-
 CREATE OR REPLACE FUNCTION public.get_quota_warnings(
     p_user_id UUID,
     p_threshold_percentage NUMERIC DEFAULT 80
@@ -374,8 +369,8 @@ RETURNS TABLE (
     application_name VARCHAR(255),
     quota_usage_percentage NUMERIC(5,2),
     current_month_messages_sent BIGINT,
-    monthly_message_quota INTEGER,
-    remaining_quota INTEGER
+    monthly_message_quota BIGINT,
+    remaining_quota BIGINT
 )
 LANGUAGE plpgsql
 STABLE
@@ -389,7 +384,7 @@ BEGIN
         mv.quota_usage_percentage,
         mv.current_month_messages_sent,
         mv.monthly_message_quota,
-        (mv.monthly_message_quota - mv.current_month_messages_sent)::INTEGER AS remaining_quota
+        (mv.monthly_message_quota - mv.current_month_messages_sent)::BIGINT AS remaining_quota
     FROM mv_applications_with_usage mv
     WHERE mv.user_id = p_user_id
       AND mv.is_active = true
@@ -397,15 +392,6 @@ BEGIN
     ORDER BY mv.quota_usage_percentage DESC;
 END;
 $$;
-
-COMMENT ON FUNCTION public.get_quota_warnings(UUID, NUMERIC) IS 
-    'Returns applications for a user that are approaching or exceeding their quota limits. Default threshold is 80%.';
-
-
--- ============================================================================
--- HELPER FUNCTION: Get Usage Summary for User
--- ============================================================================
--- Returns aggregated usage across all user's applications
 
 CREATE OR REPLACE FUNCTION public.get_user_usage_summary(p_user_id UUID)
 RETURNS TABLE (
@@ -440,16 +426,79 @@ BEGIN
 END;
 $$;
 
+-- ============================================================================
+-- 9. Add validation trigger for secret keys
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.validate_secret_key_constraints()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.key_type = 'secret' AND NEW.application_id IS NULL THEN
+        RAISE EXCEPTION 'Secret keys must be associated with an application';
+    END IF;
+    
+    IF NEW.key_type = 'secret' THEN
+        IF NEW.monthly_message_quota IS NULL OR NEW.monthly_message_quota <= 0 THEN
+            RAISE EXCEPTION 'Secret keys must have a valid monthly_message_quota';
+        END IF;
+        
+        IF NEW.message_retention_seconds IS NULL OR NEW.message_retention_seconds <= 0 THEN
+            RAISE EXCEPTION 'Secret keys must have a valid message_retention_seconds';
+        END IF;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trigger_validate_secret_key_constraints ON public.api_keys;
+
+CREATE TRIGGER trigger_validate_secret_key_constraints
+    BEFORE INSERT OR UPDATE ON public.api_keys
+    FOR EACH ROW
+    WHEN (NEW.key_type = 'secret')
+    EXECUTE FUNCTION public.validate_secret_key_constraints();
+
+-- ============================================================================
+-- 10. Create optimized indexes
+-- ============================================================================
+CREATE INDEX IF NOT EXISTS idx_api_keys_secret_lookup
+    ON public.api_keys (application_id, key_type)
+    WHERE key_type = 'secret' AND is_active = true;
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_publishable_lookup
+    ON public.api_keys (application_id, created_at DESC)
+    WHERE key_type = 'publishable' AND is_active = true;
+
+-- ============================================================================
+-- 11. Comments
+-- ============================================================================
+COMMENT ON MATERIALIZED VIEW public.mv_applications_with_usage IS 
+    'Complete materialized view with applications, keys, webhooks, and usage metrics. Refresh after app/key/webhook changes only (NOT usage changes - TimescaleDB handles those).';
+
+COMMENT ON FUNCTION public.get_application_with_keys(UUID) IS 
+    'Retrieves single application with keys and webhooks. Use for real-time lookups.';
+
+COMMENT ON FUNCTION public.refresh_applications_usage_view() IS 
+    'Refreshes mv_applications_with_usage. Call ONLY after app/key/webhook changes.';
+
+COMMENT ON FUNCTION public.get_quota_warnings(UUID, NUMERIC) IS 
+    'Returns applications approaching quota limits. Default threshold is 80%.';
+
 COMMENT ON FUNCTION public.get_user_usage_summary(UUID) IS 
-    'Returns aggregated usage summary across all of a user''s applications. Useful for account-level dashboards.';
-
+    'Returns aggregated usage summary across all user applications.';
 
 -- ============================================================================
--- GRANT PERMISSIONS
+-- 12. Grant permissions
 -- ============================================================================
-
-GRANT SELECT ON mv_applications_with_usage TO vaultless;
-GRANT EXECUTE ON FUNCTION public.get_application_with_realtime_usage(UUID) TO vaultless;
+GRANT SELECT ON public.mv_applications_with_usage TO vaultless;
+GRANT EXECUTE ON FUNCTION public.get_application_with_keys(UUID) TO vaultless;
 GRANT EXECUTE ON FUNCTION public.refresh_applications_usage_view() TO vaultless;
 GRANT EXECUTE ON FUNCTION public.get_quota_warnings(UUID, NUMERIC) TO vaultless;
 GRANT EXECUTE ON FUNCTION public.get_user_usage_summary(UUID) TO vaultless;
+
+-- ============================================================================
+-- 13. Initial refresh
+-- ============================================================================
+REFRESH MATERIALIZED VIEW public.mv_applications_with_usage;

@@ -1,9 +1,9 @@
 use super::helper::*;
 use axum::{extract::FromRequestParts, http::request::Parts};
-use vaultless_core::models::session::{HybridSessionVerifier, SessionKeyManager};
+use vaultless_core::models::session::HybridSessionVerifier;
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::{AuthConfig, Client, SessionData};
+use vaultless_core::{AuthConfig, Client, SessionData as SessionDataClient};
 
 use axum::{
     extract::{Request, State},
@@ -18,7 +18,7 @@ pub struct AuthConfigExt(pub AuthConfig);
 pub struct ClientExt(pub Client);
 
 #[derive(Debug, Clone)]
-pub struct SessionDataExt(pub SessionData);
+pub struct SessionDataClientExt(pub SessionDataClient);
 
 pub async fn api_key_auth(
     State(state): State<AppState>,
@@ -77,7 +77,8 @@ pub async fn client_auth(
         "Session validated successfully"
     );
 
-    req.extensions_mut().insert(SessionDataExt(session_data));
+    req.extensions_mut()
+        .insert(SessionDataClientExt(session_data));
 
     Ok(next.run(req).await)
 }
@@ -91,7 +92,7 @@ impl FromRequestParts<AppState> for ClientExt {
     ) -> Result<Self, Self::Rejection> {
         let session_data = parts
             .extensions
-            .get::<SessionDataExt>()
+            .get::<SessionDataClientExt>()
             .ok_or(ApiError::unauthorized("Missing session"))?;
 
         let client =

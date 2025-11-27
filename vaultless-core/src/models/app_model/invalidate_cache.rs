@@ -8,15 +8,11 @@ use uuid::Uuid;
 
 impl Application {
     /// Invalidate cached auth entries (SK and PK) for this application
-    pub async fn invalidate_auth_cache<'c, E>(
+    pub async fn invalidate_auth_cache(
         app_id: Uuid,
-        exec: E,
+        db: &sqlx::Pool<Postgres>,
         redis: Arc<RedisPool>,
-    ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        // 1. Fetch all keys for this app (ignore is_active)
+    ) -> Result<()> {
         let keys: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
             r#"
             SELECT key_hash, publishable_key_plaintext
@@ -25,7 +21,7 @@ impl Application {
             "#,
         )
         .bind(app_id)
-        .fetch_all(exec)
+        .fetch_all(db)
         .await
         .map_err(VaultlessError::Database)?;
 

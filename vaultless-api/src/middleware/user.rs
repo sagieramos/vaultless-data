@@ -1,116 +1,68 @@
 use axum::{
-    extract::{Request, State},
-    http::HeaderMap,
+    extract::{FromRequestParts, Request, State},
+    http::request::Parts,
     middleware::Next,
     response::Response,
 };
 
-use uuid::Uuid;
+use vaultless_core::models::user::User;
 
 use crate::{
-    middleware::error::ApiError,
-    services::token::{SessionData, TokenService},
-    state::AppState,
+    middleware::error::ApiError, services::token::SessionData as SessionDataUser, state::AppState,
 };
 
-use crate::config::AuthHeader;
+#[derive(Debug, Clone)]
+pub struct SessionDataUserExt(pub SessionDataUser);
 
+#[derive(Debug, Clone)]
+pub struct UserExt(pub User);
 
-/// Middleware to require token-based authentication (for user endpoints)
-pub async fn require_user_auth(
+pub async fn user_auth(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    // Extract bearer token
     let token = super::helper::extract_bearer_token(request.headers())?;
 
-    // Verify token and get session
-    let token_service = TokenService::new(state.db, state.redis_pool);
+    let token_service = &state.token_service;
     let session_data = token_service.verify_access_token(&token).await?;
 
-    // Store session data in request extensions
     request.extensions_mut().insert(session_data);
-
-    // Continue to handler
     Ok(next.run(request).await)
 }
 
-/// Extractor for SessionData in handlers
-/// Usage: `session: SessionData` in handler parameters
-impl<S> axum::extract::FromRequestParts<S> for SessionData
+impl<S> FromRequestParts<S> for SessionDataUserExt
 where
     S: Send + Sync,
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         parts
             .extensions
-            .get::<SessionData>()
+            .get::<SessionDataUserExt>()
             .cloned()
-            .ok_or_else(|| ApiError::unauthorized("Missing session data"))
+            .ok_or_else(|| {
+                ApiError::unauthorized("Missing session data").with_code("MISSING_SESSION_DATA")
+            })
     }
 }
 
-/*
-GET /v1/api/keys/details
-Authorization: Bearer <user_access_token>
-X-Api-Key-Id: 1f4b933a-8e1b-4c3a-bca0-0b179d0e8a61
+impl FromRequestParts<AppState> for UserExt {
+    type Rejection = ApiError;
 
- */
-/// Middleware to ensure the authenticated user owns the API key specified in the header
-pub async fn require_api_key_ownership(
-    State(state): State<AppState>,
-    mut request: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
-    // Require session first (user must be authenticated)
-    let session = request
-        .extensions()
-        .get::<SessionData>()
-        .cloned()
-        .ok_or_else(|| ApiError::unauthorized("You must be logged in to access this resource"))?;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session_data = parts
+            .extensions
+            .get::<SessionDataUserExt>()
+            .ok_or(ApiError::unauthorized("Missing session"))?;
 
-    // Extract API key ID from header
-    let key_id = extract_key_id_from_header(request.headers())?;
-
-    // Check ownership
-    let query = r#"
-        SELECT 1 FROM api_keys WHERE id = $1 AND user_id = $2 LIMIT 1
-    "#;
-
-    let owned = sqlx::query(query)
-        .bind(key_id)
-        .bind(session.user_id)
-        .fetch_optional(state.db.as_ref())
-        .await
-        .map_err(|e| {
-            tracing::error!("DB error during ownership check: {}", e);
-            ApiError::forbidden("You do not own this API key")
-        })?;
-
-    if owned.is_none() {
-        return Err(ApiError::forbidden("You do not own this API key"));
+        let user = User::find_by_id(&state.db, session_data.0.user_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(UserExt(user))
     }
-
-    // Store key_id for downstream use
-    request.extensions_mut().insert(key_id);
-
-    Ok(next.run(request).await)
-}
-
-/// Extract and validate `X-Api-Key-Id` header
-fn extract_key_id_from_header(headers: &HeaderMap) -> Result<Uuid, ApiError> {
-    let value = headers
-        .get(AuthHeader::API_KEY)
-        .ok_or_else(|| ApiError::bad_request("Missing X-Api-Key-Id header"))?
-        .to_str()
-        .map_err(|_| ApiError::bad_request("Invalid X-Api-Key-Id header"))?;
-
-    Uuid::parse_str(value)
-        .map_err(|_| ApiError::bad_request("Invalid UUID format in X-Api-Key-Id header"))
 }

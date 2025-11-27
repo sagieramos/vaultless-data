@@ -20,16 +20,14 @@ const PROJECTION: &str = "id, user_id, name,
 
 impl Application {
     /// Create a new application with secret and publishable keys
-    pub async fn create<'c, E>(
-        exec: E,
+    pub async fn create(
+        db_pool: Arc<sqlx::Pool<Postgres>>, 
         redis: Option<Arc<RedisPool>>,
         input: CreateApplication,
     ) -> Result<CreateApplicationResponse>
-    where
-        E: Executor<'c, Database = Postgres> + Clone + Acquire<'c, Database = Postgres> + 'static,
     {
-        // Start transaction
-        let mut tx = exec.clone().begin().await?;
+        let mut tx = (&*db_pool).begin().await
+            .map_err(|e| VaultlessError::Database(e))?;
 
         // Validate input
         input
@@ -44,7 +42,7 @@ impl Application {
         let secret_key_prefix = secret_key.chars().take(8).collect::<String>();
 
         let created_secret_key = ApiKey::create(
-            &mut *tx,
+            &mut *tx, // Pass mutable reference to the transaction
             CreateApiKey {
                 user_id: input.user_id,
                 key_hash: Some(secret_key_hash),
@@ -87,7 +85,7 @@ impl Application {
                 .integrity_config
                 .unwrap_or_else(|| serde_json::json!({})),
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *tx) // Pass mutable reference to the transaction
         .await
         .map_err(|e| match e {
             sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
@@ -103,7 +101,7 @@ impl Application {
         let pk_prefix = publishable_key.chars().take(16).collect::<String>();
 
         let created_publishable_key = ApiKey::create(
-            &mut *tx,
+            &mut *tx, // Pass mutable reference to the transaction
             CreateApiKey {
                 user_id: input.user_id,
                 key_hash: None,
@@ -125,20 +123,21 @@ impl Application {
         sqlx::query("UPDATE api_keys SET application_id = $1 WHERE id = $2")
             .bind(app.id)
             .bind(created_secret_key.id)
-            .execute(&mut *tx)
+            .execute(&mut *tx) // Pass mutable reference to the transaction
             .await?;
 
         sqlx::query("UPDATE api_keys SET application_id = $1 WHERE id = $2")
             .bind(app.id)
             .bind(created_publishable_key.id)
-            .execute(&mut *tx)
+            .execute(&mut *tx) // Pass mutable reference to the transaction
             .await?;
 
         // Commit
         tx.commit().await?;
 
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh(exec.clone(), redis_pool.clone());
+            // Use &*db_pool here, as it's the required executor type
+            super::helper::trigger_view_refresh(db_pool.clone(), redis_pool.clone());
         } else {
             tracing::warn!(
                 "Redis pool not provided. Skipping cache invalidation for deactivated app {}.",
@@ -161,7 +160,7 @@ impl Application {
         })
     }
 
-    /// Find application by ID (UNCHANGED logic, but uses new PROJECTION)
+    /// Find application by ID
     pub async fn find_by_id<'c, E>(exec: E, id: Uuid) -> Result<Application>
     where
         E: Executor<'c, Database = Postgres>,
@@ -179,6 +178,29 @@ impl Application {
         .await?
         .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
     }
+
+    // Find application by ID and User ID 
+    pub async fn find_by_id_and_user_id<'c, E>(
+        exec: E,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Application>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        sqlx::query_as::<_, Application>(&format!(
+            r#"
+                SELECT {}
+                FROM applications WHERE id = $1 AND user_id = $2
+                "#,
+            PROJECTION
+        ))
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
+    }   
 
     /// Find application by publishable key (for client registration) (UNCHANGED logic)
     pub async fn find_by_publishable_key<'c, E>(
@@ -229,89 +251,128 @@ impl Application {
         .ok_or_else(|| VaultlessError::NotFound("Associated Secret Key not found.".to_string()))
     }
 
-    /// Deactivate application (UNCHANGED logic)
-    pub async fn deactivate_deep<'c, E>(
-        exec: E,
+    pub async fn deactivate_deep(
+        exec: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
-        id: Uuid,
+        app_id: Uuid, 
+        user_id: Uuid, 
     ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
     {
         let row = sqlx::query(
-            "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1",
+        "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2",
         )
-        .bind(id)
-        .fetch_optional(exec.clone())
+        .bind(app_id)
+        .bind(user_id) 
+        .fetch_optional(&*exec)
         .await?;
 
         let Some(_) = row else {
             return Err(VaultlessError::NotFound(format!(
-                "Application not found: {id}"
+                "Application not found or access denied for ID: {}",
+                app_id
             )));
         };
 
-        let exec_keys = exec.clone();
         sqlx::query(
             "UPDATE api_keys SET is_active = false, updated_at = NOW() WHERE application_id = $1",
         )
-        .bind(id)
-        .execute(exec_keys)
+        .bind(app_id)
+        .execute(&*exec)
         .await?;
 
+        // 4. Handle cache invalidation
         if let Some(redis_pool) = redis {
             super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
-
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(id, exec, redis_pool).await {
-                    tracing::error!("Background cache invalidation failed for app {}: {}", id, e);
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &*exec, redis_pool).await {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_id,
+                        e
+                    );
                 }
             });
         } else {
             tracing::warn!(
                 "Redis pool not provided. Skipping cache invalidation for deactivated app {}.",
-                id
+                app_id
             );
         }
         Ok(())
     }
 
-    pub async fn deactivate_weak<'c, E>(
-        exec: E,
+    pub async fn deactivate_weak(
+        exec: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
-        id: Uuid,
+        app_id: Uuid,
+        user_id: Uuid,
     ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres> + Clone + Send + 'static,
     {
-        // 1. Update + return ID if row exists
         let row = sqlx::query!(
             r#"
         UPDATE applications
         SET is_active = false, updated_at = NOW()
-        WHERE id = $1
+        WHERE id = $1 AND user_id = $2
         RETURNING id
         "#,
-            id
+            app_id,
+            user_id
         )
-        .fetch_optional(exec.clone())
+        .fetch_optional(&*exec)
         .await?;
 
-        // 2. If not found → return NotFound
         let Some(app_row) = row else {
             return Err(VaultlessError::NotFound(format!(
-                "Application not found: {id}"
+                "Application not found or access denied for ID: {}",
+                app_id
             )));
         };
+
+        if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            tokio::spawn(async move {
+                if let Err(e) = Self::invalidate_auth_cache(app_row.id, &*exec, redis_pool).await {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_row.id,
+                        e
+                    );
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete<'c, E>(
+        exec: Arc<sqlx::Pool<Postgres>>,
+        app_id: Uuid,
+        redis: Option<Arc<RedisPool>>,
+        user_id: Uuid,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres> + Clone + 'static,
+    {
+        let result = sqlx::query("DELETE FROM applications WHERE id = $1 AND user_id = $2")
+            .bind(app_id)
+            .bind(user_id)
+            .execute(&*exec)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(VaultlessError::NotFound(
+                "Application not found or you don't have permission to delete it".into(),
+            ));
+        }
 
         // 3. Invalidate cache using spawned worker
         if let Some(redis_pool) = redis {
             super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_row.id, exec, redis_pool).await {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &*exec, redis_pool).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
-                        app_row.id,
+                        app_id,
                         e
                     );
                 }

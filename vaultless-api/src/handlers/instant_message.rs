@@ -1,12 +1,9 @@
 use crate::{
-    middleware::{
-        client::{AuthConfigExt, ClientExt, SessionDataExt},
-        error::ApiError,
-    },
+    middleware::{client::SessionDataClientExt, error::ApiError},
     state::AppState,
 };
 use axum::{
-    Extension, Json,
+    Json,
     extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
@@ -89,7 +86,7 @@ pub struct HealthStatusResponse {
 /// POST /api/messages/send#
 pub async fn send_message(
     State(state): State<AppState>,
-    SessionDataExt(sender): SessionDataExt,
+    SessionDataClientExt(sender): SessionDataClientExt,
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Compute content size server-side ---
@@ -158,7 +155,7 @@ pub async fn send_message(
 /// GET /api/messages/inbox
 pub async fn fetch_inbox(
     State(state): State<AppState>,
-    SessionDataExt(client_info): SessionDataExt,
+    SessionDataClientExt(client_info): SessionDataClientExt,
     Query(_query): Query<FetchMessagesQuery>,
 ) -> Result<Json<FetchMessagesResponse>, ApiError> {
     tracing::debug!(recipient = %client_info.client_id, "Fetching inbox");
@@ -196,7 +193,7 @@ pub async fn fetch_inbox(
 /// POST /api/messages/{message_id}/read
 pub async fn mark_message_read(
     State(state): State<AppState>,
-    SessionDataExt(client_info): SessionDataExt,
+    SessionDataClientExt(client_info): SessionDataClientExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<MarkReadResponse>, ApiError> {
     tracing::debug!(
@@ -235,7 +232,7 @@ pub async fn mark_message_read(
 /// GET /api/messages/{message_id}/receipts
 pub async fn get_read_receipts(
     State(state): State<AppState>,
-      SessionDataExt(client_info): SessionDataExt,
+    SessionDataClientExt(client_info): SessionDataClientExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<ReadReceiptsResponse>, ApiError> {
     tracing::debug!(

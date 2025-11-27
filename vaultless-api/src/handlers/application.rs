@@ -1,24 +1,38 @@
-use std::{collections::HashMap, sync::Arc};
-
 use axum::{
-    Extension,
+    body::Body,
     extract::{Path, Query, State},
-    http::{self, HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Json},
-    body::Body
 };
-use chrono::Utc;
+use chrono::{DateTime, NaiveDate, Utc};
+use vaultless_core::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::Arc;
 use uuid::Uuid;
 use vaultless_core::{
-    PaginatedApplicationsWithKeys,
-    models::{Application, ApplicationWithTier, CreateApplication, UpdateApplication},
+    PaginatedApplicationsWithKeys, get_global_mv_etag,
+    models::{
+        Application, ApplicationWithTier, CreateApplication, UpdateApplication,
+        app_model::{chart::*, dto::*},
+        usage::MetricCounters,
+        user::User,
+    },
     types::SubscriptionTier,
 };
 
-use crate::{middleware::error::ApiError, services::token::SessionData, state::AppState};
-use vaultless_core::get_global_mv_etag;
-use vaultless_core::models::usage::MetricCounters;
+use crate::{
+    middleware::{error::ApiError, user::SessionDataUserExt},
+    state::AppState,
+};
+
+#[derive(Deserialize)]
+pub struct ChartQueryParams {
+    granularity: String,
+    metric: String,
+    start: String,
+    end: String,
+}
 
 // =============================================================================
 // Request/Response DTOs
@@ -48,12 +62,62 @@ pub struct ApplicationListResponse {
     pub total: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApplicationResponse {
-    pub application: ApplicationWithTier,
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub max_ttl_seconds: i32,
+    pub is_key_rotation_forced: bool,
+    pub deletion_requested_at: Option<DateTime<Utc>>,
+    pub internal_notes: Option<String>,
+    pub integrity_config: Value,
 }
 
-use vaultless_core::models::user::User;
+impl From<Application> for ApplicationResponse {
+    fn from(app: Application) -> Self {
+        Self {
+            id: app.id,
+            name: app.name,
+            description: app.description,
+            is_active: app.is_active,
+            created_at: app.created_at,
+            updated_at: app.updated_at,
+            max_ttl_seconds: app.max_ttl_seconds,
+            is_key_rotation_forced: app.is_key_rotation_forced,
+            deletion_requested_at: app.deletion_requested_at,
+            internal_notes: app.internal_notes,
+            integrity_config: app.integrity_config,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QuotaWarningsQuery {
+    #[serde(default = "default_threshold")]
+    pub threshold: Option<Decimal>,
+
+    #[serde(default = "default_page")]
+    pub page: i64,
+
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+}
+
+fn default_threshold() -> Option<Decimal> {
+    Some(Decimal::from(80))
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_page_size() -> i64 {
+    20
+}
 
 // =============================================================================
 // Handlers
@@ -63,7 +127,7 @@ use vaultless_core::models::user::User;
 /// POST /api/applications
 pub async fn create_application(
     State(state): State<AppState>,
-    Extension(user): Extension<SessionData>, // Extract authenticated user
+    SessionDataUserExt(user): SessionDataUserExt,
     Json(req): Json<CreateApplicationRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user_id = user.user_id;
@@ -82,7 +146,7 @@ pub async fn create_application(
     };
 
     // Create application
-    let response = Application::create(&*state.db, input)
+    let response = Application::create(state.db, Some(state.redis_pool), input)
         .await
         .map_err(ApiError::from)?;
 
@@ -111,7 +175,7 @@ pub struct PaginationParams {
 /// GET /api/applications
 pub async fn list_applications(
     State(state): State<AppState>,
-    Extension(user): Extension<SessionData>,
+    SessionDataUserExt(user): SessionDataUserExt,
     Query(params): Query<PaginationParams>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -154,7 +218,7 @@ pub async fn list_applications(
     if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
         if let Ok(s) = if_none_match.to_str() {
             if s == etag {
-               return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
+                return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
             }
         }
     }
@@ -174,71 +238,42 @@ pub async fn list_applications(
 /// GET /api/applications/:id
 pub async fn get_application(
     State(state): State<AppState>,
-    Extension(user): Extension<SessionData>,
+    SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
-) -> Result<Json<ApplicationResponse>, ApiError> {
-    let app = Application::find_by_id_with_tier(&*state.db, app_id)
+) -> Result<Json<ApplicationWithUsageResponse>, ApiError> {
+    let app = Application::find_owned_by_user(&*state.db, app_id, user.user_id)
         .await
         .map_err(ApiError::from)?;
 
-    // Verify ownership
-    if app.user_id != user.user_id {
-        return Err(ApiError::forbidden("You don't own this application").with_code("NOT_OWNER"));
-    }
-
-    Ok(Json(ApplicationResponse { application: app }))
+    Ok(Json(app))
 }
 
 /// Update application metadata
 /// PATCH /api/applications/:id
 pub async fn update_application(
     State(state): State<AppState>,
-    Extension(user): Extension<SessionData>,
+    SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
     Json(req): Json<UpdateApplication>,
 ) -> Result<Json<ApplicationResponse>, ApiError> {
-    // 1. Verify ownership
-    let app = Application::find_by_id(&*state.db, app_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    if app.user_id != user.user_id {
-        return Err(ApiError::forbidden("You don't own this application").with_code("NOT_OWNER"));
-    }
-
-    // 2. Perform update using model method
-    let _ = Application::update(
-        &*state.db,
+    let updated_app = Application::update(
+        Arc::clone(&state.db),
         Some(state.redis_pool.clone()),
+        req,
         app_id,
-        UpdateApplication {
-            name: req.name.clone(),
-            description: req.description.clone(),
-            bundle_id: req.bundle_id.clone(),
-            platform: req.platform.clone(),
-            webhook_url: req.webhook_url.clone(),
-            is_active: req.is_active,
-        },
+        user.user_id,
     )
     .await
     .map_err(ApiError::from)?;
 
-    // 3. Fetch application with tier info
-    let app_with_tier = Application::find_by_id_with_tier(&*state.db, app_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    // 4. Return response
-    Ok(Json(ApplicationResponse {
-        application: app_with_tier,
-    }))
+    Ok(Json(updated_app.into()))
 }
 
 /// Deactivate application
 /// DELETE /api/applications/:id
 pub async fn deactivate_application(
     State(state): State<AppState>,
-    Extension(user): Extension<SessionData>,
+    SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     // Verify ownership
@@ -251,9 +286,14 @@ pub async fn deactivate_application(
     }
 
     // Deactivate
-    Application::deactivate(&*state.db, Some(state.redis_pool.clone()), app_id)
-        .await
-        .map_err(ApiError::from)?;
+    Application::deactivate_weak(
+        state.db,
+        Some(state.redis_pool.clone()),
+        app_id,
+        user.user_id,
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     tracing::info!(
         user_id = %user.user_id,
@@ -264,89 +304,156 @@ pub async fn deactivate_application(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Get application statistics (clients count, usage, etc.)
-/// GET /api/applications/:id/stats
-pub async fn get_application_stats(
+/// Get chart data for application by ID
+/// GET /api/applications/:id/chart?granularity=daily&metric=messages&start=2023-01-01&end=2023-01-31
+pub async fn get_chart_data(
     State(state): State<AppState>,
-    Extension(user): Extension<SessionData>,
+    SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    if !params.is_empty() {
-        tracing::warn!(user = %user.user_id, "Rejected list_applications with unexpected query: {:?}", params);
-        return Err(ApiError::bad_request("Unexpected query parameters")
-            .with_code("UNEXPECTED_QUERY_PARAMS"));
-    }
-    // Verify ownership
-    let app = Application::find_by_id(&*state.db, app_id)
-        .await
-        .map_err(ApiError::from)?;
+    Query(params): Query<ChartQueryParams>,
+) -> Result<Json<ApplicationChartData>, ApiError> {
+    let granularity = params
+        .granularity
+        .as_str()
+        .parse::<ChartGranularity>()
+        .map_err(|_| {
+            ApiError::bad_request("Invalid granularity. Must be 'daily' or 'weekly'.")
+                .with_code("INVALID_GRANULARITY")
+        })?;
 
-    if app.user_id != user.user_id {
-        return Err(ApiError::forbidden("You don't own this application").with_code("NOT_OWNER"));
+    let metric = params
+        .metric
+        .as_str()
+        .parse::<ChartMetric>()
+        .map_err(|_| {
+            ApiError::bad_request("Invalid metric. Must be one of: messages, bandwidth, storage, proofs, rate_limits, cost, all.")
+                .with_code("INVALID_METRIC")
+        })?;
+
+    let start_date = NaiveDate::parse_from_str(&params.start, "%Y-%m-%d").map_err(|_| {
+        ApiError::bad_request("Invalid start date. Use YYYY-MM-DD format.")
+            .with_code("INVALID_START_DATE")
+    })?;
+
+    let end_date = NaiveDate::parse_from_str(&params.end, "%Y-%m-%d").map_err(|_| {
+        ApiError::bad_request("Invalid end date. Use YYYY-MM-DD format.")
+            .with_code("INVALID_END_DATE")
+    })?;
+
+    let start_ts = DateTime::<Utc>::from_naive_utc_and_offset(
+        start_date.and_hms_opt(0, 0, 0).ok_or_else(|| {
+            ApiError::bad_request("Invalid start date").with_code("INVALID_START_DATE")
+        })?,
+        Utc,
+    );
+
+    let end_ts = DateTime::<Utc>::from_naive_utc_and_offset(
+        end_date.and_hms_opt(23, 59, 59).ok_or_else(|| {
+            ApiError::bad_request("Invalid end date").with_code("INVALID_END_DATE")
+        })?,
+        Utc,
+    );
+
+    if start_ts >= end_ts {
+        return Err(ApiError::bad_request("Start date must be before end date.")
+            .with_code("INVALID_DATE_RANGE"));
     }
 
-    // Get client count
-    let client_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM clients WHERE application_id = $1 AND is_active = true",
+    const MAX_DAILY_BUCKETS: u64 = 100;
+    const MAX_WEEKLY_BUCKETS: u64 = 160;
+
+    let range_days = (end_ts - start_ts).num_days() as u64;
+    let max_buckets = match granularity {
+        ChartGranularity::Daily => MAX_DAILY_BUCKETS,
+        ChartGranularity::Weekly => MAX_WEEKLY_BUCKETS,
+    };
+
+    let estimated_buckets = match granularity {
+        ChartGranularity::Daily => range_days,
+        ChartGranularity::Weekly => (range_days as f64 / 7.0).ceil() as u64,
+    };
+
+    if estimated_buckets > max_buckets {
+        return Err(ApiError::bad_request(format!(
+            "Date range too large for {} granularity (max {} buckets). Try a shorter range.",
+            granularity.as_api_str(),
+            max_buckets
+        ))
+        .with_code("RANGE_TOO_LARGE"));
+    }
+
+    let chart_data = Application::get_chart_data(
+        &*state.db,
+        app_id,
+        user.user_id,
+        granularity,
+        metric,
+        start_ts,
+        end_ts,
     )
-    .bind(app_id)
-    .fetch_one(&*state.db)
     .await
     .map_err(ApiError::from)?;
 
-    // Get usage metrics
-    let usage = vaultless_core::get_aggregate_by_application_id(&*state.db, app_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Get current quota status
-    let health = app
-        .health_check(&*state.db, Some(state.redis_pool.clone()))
-        .await
-        .map_err(ApiError::from)?;
-
-    Ok(Json(serde_json::json!({
-        "application_id": app_id,
-        "active_clients": client_count,
-        "usage": usage,
-        "health": health,
-    })))
+    Ok(Json(chart_data))
 }
 
-/// Endpoint: GET /api/v1/applications/:app_id/realtime-usage
-/// Retrieves real-time metrics for the current hour for a given application.
-pub async fn get_app_realtime_usage(
+/// GET /api/v1/applications/usage-summary
+///
+/// Returns aggregated usage statistics across all user's applications.
+pub async fn get_user_usage_summary(
     State(state): State<AppState>,
-    Path(app_id): Path<Uuid>,
-    // Auth context (assumes user is authenticated and authorized for this app_id)
-) -> Result<impl IntoResponse> {
-    // 1. Fetch the real-time counters through the Application model.
-    let counters = match Application::get_current_period_counters(
-        pg_pool.as_ref(), // Pass the concrete PgPool for execution
-        redis_pool,
-        app_id,
+    SessionDataUserExt(user): SessionDataUserExt,
+) -> Result<Json<UserUsageSummary>, ApiError> {
+    let summary = Application::get_user_usage_summary(&*state.db, user.user_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(summary))
+}
+
+/// GET /api/v1/applications/quota-warnings
+///
+/// Returns applications that are approaching or exceeding their quota limits.
+///
+/// Query params:
+/// - threshold: Percentage threshold (default: 80)
+/// - page: Page number (default: 1)
+/// - page_size: Items per page (default: 20)
+pub async fn get_quota_warnings(
+    Query(params): Query<QuotaWarningsQuery>,
+    SessionDataUserExt(user): SessionDataUserExt,
+    State(state): State<AppState>,
+) -> Result<Json<PaginatedQuotaWarnings>, ApiError> {
+    let warnings = Application::get_quota_warnings(
+       &*state.db,
+        user.user_id,
+        params.threshold,
+        params.page,
+        params.page_size,
     )
     .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            error!(application_id = %app_id, "Failed to fetch real-time metrics: {:?}", e);
-            // Return an appropriate error response
-            return Err(e);
-        }
-    };
+    .map_err(ApiError::from)?;
 
-    // 2. Determine the period start time for context (client side needs this).
-    // This uses the same logic as MetricKey generation for the current hour.
-    let current_period_start =
-        crate::usage_metrics::get_period_start(&chrono::Utc::now()).to_rfc3339();
+    Ok(Json(warnings))
+}
 
-    // 3. Construct and return the successful response
-    let response = RealTimeUsageResponse {
-        current_period_start_utc: current_period_start,
-        counters,
-    };
+/// Get application by ID including secret key ID, publishable keys, and webhooks.
+///
+/// Route: GET /api/applications/:id/with_keys
+pub async fn get_application_with_keys_handler(
+    State(state): State<AppState>,
+ SessionDataUserExt( session): SessionDataUserExt,
+    Path(application_id): Path<Uuid>,
+) -> Result<Json<ApplicationWithKeys>, ApiError> {
+    let user_id = session.user_id;
 
-    Ok(Json(response).into_response())
+    let app_with_keys = Application::get_application_with_keys(
+        &state.db,
+        application_id,
+        user_id,
+    )
+    .await
+    .map_err(ApiError::from)?;
+
+    Ok(Json(app_with_keys))
 }

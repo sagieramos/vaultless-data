@@ -540,7 +540,7 @@ where
 // Metric Counters & Cost Estimation
 // =============================================================================
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct MetricCounters {
     pub messages_sent: i64,
     pub messages_received: i64,

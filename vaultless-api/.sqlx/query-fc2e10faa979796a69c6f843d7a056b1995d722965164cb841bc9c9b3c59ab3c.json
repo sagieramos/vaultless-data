@@ -1,0 +1,263 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                application_id,\n                name,\n                description,\n                is_active,\n                created_at,\n                updated_at,\n                max_ttl_seconds,\n                is_key_rotation_forced,\n                deletion_requested_at,\n                integrity_config,\n                tier::text,\n                monthly_message_quota,\n                rate_limit_per_minute,\n                message_retention_seconds,\n                publishable_keys,\n                webhooks,\n                current_month_messages_sent,\n                current_month_messages_received,\n                current_month_proofs_verified,\n                current_month_bytes_stored,\n                current_month_bytes_sent,\n                current_month_bytes_received,\n                current_month_rate_limit_hits,\n                current_month_cost_cents,\n                quota_usage_percentage,\n                lifetime_messages_sent,\n                lifetime_messages_received,\n                lifetime_proofs_verified,\n                lifetime_bytes_stored,\n                lifetime_bytes_sent,\n                lifetime_bytes_received,\n                lifetime_rate_limit_hits,\n                lifetime_cost_cents,\n                last_7d_messages_sent,\n                last_7d_bytes_sent,\n                last_7d_bytes_received,\n                last_7d_cost_cents,\n                last_30d_messages_sent,\n                last_30d_bytes_sent,\n                last_30d_bytes_received,\n                last_30d_cost_cents\n            FROM mv_applications_with_usage\n            WHERE application_id = $1 AND user_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "application_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "max_ttl_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_key_rotation_forced",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "deletion_requested_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "integrity_config",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "tier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "monthly_message_quota",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "rate_limit_per_minute",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "message_retention_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "publishable_keys",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 15,
+        "name": "webhooks",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 16,
+        "name": "current_month_messages_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 17,
+        "name": "current_month_messages_received",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 18,
+        "name": "current_month_proofs_verified",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 19,
+        "name": "current_month_bytes_stored",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 20,
+        "name": "current_month_bytes_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 21,
+        "name": "current_month_bytes_received",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 22,
+        "name": "current_month_rate_limit_hits",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 23,
+        "name": "current_month_cost_cents",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 24,
+        "name": "quota_usage_percentage",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 25,
+        "name": "lifetime_messages_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 26,
+        "name": "lifetime_messages_received",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 27,
+        "name": "lifetime_proofs_verified",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 28,
+        "name": "lifetime_bytes_stored",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 29,
+        "name": "lifetime_bytes_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 30,
+        "name": "lifetime_bytes_received",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 31,
+        "name": "lifetime_rate_limit_hits",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 32,
+        "name": "lifetime_cost_cents",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 33,
+        "name": "last_7d_messages_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 34,
+        "name": "last_7d_bytes_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 35,
+        "name": "last_7d_bytes_received",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 36,
+        "name": "last_7d_cost_cents",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 37,
+        "name": "last_30d_messages_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 38,
+        "name": "last_30d_bytes_sent",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 39,
+        "name": "last_30d_bytes_received",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 40,
+        "name": "last_30d_cost_cents",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "fc2e10faa979796a69c6f843d7a056b1995d722965164cb841bc9c9b3c59ab3c"
+}

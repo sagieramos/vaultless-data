@@ -20,10 +20,10 @@ pub struct TokenPair {
 }
 
 /// Session data stored in Dragonfly
+/// OPTIMIZATION: Removed 'email: String' to reduce cached payload size.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {
     pub user_id: Uuid,
-    pub email: String,
     pub scope: Option<String>,
     pub is_admin: bool,
     pub created_at: i64,
@@ -81,7 +81,6 @@ impl TokenService {
     pub async fn create_token_pair(
         &self,
         user_id: Uuid,
-        email: String,
         scope: Option<String>,
         is_admin: bool,
     ) -> Result<TokenPair, ApiError> {
@@ -109,7 +108,6 @@ impl TokenService {
         // 1. Store session in Dragonfly (hot path)
         let session_data = SessionData {
             user_id: user_id,
-            email: email,
             scope: scope.clone(),
             is_admin,
             created_at: now,
@@ -218,7 +216,7 @@ impl TokenService {
         // Repopulate cache
         let session_data = SessionData {
             user_id: user.id,
-            email: user.email,
+            // Removed email: user.email,
             scope: session_db.scope,
             is_admin: user.is_admin,
             created_at: session_db.created_at.timestamp(),
@@ -389,7 +387,7 @@ impl TokenService {
 
         let session_data = SessionData {
             user_id: user.id,
-            email: user.email,
+            // Removed email: user.email,
             scope: None,
             is_admin: user.is_admin,
             created_at: now,

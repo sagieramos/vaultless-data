@@ -1,6 +1,6 @@
 use crate::{
     middleware::{
-        client::{AuthConfigExt, ClientExt, SessionDataExt},
+        client::{AuthConfigExt, ClientExt, SessionDataClientExt},
         error::ApiError,
     },
     state::AppState,
@@ -18,7 +18,7 @@ use vaultless_core::{
     RegisterClientResponse,
 };
 
-use vaultless_core::models::session::paseto_session::{is_session_revoked, verify_session_token};
+use vaultless_core::models::session::paseto_session::{verify_session_token};
 
 // =============================================================================
 // Request/Response Types
@@ -261,7 +261,7 @@ pub async fn logout(
 /// DELETE /api/clients/me
 pub async fn deactivate_client(
     State(state): State<AppState>,
-    SessionDataExt(session_data): SessionDataExt,
+    SessionDataClientExt(session_data): SessionDataClientExt,
 ) -> Result<Json<SuccessResponse>, ApiError> {
     Client::revoke_client_session(
         state.db.as_ref(),
