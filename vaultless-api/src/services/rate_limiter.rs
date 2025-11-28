@@ -1,4 +1,5 @@
 use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -6,7 +7,7 @@ use crate::middleware::error::ApiError;
 
 /// Rate limiter using sliding window algorithm
 pub struct RateLimiter {
-    pool: RedisPool,
+    pool: Arc<RedisPool>,
 }
 
 /// Rate limit result
@@ -20,7 +21,7 @@ pub struct RateLimitResult {
 }
 
 impl RateLimiter {
-    pub fn new(pool: RedisPool) -> Self {
+    pub fn new(pool: Arc<RedisPool>) -> Self {
         Self { pool }
     }
 

@@ -1,0 +1,44 @@
+use super::dto::*;
+use crate::error::{Result, VaultlessError};
+use deadpool_redis::Pool as RedisPool;
+use redis::AsyncCommands;
+use sqlx::{Executor, Postgres};
+use std::sync::Arc;
+use uuid::Uuid;
+
+impl Application {
+    /// Invalidate cached auth entries (SK and PK) for this application
+    pub async fn invalidate_auth_cache(
+        app_id: Uuid,
+        db: &sqlx::Pool<Postgres>,
+        redis: Arc<RedisPool>,
+    ) -> Result<()> {
+        let keys: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT key_hash, publishable_key_plaintext
+            FROM api_keys
+            WHERE application_id = $1
+            "#,
+        )
+        .bind(app_id)
+        .fetch_all(db)
+        .await
+        .map_err(VaultlessError::Database)?;
+
+        let mut conn = redis.get().await?;
+
+        // 2. Delete each key from Redis
+        for (sk_opt, pk_opt) in keys {
+            if let Some(sk) = sk_opt {
+                let sk_key = secret_key_resolution_cache_key(&sk);
+                let _: () = conn.del(sk_key).await?;
+            }
+            if let Some(pk) = pk_opt {
+                let pk_key = publishable_key_resolution_cache_key(&pk);
+                let _: () = conn.del(pk_key).await?;
+            }
+        }
+
+        Ok(())
+    }
+}

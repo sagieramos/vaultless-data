@@ -1,5 +1,6 @@
 use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
 use serde::{Serialize, de::DeserializeOwned};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::middleware::error::ApiError;
@@ -8,12 +9,12 @@ pub const DEFAULT_CACHE_TTL_SECONDS: u64 = 3600;
 /// Cache service for Dragonfly/Redis operations
 #[derive(Debug, Clone)]
 pub struct CacheService {
-    pool: RedisPool,
+    pool: Arc<RedisPool>,
     default_ttl: Duration,
 }
 
 impl CacheService {
-    pub fn new(pool: RedisPool, default_ttl_secs: u64) -> Self {
+    pub fn new(pool: Arc<RedisPool>, default_ttl_secs: u64) -> Self {
         Self {
             pool,
             default_ttl: Duration::from_secs(default_ttl_secs),

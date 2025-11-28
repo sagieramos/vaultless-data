@@ -1,5 +1,11 @@
-use serde::Deserialize;
+// vaultless-api/src/config.rs
 use std::env;
+use std::fmt;
+use std::sync::Arc;
+use vaultless_core::SessionKeyManager;
+// Note: We only need Deserialize for nested configs if you plan to use something like 'config' crate later.
+// For manual env loading, we don't strictly need it, but I'll leave it on leaf structs just in case.
+use serde::Deserialize;
 
 pub struct AuthHeader;
 
@@ -8,13 +14,17 @@ impl AuthHeader {
     pub const BEARER: &'static str = "Bearer ";
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
-    /*  pub rate_limit: RateLimitConfig, */
     pub cache: CacheConfig,
+    // Metrics configuration (optional with defaults)
+    pub metrics_max_batch_size: Option<usize>,
+    pub metrics_ttl_secs: Option<u64>,
+    pub metrics_flush_interval_secs: Option<u64>,
+    pub metrics_redis_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,16 +40,47 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone)]
 pub struct SecurityConfig {
     pub api_key_salt: String,
     pub admin_api_key: String,
+    /// Raw hex keys loaded from env
+    pub paseto_client_session_current_key: String,
+    pub paseto_client_session_previous_key: Option<String>,
+
+    /// Not deserialized — injected after config load
+    pub paseto_client_session_key_manager: Arc<SessionKeyManager>,
 }
 
-/* #[derive(Debug, Clone, Deserialize)]
-pub struct RateLimitConfig {
-    pub requests_per_minute: u32,
-} */
+impl fmt::Debug for SecurityConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecurityConfig")
+            .field(
+                "api_key_salt",
+                &format!("<redacted: {} chars>", self.api_key_salt.len()),
+            )
+            .field("admin_api_key", &"<redacted>")
+            .field(
+                "paseto_client_session_current_key",
+                &format!(
+                    "<redacted: {} chars>",
+                    self.paseto_client_session_current_key.len()
+                ),
+            )
+            .field(
+                "paseto_client_session_previous_key",
+                &self
+                    .paseto_client_session_previous_key
+                    .as_ref()
+                    .map(|k| format!("<redacted: {} chars>", k.len())),
+            )
+            .field(
+                "paseto_client_session_key_manager",
+                &self.paseto_client_session_key_manager,
+            )
+            .finish()
+    }
+}
 
 /// Dragonfly/Redis cache configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +97,15 @@ impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok(); // Load .env file if it exists
+
+        // Raw keys from environment
+        let current_key_hex = env::var("PASETO_CLIENT_SESSION_CURRENT_KEY")
+            .expect("PASETO_CLIENT_SESSION_CURRENT_KEY must be set");
+
+        let previous_key_hex = env::var("PASETO_CLIENT_SESSION_PREVIOUS_KEY").ok();
+
+        // Create the manager first to catch errors early
+        let key_manager = SessionKeyManager::new(&current_key_hex, previous_key_hex.as_deref())?;
 
         let config = Config {
             server: ServerConfig {
@@ -75,6 +125,10 @@ impl Config {
             security: SecurityConfig {
                 api_key_salt: env::var("API_KEY_SALT").expect("API_KEY_SALT must be set"),
                 admin_api_key: env::var("ADMIN_API_KEY").unwrap_or_else(|_| "".to_string()),
+                paseto_client_session_current_key: current_key_hex.clone(),
+                paseto_client_session_previous_key: previous_key_hex.clone(),
+                // 3. Wrap in Arc here
+                paseto_client_session_key_manager: Arc::new(key_manager),
             },
             cache: CacheConfig {
                 url: env::var("CACHE_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
@@ -85,6 +139,19 @@ impl Config {
                     .unwrap_or_else(|_| "3600".to_string())
                     .parse()?,
             },
+            // Metrics configuration (optional)
+            metrics_max_batch_size: env::var("METRICS_MAX_BATCH_SIZE")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            metrics_ttl_secs: env::var("METRICS_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            metrics_flush_interval_secs: env::var("METRICS_FLUSH_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            metrics_redis_timeout_secs: env::var("METRICS_REDIS_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
         };
 
         // Validate critical config
@@ -111,6 +178,9 @@ mod tests {
 
     #[test]
     fn test_bind_address() {
+        // 4. Update the test to wrap in Arc
+        let key_manager = SessionKeyManager::new("aabbccddeeff00112233445566778899", None).unwrap();
+
         let config = Config {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
@@ -124,12 +194,19 @@ mod tests {
             security: SecurityConfig {
                 api_key_salt: "test-salt".to_string(),
                 admin_api_key: "test-admin".to_string(),
+                paseto_client_session_current_key: "aabbccddeeff00112233445566778899".to_string(),
+                paseto_client_session_previous_key: None,
+                paseto_client_session_key_manager: Arc::new(key_manager), // Corrected here
             },
             cache: CacheConfig {
                 url: "redis://127.0.0.1:6379".to_string(),
                 max_pool_size: Some(5),
                 default_ttl: 3600,
             },
+            metrics_max_batch_size: Some(1000),
+            metrics_ttl_secs: Some(2592000),
+            metrics_flush_interval_secs: Some(60),
+            metrics_redis_timeout_secs: Some(5),
         };
 
         assert_eq!(config.bind_address(), "127.0.0.1:3000");

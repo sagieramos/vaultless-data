@@ -1,0 +1,407 @@
+use super::dto::*;
+use crate::crypto;
+use crate::error::{Result, VaultlessError};
+use crate::models::{ApiKey, CreateApiKey};
+use crate::types::KeyType;
+use deadpool_redis::Pool as RedisPool;
+use sqlx::{Acquire, Executor, Postgres};
+use std::sync::Arc;
+use uuid::Uuid;
+use validator::Validate;
+
+// --- CRITICAL CHANGE 1: Update PROJECTION to remove deleted columns ---
+const PROJECTION: &str = "id, user_id, name, 
+    description, is_active, created_at, 
+    updated_at, max_ttl_seconds, is_key_rotation_forced, 
+    deletion_requested_at, 
+    internal_notes, integrity_config";
+// Removed: secret_key_id, bundle_id, platform, webhook_url
+
+impl Application {
+    /// Create a new application with secret and publishable keys
+    pub async fn create(
+        db_pool: Arc<sqlx::Pool<Postgres>>,
+        redis: Option<Arc<RedisPool>>,
+        input: CreateApplication,
+    ) -> Result<CreateApplicationResponse> {
+        let mut tx = (*db_pool).begin().await.map_err(VaultlessError::Database)?;
+
+        // Validate input
+        input
+            .validate()
+            .map_err(|e| VaultlessError::Validation(e.to_string()))?;
+
+        // ============================================================
+        // 1. ALWAYS GENERATE A NEW SECRET KEY
+        // ============================================================
+        let secret_key = crypto::generate_api_key("sk", "live")?;
+        let secret_key_hash = crypto::hash_content(secret_key.as_bytes());
+        let secret_key_prefix = secret_key.chars().take(8).collect::<String>();
+
+        let created_secret_key = ApiKey::create(
+            &mut *tx, // Pass mutable reference to the transaction
+            CreateApiKey {
+                user_id: input.user_id,
+                key_hash: Some(secret_key_hash),
+                key_prefix: secret_key_prefix,
+                tier: None,
+                description: Some(format!("Secret key for {}", input.name)),
+                scopes: None,
+                expires_at: None,
+                application_id: None, // Assigned later
+                key_type: crate::types::KeyType::Secret,
+                publishable_key_plaintext: None,
+            },
+        )
+        .await?;
+
+        // ============================================================
+        // 2. CREATE THE APPLICATION
+        // ============================================================
+        let app = sqlx::query_as::<_, Application>(
+            r#"
+            INSERT INTO applications (
+                user_id, 
+                name, 
+                description, 
+                max_ttl_seconds, 
+                is_key_rotation_forced, 
+                integrity_config
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            "#,
+        )
+        .bind(input.user_id)
+        .bind(&input.name)
+        .bind(&input.description)
+        .bind(input.max_ttl_seconds.unwrap_or(604800)) // 7 days default
+        .bind(input.is_key_rotation_forced.unwrap_or(false))
+        .bind(
+            input
+                .integrity_config
+                .unwrap_or_else(|| serde_json::json!({})),
+        )
+        .fetch_one(&mut *tx) // Pass mutable reference to the transaction
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
+                VaultlessError::Duplicate("Application with this name already exists".into())
+            }
+            _ => VaultlessError::Database(e),
+        })?;
+
+        // ============================================================
+        // 3. GENERATE PUBLISHABLE KEY
+        // ============================================================
+        let publishable_key = crypto::generate_api_key("pk", "live")?;
+        let pk_prefix = publishable_key.chars().take(16).collect::<String>();
+
+        let created_publishable_key = ApiKey::create(
+            &mut *tx, // Pass mutable reference to the transaction
+            CreateApiKey {
+                user_id: input.user_id,
+                key_hash: None,
+                key_prefix: pk_prefix,
+                tier: None,
+                description: Some(format!("Publishable key for {}", input.name)),
+                scopes: None,
+                expires_at: None,
+                application_id: None, // assigned later
+                key_type: crate::types::KeyType::Publishable,
+                publishable_key_plaintext: Some(publishable_key.clone()),
+            },
+        )
+        .await?;
+
+        // ============================================================
+        // 4. LINK BOTH API KEYS TO THE NEW APPLICATION
+        // ============================================================
+        sqlx::query("UPDATE api_keys SET application_id = $1 WHERE id = $2")
+            .bind(app.id)
+            .bind(created_secret_key.id)
+            .execute(&mut *tx) // Pass mutable reference to the transaction
+            .await?;
+
+        sqlx::query("UPDATE api_keys SET application_id = $1 WHERE id = $2")
+            .bind(app.id)
+            .bind(created_publishable_key.id)
+            .execute(&mut *tx) // Pass mutable reference to the transaction
+            .await?;
+
+        // Commit
+        tx.commit().await?;
+
+        if let Some(redis_pool) = redis {
+            // Use &*db_pool here, as it's the required executor type
+            super::helper::trigger_view_refresh(db_pool.clone(), redis_pool.clone());
+        } else {
+            tracing::warn!(
+                "Redis pool not provided. Skipping cache invalidation for deactivated app {}.",
+                app.id
+            );
+        }
+
+        tracing::info!(
+            application_id = %app.id,
+            "Application created with new secret + publishable keys"
+        );
+
+        // ============================================================
+        // 5. RETURN RESPONSE
+        // ============================================================
+        Ok(CreateApplicationResponse {
+            application: app,
+            secret_key: Some(secret_key), // plaintext
+            publishable_key_plaintext: publishable_key,
+        })
+    }
+
+    /// Find application by ID
+    pub async fn find_by_id<'c, E>(exec: E, id: Uuid) -> Result<Application>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // Fetch from DB
+        sqlx::query_as::<_, Application>(&format!(
+            r#"
+                SELECT {}
+                FROM applications WHERE id = $1
+                "#,
+            PROJECTION
+        ))
+        .bind(id)
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
+    }
+
+    // Find application by ID and User ID
+    pub async fn find_by_id_and_user_id<'c, E>(
+        exec: E,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Application>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        sqlx::query_as::<_, Application>(&format!(
+            r#"
+                SELECT {}
+                FROM applications WHERE id = $1 AND user_id = $2
+                "#,
+            PROJECTION
+        ))
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
+    }
+
+    /// Find application by publishable key (for client registration) (UNCHANGED logic)
+    pub async fn find_by_publishable_key<'c, E>(
+        exec: E,
+        publishable_key: &str,
+    ) -> Result<Application>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // Logic remains correct as it JOINs api_keys to find application_id
+        // FIXED: Bind key_type as string (assuming enum stored as string)
+        let key_type_str = crate::types::KeyType::Publishable.to_string();
+        let app = sqlx::query_as::<_, Application>(&format!(
+            r#"
+            SELECT a.{} FROM applications a
+            JOIN api_keys ak ON a.id = ak.application_id
+            WHERE ak.publishable_key_plaintext = $1
+              AND ak.key_type = $2
+              AND a.is_active = true
+            "#,
+            PROJECTION // Use the updated projection here
+        ))
+        .bind(publishable_key)
+        .bind(&key_type_str)
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
+
+        Ok(app)
+    }
+
+    /// Helper to find the secret key ID associated with this application.
+    /// This is needed because `secret_key_id` was removed from the Application struct.
+    pub async fn find_secret_key_id<'c, E>(exec: E, app_id: Uuid) -> Result<Uuid>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        sqlx::query_scalar(
+            r#"
+            SELECT id FROM api_keys 
+            WHERE application_id = $1 AND key_type = $2
+            "#,
+        )
+        .bind(app_id)
+        .bind(KeyType::Secret.to_string())
+        .fetch_optional(exec)
+        .await?
+        .ok_or_else(|| VaultlessError::NotFound("Associated Secret Key not found.".to_string()))
+    }
+
+    pub async fn deactivate_deep(
+        exec: Arc<sqlx::Pool<Postgres>>,
+        redis: Option<Arc<RedisPool>>,
+        app_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<()> {
+        let row = sqlx::query(
+        "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2",
+        )
+        .bind(app_id)
+        .bind(user_id)
+        .fetch_optional(&*exec)
+        .await?;
+
+        let Some(_) = row else {
+            return Err(VaultlessError::NotFound(format!(
+                "Application not found or access denied for ID: {}",
+                app_id
+            )));
+        };
+
+        sqlx::query(
+            "UPDATE api_keys SET is_active = false, updated_at = NOW() WHERE application_id = $1",
+        )
+        .bind(app_id)
+        .execute(&*exec)
+        .await?;
+
+        // 4. Handle cache invalidation
+        if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            tokio::spawn(async move {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &exec, redis_pool).await {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_id,
+                        e
+                    );
+                }
+            });
+        } else {
+            tracing::warn!(
+                "Redis pool not provided. Skipping cache invalidation for deactivated app {}.",
+                app_id
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn deactivate_weak(
+        exec: Arc<sqlx::Pool<Postgres>>,
+        redis: Option<Arc<RedisPool>>,
+        app_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<()> {
+        let row = sqlx::query!(
+            r#"
+        UPDATE applications
+        SET is_active = false, updated_at = NOW()
+        WHERE id = $1 AND user_id = $2
+        RETURNING id
+        "#,
+            app_id,
+            user_id
+        )
+        .fetch_optional(&*exec)
+        .await?;
+
+        let Some(app_row) = row else {
+            return Err(VaultlessError::NotFound(format!(
+                "Application not found or access denied for ID: {}",
+                app_id
+            )));
+        };
+
+        if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            tokio::spawn(async move {
+                if let Err(e) = Self::invalidate_auth_cache(app_row.id, &exec, redis_pool).await {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_row.id,
+                        e
+                    );
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete<'c, E>(
+        exec: Arc<sqlx::Pool<Postgres>>,
+        app_id: Uuid,
+        redis: Option<Arc<RedisPool>>,
+        user_id: Uuid,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres> + Clone + 'static,
+    {
+        let result = sqlx::query("DELETE FROM applications WHERE id = $1 AND user_id = $2")
+            .bind(app_id)
+            .bind(user_id)
+            .execute(&*exec)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(VaultlessError::NotFound(
+                "Application not found or you don't have permission to delete it".into(),
+            ));
+        }
+
+        // 3. Invalidate cache using spawned worker
+        if let Some(redis_pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            tokio::spawn(async move {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &exec, redis_pool).await {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        app_id,
+                        e
+                    );
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Usage is determined by looking up the Secret Key ID linked to the application
+    /// and querying the real-time counter associated with that key.
+    pub async fn get_monthly_usage<'c, E>(
+        exec: E,
+        redis_pool: Arc<RedisPool>,
+        app_id: Uuid,
+    ) -> Result<i64>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        tracing::info!(application_id = %app_id, "Fetching monthly usage for application.");
+
+        // CRITICAL CHANGE 5: Fetch the Secret Key ID dynamically
+        let secret_key_id = Self::find_secret_key_id(exec, app_id).await?;
+
+        // Delegate the actual usage lookup to the ApiKey model
+        let usage = ApiKey::get_monthly_usage(redis_pool, secret_key_id).await?;
+
+        tracing::info!(
+            application_id = %app_id,
+            secret_key_id = %secret_key_id,
+            usage = usage,
+            "Successfully retrieved application monthly usage."
+        );
+
+        Ok(usage)
+    }
+}

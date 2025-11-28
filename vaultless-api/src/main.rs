@@ -1,3 +1,17 @@
+// api/src/main.rs
+use axum::extract::State;
+use axum::{Router, middleware as axum_middleware, routing::get};
+use deadpool_redis::Config as RedisConfig;
+use sqlx::postgres::PgPoolOptions;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::{net::TcpListener, signal};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use vaultless_core::models::usage::{FlusherMetrics, MetricsConfig, start_redis_flusher};
 mod config;
 mod handlers;
 mod middleware;
@@ -5,100 +19,96 @@ mod routes;
 mod services;
 mod state;
 
-use anyhow::Context;
-use axum::middleware as axum_middleware;
-use deadpool_redis::{Config as RedisConfig, Runtime};
-use services::{
-    cache::CacheService,
-    notification_job::{monthly_report_worker, notification_worker},
-};
-use sqlx::postgres::PgPoolOptions;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use crate::config::Config;
+use crate::middleware::track_metrics;
+use crate::routes::build_routes;
+use crate::state::AppState;
 
-use crate::{
-    config::Config,
-    middleware::{add_request_id, log_request},
-    routes::build_routes,
-    services::cache::DEFAULT_CACHE_TTL_SECONDS,
-    state::AppState,
-};
+/// Initialize tracing/logging
+fn init_tracing(level: &str) {
+    let level = level.parse().unwrap_or(tracing::Level::INFO);
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()))
+        .init();
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load configuration
-    let config = Config::from_env().context("Failed to load configuration")?;
+    //----------------------------------------------------
+    // 1. Load configuration
+    //----------------------------------------------------
+    let config = Config::from_env()?;
+    init_tracing(&config.server.log_level);
 
-    // Initialize logging
-    init_logging(&config);
+    tracing::info!("🚀 Starting Vaultless API...");
 
-    tracing::info!("🚀 Starting Vaultless Data API Server");
-    tracing::info!("📝 Version: {}", vaultless_core::VERSION);
-    tracing::info!(
-        "🔧 Environment: {}",
-        if cfg!(debug_assertions) {
-            "development"
-        } else {
-            "production"
-        }
+    //----------------------------------------------------
+    // 2. Database setup
+    //----------------------------------------------------
+    tracing::info!("⏳ Connecting to PostgreSQL...");
+    let db = PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&config.database.url)
+        .await?;
+
+    tracing::info!("✅ Connected to PostgreSQL");
+
+    //----------------------------------------------------
+    // 3. Redis setup
+    //----------------------------------------------------
+    tracing::info!("⏳ Connecting to Redis...");
+    let redis_cfg = RedisConfig::from_url(config.cache.url.clone());
+    let redis_pool = redis_cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
+    tracing::info!("✅ Connected to Redis");
+
+    //----------------------------------------------------
+    // 4. Build AppState
+    //----------------------------------------------------
+
+    let metrics_config = Arc::new(MetricsConfig {
+        max_batch_size: config.metrics_max_batch_size.unwrap_or(1000),
+        metric_ttl_secs: config.metrics_ttl_secs.unwrap_or(7200),
+        flush_interval_secs: config.metrics_flush_interval_secs.unwrap_or(60),
+        redis_operation_timeout_secs: config.metrics_redis_timeout_secs.unwrap_or(30),
+    });
+
+    let session_key_manager = config.security.paseto_client_session_key_manager.clone();
+
+    let app_state = AppState::new(
+        db,
+        redis_pool,
+        Arc::clone(&metrics_config),
+        config.cache.url,
+        session_key_manager,
+    )?;
+
+    let flusher_metrics = Arc::new(FlusherMetrics::new());
+
+    let (flusher_handle, shutdown_notify) = start_redis_flusher(
+        app_state.redis_pool.clone(),
+        app_state.db.clone(),
+        Arc::clone(&metrics_config),
+        Some(Arc::clone(&flusher_metrics)),
     );
 
-    // Connect to database
-    tracing::info!("📦 Connecting to database...");
-    let db_pool = PgPoolOptions::new()
-        .max_connections(config.database.max_connections)
-        .connect(&config.database.url)
-        .await
-        .context("Failed to connect to database")?;
+    tracing::info!("✅ Redis metrics flusher started");
 
-    tracing::info!("✅ Database connected");
+    //----------------------------------------------------
+    // 5. Routers
+    //----------------------------------------------------
+    let api_router = build_routes(app_state.clone());
+    let metrics_router = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(app_state.clone());
 
-    // Run migrations
-    tracing::info!("🔄 Running database migrations...");
-    sqlx::migrate!("./migrations")
-        .run(&db_pool)
-        .await
-        .context("Failed to run database migrations")?;
-
-    tracing::info!("✅ Migrations completed");
-
-    // Connect to Dragonfly/Redis cache
-    tracing::info!("💾 Connecting to cache...");
-    let cache_config = RedisConfig::from_url(&config.cache.url);
-    let cache_pool = cache_config
-        .create_pool(Some(Runtime::Tokio1))
-        .context("Failed to create cache pool")?;
-
-    // Test cache connection
-    {
-        use deadpool_redis::redis::AsyncCommands;
-        let mut conn = cache_pool
-            .get()
-            .await
-            .context("Failed to get cache connection")?;
-        let _: () = conn
-            .set("health_check", "ok")
-            .await
-            .context("Cache health check failed")?;
-        let _: String = conn
-            .get("health_check")
-            .await
-            .context("Cache health check failed")?;
-    }
-
-    tracing::info!("✅ Cache connected");
-
-    let cache_service = CacheService::new(cache_pool.clone(), DEFAULT_CACHE_TTL_SECONDS);
-
-    // Create application state
-    let state = AppState::new(db_pool.clone(), cache_pool.clone(), config.clone());
-
-    // Build router with middleware
-    let app = build_routes(state)
+    //----------------------------------------------------
+    // 6. Build main app with middleware
+    //----------------------------------------------------
+    let app = Router::new()
+        .merge(api_router)
+        .merge(metrics_router)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -106,38 +116,127 @@ async fn main() -> anyhow::Result<()> {
                 .allow_headers(Any),
         )
         .layer(CompressionLayer::new())
-        .layer(axum_middleware::from_fn(add_request_id))
-        .layer(axum_middleware::from_fn(log_request))
+        .layer(axum_middleware::from_fn(track_metrics))
         .layer(TraceLayer::new_for_http())
-        // Add ConnectInfo for IP address extraction
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
-    let bind_addr = config.bind_address();
-    tracing::info!("🌐 Server listening on http://{}", bind_addr);
-    tracing::info!("📍 Health check: http://{}/health", bind_addr);
 
-    tokio::spawn(notification_worker(db_pool.clone(), cache_service.clone()));
+    //----------------------------------------------------
+    // 7. Start server
+    //----------------------------------------------------
+    let bind_addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
+        .parse()
+        .expect("Invalid bind address");
 
-    tokio::spawn(monthly_report_worker(
-        db_pool.clone(),
-        cache_service.clone(),
-    ));
+    let listener = TcpListener::bind(bind_addr).await?;
+    tracing::info!("🌍 Listening on http://{}", listener.local_addr()?);
+    tracing::info!(
+        "📊 Metrics available at http://{}/metrics",
+        listener.local_addr()?
+    );
 
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .context(format!("Failed to bind to {}", bind_addr))?;
-
-    axum::serve(listener, app).await.context("Server error")?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_notify, flusher_handle))
+        .await?;
 
     Ok(())
 }
 
-/// Initialize tracing/logging
-fn init_logging(config: &Config) {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| config.server.log_level.clone().into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+//----------------------------------------------------
+// Metrics endpoint (Prometheus scrape target)
+//----------------------------------------------------
+async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response::IntoResponse {
+    use prometheus::{Encoder, TextEncoder};
+
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+
+    let mut buffer = Vec::new();
+    if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
+        tracing::error!("Failed to encode metrics: {}", e);
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to encode metrics: {}", e),
+        );
+    }
+
+    match String::from_utf8(buffer) {
+        Ok(metrics_text) => {
+            tracing::debug!("📊 Metrics response: {} bytes", metrics_text.len());
+            (axum::http::StatusCode::OK, metrics_text)
+        }
+        Err(e) => {
+            tracing::error!("Failed to convert metrics to UTF-8: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to convert metrics: {}", e),
+            )
+        }
+    }
 }
+
+//----------------------------------------------------
+// Graceful shutdown signal
+//----------------------------------------------------
+async fn shutdown_signal(
+    flusher_shutdown: Arc<tokio::sync::Notify>,
+    flusher_handle: tokio::task::JoinHandle<()>,
+) {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install signal handler");
+        sigterm.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::warn!("🛑 Shutdown signal received, shutting down gracefully...");
+    flusher_shutdown.notify_one();
+
+    // Wait for flusher to complete final flush
+    if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(30), flusher_handle).await {
+        tracing::warn!("Flusher did not complete within 30s: {:?}", e);
+    } else {
+        tracing::info!("✅ Redis flusher shutdown complete");
+    }
+}
+/* ```
+
+## Key Features:
+
+1. **Automatic metric registration** using `Lazy` - metrics are registered on first use
+2. **Path normalization** to prevent cardinality explosion (e.g., `/users/123` → `/users/:id`)
+3. **Multiple metrics**:
+   - `http_requests_total` - Request counter by method, path, and status
+   - `http_request_duration_seconds` - Request duration histogram
+   - `db_query_duration_seconds` - Database query timing (for future use)
+   - `cache_operations_total` - Cache operation counter (for future use)
+4. **Proper histogram buckets** for latency tracking
+5. **Debug logging** for request completion
+
+## Expected Metrics Output:
+```
+# HELP http_requests_total Number of HTTP requests received
+# TYPE http_requests_total counter
+http_requests_total{method="GET",path="/health",status="200"} 5
+http_requests_total{method="GET",path="/metrics",status="200"} 10
+http_requests_total{method="GET",path="/users/:id",status="200"} 15
+
+# HELP http_request_duration_seconds HTTP request duration in seconds
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{method="GET",path="/health",le="0.005"} 5
+http_request_duration_seconds_sum{method="GET",path="/health"} 0.015
+http_request_duration_seconds_count{method="GET",path="/health"} 5 */

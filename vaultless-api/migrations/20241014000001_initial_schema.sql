@@ -292,12 +292,12 @@ CREATE TABLE api_keys (
     
     -- API key data
     key_hash VARCHAR(64) NOT NULL UNIQUE,               -- SHA-256 hash of the API key
-    key_prefix VARCHAR(8) NOT NULL,                    -- First 8 chars for identification (vlt_xxxxx...)
+    key_prefix VARCHAR(32) NOT NULL,                    -- First 8 chars for identification (vlt_xxxxx...)
     
     -- Subscription & Billing
     tier subscription_tier NOT NULL DEFAULT 'free',
-    monthly_message_quota INTEGER NOT NULL DEFAULT 1000,
-    message_retention_seconds INTEGER NOT NULL DEFAULT 604800, -- 7 days
+    monthly_message_quota BIGINT NOT NULL DEFAULT 1000,
+    message_retention_seconds BIGINT NOT NULL DEFAULT 604800, -- 7 days
     
     -- Metadata
     description TEXT,                                   -- User-friendly description
@@ -318,8 +318,11 @@ CREATE TABLE api_keys (
 );
 
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix
+    ON public.api_keys USING btree
+    (key_prefix COLLATE pg_catalog."default" ASC NULLS LAST)
+    TABLESPACE pg_default;
 CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
-CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX idx_api_keys_active ON api_keys(is_active) WHERE is_active = true;
 CREATE INDEX idx_api_keys_tier ON api_keys(tier);
 
@@ -332,11 +335,11 @@ CREATE TABLE messages (
     
     -- Encrypted Payload
     ciphertext TEXT NOT NULL, -- Base64-encoded AES-256-GCM encrypted data
-    nonce VARCHAR(32) NOT NULL, -- Base64-encoded 96-bit nonce for AES-GCM
+    nonce UUID NOT NULL,
     
     -- Message Metadata (encrypted or public)
     content_type VARCHAR(100) DEFAULT 'application/octet-stream',
-    content_size_bytes INTEGER NOT NULL,
+    content_size_bytes BIGINT NOT NULL,
     
     -- Authentication
     api_key_id UUID NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
@@ -345,14 +348,14 @@ CREATE TABLE messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ NOT NULL,
     accessed_at TIMESTAMPTZ, -- NULL = never accessed
-    access_count INTEGER NOT NULL DEFAULT 0,
+    access_count BIGINT NOT NULL DEFAULT 0,
     
     -- Delivery tracking
     is_delivered BOOLEAN NOT NULL DEFAULT false,
     delivered_at TIMESTAMPTZ,
     
     -- Optional features
-    max_access_count INTEGER, -- NULL = unlimited
+    max_access_count BIGINT, -- NULL = unlimited
     require_proof_verification BOOLEAN NOT NULL DEFAULT false,
     
     -- Indexes
@@ -415,12 +418,14 @@ CREATE TABLE usage_metrics (
     messages_received BIGINT NOT NULL DEFAULT 0,
     proofs_verified BIGINT NOT NULL DEFAULT 0,
     total_bytes_stored BIGINT NOT NULL DEFAULT 0,
+    total_bytes_sent BIGINT NOT NULL DEFAULT 0,
+    total_bytes_received BIGINT NOT NULL DEFAULT 0,
     
     -- Rate limiting violations
     rate_limit_hits INTEGER NOT NULL DEFAULT 0,
     
     -- Cost tracking (for billing)
-    estimated_cost_cents INTEGER,
+    estimated_cost_cents BIGINT,
     
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     
@@ -429,7 +434,10 @@ CREATE TABLE usage_metrics (
         messages_sent >= 0 AND 
         messages_received >= 0 AND 
         proofs_verified >= 0 AND
-        total_bytes_stored >= 0
+        total_bytes_stored >= 0 AND
+        total_bytes_sent >= 0 AND
+        total_bytes_received >= 0 AND
+        rate_limit_hits >= 0
     )
 );
 
@@ -441,6 +449,8 @@ SELECT create_hypertable('usage_metrics', 'period_start', if_not_exists => TRUE)
 CREATE INDEX idx_usage_api_key ON usage_metrics(api_key_id);
 CREATE INDEX idx_usage_period ON usage_metrics(period_start, period_end);
 CREATE INDEX idx_usage_created ON usage_metrics(created_at DESC);
+CREATE INDEX idx_usage_bytes_sent ON usage_metrics (total_bytes_sent ASC NULLS LAST);
+CREATE INDEX idx_usage_bytes_received ON usage_metrics (total_bytes_received ASC NULLS LAST);
 
 -- Unique constraint: one metric record per API key per period
 -- We enforce this at application level with period_start rounded to the hour
@@ -464,25 +474,26 @@ SELECT add_retention_policy('usage_metrics', INTERVAL '90 days');
 -- ============================================================================
 -- CONTINUOUS AGGREGATE: daily summary (fast daily rollups)
 -- ============================================================================
+-- ============================================================================
 
--- Create continuous aggregate (materialized view) for daily totals
-CREATE MATERIALIZED VIEW IF NOT EXISTS usage_metrics_daily
+-- Recreate with ALL fields
+CREATE MATERIALIZED VIEW usage_metrics_daily
 WITH (timescaledb.continuous) AS
 SELECT
     api_key_id,
     time_bucket(INTERVAL '1 day', period_start) AS day,
-    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
-    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
-    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
-    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
-    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(messages_sent), 0)::BIGINT AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT AS total_bytes_stored,
+    COALESCE(SUM(total_bytes_sent), 0)::BIGINT AS total_bytes_sent,
+    COALESCE(SUM(total_bytes_received), 0)::BIGINT AS total_bytes_received,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT AS total_rate_limit_hits,
     COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
 FROM usage_metrics
 GROUP BY api_key_id, time_bucket(INTERVAL '1 day', period_start)
 WITH NO DATA;
 
-
--- Schedule automatic refresh policy (keeps data up-to-date; adjust offsets as desired)
 SELECT add_continuous_aggregate_policy(
     'usage_metrics_daily',
     start_offset => INTERVAL '2 day',
@@ -490,23 +501,22 @@ SELECT add_continuous_aggregate_policy(
     schedule_interval => INTERVAL '1 hour'
 );
 
--- 🚀 Composite index for high-performance time-series lookups per API key
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_daily_api_key_day ON usage_metrics_daily (api_key_id, day DESC);
+CREATE INDEX idx_usage_metrics_daily_api_key_day 
+    ON usage_metrics_daily (api_key_id, day DESC);
 
--- ============================================================================
--- CONTINUOUS AGGREGATE: weekly summary (long-term rollups)
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS usage_metrics_weekly
+-- Same for weekly
+CREATE MATERIALIZED VIEW usage_metrics_weekly
 WITH (timescaledb.continuous) AS
 SELECT
     api_key_id,
     time_bucket(INTERVAL '7 days', period_start) AS week_start,
-    COALESCE(SUM(messages_sent), 0)::BIGINT        AS total_messages_sent,
-    COALESCE(SUM(messages_received), 0)::BIGINT    AS total_messages_received,
-    COALESCE(SUM(proofs_verified), 0)::BIGINT      AS total_proofs_verified,
-    COALESCE(SUM(total_bytes_stored), 0)::BIGINT   AS total_bytes_stored,
-    COALESCE(SUM(rate_limit_hits), 0)::BIGINT      AS total_rate_limit_hits,
+    COALESCE(SUM(messages_sent), 0)::BIGINT AS total_messages_sent,
+    COALESCE(SUM(messages_received), 0)::BIGINT AS total_messages_received,
+    COALESCE(SUM(proofs_verified), 0)::BIGINT AS total_proofs_verified,
+    COALESCE(SUM(total_bytes_stored), 0)::BIGINT AS total_bytes_stored,
+    COALESCE(SUM(total_bytes_sent), 0)::BIGINT AS total_bytes_sent,
+    COALESCE(SUM(total_bytes_received), 0)::BIGINT AS total_bytes_received,
+    COALESCE(SUM(rate_limit_hits), 0)::BIGINT AS total_rate_limit_hits,
     COALESCE(SUM(COALESCE(estimated_cost_cents, 0)), 0)::BIGINT AS total_estimated_cost_cents
 FROM usage_metrics
 GROUP BY api_key_id, time_bucket(INTERVAL '7 days', period_start)
@@ -519,8 +529,8 @@ SELECT add_continuous_aggregate_policy(
     schedule_interval => INTERVAL '1 day'
 );
 
--- Useful indexes on the weekly aggregate
-CREATE INDEX IF NOT EXISTS idx_usage_metrics_weekly_api_key_week_start ON usage_metrics_weekly (api_key_id, week_start DESC);
+CREATE INDEX idx_usage_metrics_weekly_api_key_week_start 
+    ON usage_metrics_weekly (api_key_id, week_start DESC);
 
 -- ============================================================================
 -- HELPER FUNCTIONS
@@ -574,31 +584,6 @@ $$ LANGUAGE plpgsql;
 
 -- Note: This trigger would be activated by a "message_accesses" event table if needed
 
--- ============================================================================
--- SEED DATA (Development Only)
--- ============================================================================
-
--- Create a development API key (hash of "dev_test_key_12345")
-/* INSERT INTO api_keys (
-    key_hash,
-    key_prefix,
-    tier,
-    monthly_message_quota,
-    message_retention_seconds,
-    owner_email,
-    owner_name,
-    rate_limit_per_minute,
-) VALUES (
-    'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', -- SHA-256 of "dev_test_key_12345"
-    'vlt_dev_',
-    'pro',
-    500000,
-    7776000, -- 90 days
-    'dev@vaultless.local',
-    'Development User',
-    1000,
-    'Development API key - DO NOT USE IN PRODUCTION'
-) ON CONFLICT (key_hash) DO NOTHING; */
 
 -- ============================================================================
 -- COMMENTS FOR DOCUMENTATION

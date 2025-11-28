@@ -1,8 +1,9 @@
+use crate::crypto::hash_content;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Acquire, Postgres, Transaction};
 use sqlx::{FromRow, postgres::PgPool};
+use sqlx::{Postgres, Transaction};
 use std::net::IpAddr;
 use uuid::Uuid;
 
@@ -13,10 +14,6 @@ struct UserRegistration {
     password: String,
     name: Option<String>,
 }
-
-// ============================================================================
-// USER MODEL
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct User {
@@ -122,6 +119,7 @@ impl User {
 
     /// Verify email with token
     pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Self, VaultlessError> {
+        let token_hash = hash_content(token.as_bytes());
         let user = sqlx::query_as::<_, User>(
             r#"
             UPDATE users 
@@ -134,7 +132,7 @@ impl User {
             RETURNING *
             "#,
         )
-        .bind(token)
+        .bind(token_hash)
         .fetch_one(pool)
         .await
         .map_err(|_| {
@@ -224,7 +222,7 @@ impl User {
         // Start transaction
         let mut tx: Transaction<'_, Postgres> = pool.begin().await?;
 
-        // 1️⃣ Find user (FOR UPDATE to prevent race conditions)
+        // Find user (FOR UPDATE to prevent race conditions)
         let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1 FOR UPDATE")
             .bind(email)
             .fetch_optional(&mut *tx)
@@ -248,7 +246,7 @@ impl User {
             }
         };
 
-        // 2️⃣ Verify password
+        // Verify password
         let password_ok = bcrypt::verify(password, &user.password_hash).map_err(|e| {
             VaultlessError::Internal(format!("Password verification failed: {}", e))
         })?;
@@ -268,7 +266,7 @@ impl User {
             ));
         }
 
-        // 3️⃣ Check active & verified status
+        // Check active & verified status
         if !user.is_active {
             tracing::warn!(
                 user_id = %user.id,
@@ -328,7 +326,7 @@ impl User {
             ));
         }
 
-        // 4️⃣ Update last login timestamp
+        // Update last login timestamp
         sqlx::query("UPDATE users SET last_login_at = NOW() WHERE id = $1")
             .bind(user.id)
             .execute(&mut *tx)
@@ -343,7 +341,7 @@ impl User {
                 VaultlessError::Database(e)
             })?;
 
-        // 5️⃣ Log successful login
+        // Log successful login
         LoginAttempt::log_tx(&mut tx, email, ip_address, true, None)
             .await
             .map_err(|e| {
@@ -374,7 +372,7 @@ impl User {
     pub async fn resend_verification_token(
         pool: &PgPool,
         email: &str,
-    ) -> Result<Self, VaultlessError> {
+    ) -> Result<(String, String), VaultlessError> {
         // Check if user exists and not verified
         let user = sqlx::query_as::<_, User>(
             "SELECT * FROM users WHERE email = $1 AND email_verified = false",
@@ -396,6 +394,7 @@ impl User {
         let token = Self::generate_token()
             .map_err(|e| VaultlessError::Internal(format!("Token generation failed: {}", e)))?;
 
+        let token_hash = hash_content(token.as_bytes());
         let expires_at = Utc::now() + Duration::hours(24);
 
         // Update token and expiry
@@ -409,13 +408,13 @@ impl User {
             RETURNING *
             "#,
         )
-        .bind(&token)
+        .bind(token_hash)
         .bind(expires_at)
         .bind(user.id)
         .fetch_one(pool)
         .await?;
 
-        Ok(updated_user)
+        Ok((updated_user.email, token))
     }
 }
 

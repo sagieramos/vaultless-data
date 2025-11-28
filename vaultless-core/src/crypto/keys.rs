@@ -58,6 +58,43 @@ pub fn generate_encryption_key() -> Result<String> {
     Ok(BASE64.encode(key))
 }
 
+/// Generates a secure random token of length 'n' bytes,
+/// and returns it as a Base64 encoded array size.
+pub fn generate_secure_token<const N: usize>() -> Result<[u8; N]> {
+    let mut token_bytes = [0u8; N];
+
+    getrandom::fill(&mut token_bytes).map_err(|e| {
+        crate::error::VaultlessError::Internal(format!("Secure token generation failed: {}", e))
+    })?;
+
+    Ok(token_bytes)
+}
+
+/// Generate a secure API key with environment tag (e.g. "sk_live_..." or "sk_test_...")
+///
+/// # Arguments
+/// * `prefix` - Static prefix like "sk"
+/// * `env` - Environment tag ("live" or "test")
+///
+/// # Returns
+/// * `String` - The generated API key
+///
+/// # Example
+/// ```
+/// let secret_key = crypto::generate_api_key("sk", "live")?;
+/// println!("Generated key: {}", secret_key);
+/// ```
+pub fn generate_api_key(prefix: &str, env: &str) -> Result<String> {
+    let mut random_bytes = [0u8; 32];
+    getrandom::fill(&mut random_bytes).map_err(|e| {
+        crate::error::VaultlessError::Internal(format!("API key generation failed: {}", e))
+    })?;
+    let encoded = BASE64.encode(random_bytes);
+    let api_key = format!("{}_{}_{}", prefix, env, encoded);
+
+    Ok(api_key)
+}
+
 /// Derive encryption key from password using PBKDF2
 ///
 /// # Arguments
@@ -117,7 +154,7 @@ pub fn generate_salt() -> Result<String> {
 /// # Format
 /// * `{prefix}{base64_random_32_bytes}`
 /// * Example: `vlt_kX9mN2pQ...`
-pub fn generate_api_key(prefix: &str) -> Result<(String, String)> {
+pub fn generate_api_key_hash(prefix: &str) -> Result<(String, String)> {
     let mut random_bytes = [0u8; 32];
     getrandom::fill(&mut random_bytes).map_err(|e| {
         crate::error::VaultlessError::Internal(format!("API key generation failed: {}", e))
@@ -226,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_generate_api_key() {
-        let (api_key, hash) = generate_api_key("vlt_").unwrap();
+        let (api_key, hash) = generate_api_key_hash("vlt_").unwrap();
 
         assert!(api_key.starts_with("vlt_"));
         assert_eq!(hash.len(), 64); // SHA-256 hex = 64 chars

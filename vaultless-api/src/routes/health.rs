@@ -52,7 +52,7 @@ pub async fn health_check(State(state): State<AppState>) -> (StatusCode, Json<He
 /// New Axum handler for the /check_cache route
 /// GET /check_cache
 pub async fn check_cache_handler(State(state): State<AppState>) -> (StatusCode, Json<CacheHealth>) {
-    let cache_health = check_cache(&state.cache).await;
+    let cache_health = check_cache(&state.redis_pool).await;
 
     let status = if cache_health.connected {
         StatusCode::OK
@@ -103,7 +103,7 @@ async fn check_database(pool: &PgPool) -> DatabaseHealth {
 /// Readiness check endpoint (Kubernetes-friendly)
 /// GET /ready
 pub async fn readiness_check(State(state): State<AppState>) -> StatusCode {
-    match sqlx::query("SELECT 1").fetch_one(&state.db).await {
+    match sqlx::query("SELECT 1").fetch_one(state.db.as_ref()).await {
         Ok(_) => StatusCode::OK,
         Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }

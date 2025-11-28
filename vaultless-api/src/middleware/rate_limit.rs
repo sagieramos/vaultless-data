@@ -5,7 +5,7 @@ use axum::{
     response::Response,
 };
 use std::net::SocketAddr;
-use vaultless_core::{ApiKey, UsageMetric};
+use vaultless_core::{ApiKey, MetricsConfig, increment_rate_limit_hit_pool};
 
 use crate::{middleware::error::ApiError, services::RateLimiter, state::AppState};
 
@@ -16,7 +16,7 @@ pub async fn rate_limit_by_api_key(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let rate_limiter = RateLimiter::new(state.cache.clone());
+    let rate_limiter = RateLimiter::new(state.redis_pool.clone());
 
     // Check rate limit
     let result = rate_limiter
@@ -25,12 +25,17 @@ pub async fn rate_limit_by_api_key(
 
     if !result.allowed {
         // Record violation
+        increment_rate_limit_hit_pool(&state.redis_pool, api_key.id, &MetricsConfig::default())
+            .await?;
         if let Err(e) = rate_limiter.record_violation(api_key.id).await {
             tracing::warn!("Failed to record rate limit violation: {}", e);
         }
 
         // Record in usage metrics
-        if let Err(e) = UsageMetric::record_rate_limit_hit(&state.db, api_key.id).await {
+        if let Err(e) =
+            increment_rate_limit_hit_pool(&state.redis_pool, api_key.id, &MetricsConfig::default())
+                .await
+        {
             tracing::warn!("Failed to record rate limit hit in metrics: {}", e);
         }
 
@@ -57,7 +62,7 @@ pub async fn rate_limit_by_ip(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let rate_limiter = RateLimiter::new(state.cache.clone());
+    let rate_limiter = RateLimiter::new(state.redis_pool.clone());
     let ip = addr.ip().to_string();
 
     // Default IP limit: 100 requests per minute
@@ -88,7 +93,7 @@ pub async fn rate_limit_endpoint(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let rate_limiter = RateLimiter::new(state.cache.clone());
+    let rate_limiter = RateLimiter::new(state.redis_pool.clone());
     let endpoint = request.uri().path();
 
     // Endpoint-specific limits

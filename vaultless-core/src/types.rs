@@ -1,6 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Type;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
+
+#[macro_export]
+macro_rules! cache_key {
+    ($($segment:expr),+ $(,)?) => {
+        format!("vaultless:{}", vec![$($segment.to_string()),+].join(":"))
+    };
+}
 
 /// Subscription tier enum matching the database
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
@@ -87,6 +94,19 @@ impl SubscriptionTier {
             Self::Enterprise => None,     // Custom pricing
         }
     }
+
+    /// Whether this tier has proof-based features enabled
+    ///
+    /// For example: cryptographic proofs, signed verifications, or
+    /// zero-knowledge-based message integrity validation.
+    pub fn proof_enabled(&self) -> bool {
+        matches!(self, Self::Pro | Self::Enterprise)
+    }
+
+    /// Whether proof *must* be enforced (optional helper)
+    pub fn proof_required(&self) -> bool {
+        matches!(self, Self::Enterprise)
+    }
 }
 
 impl Default for SubscriptionTier {
@@ -95,13 +115,33 @@ impl Default for SubscriptionTier {
     }
 }
 
-impl std::fmt::Display for SubscriptionTier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SubscriptionTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Free => write!(f, "free"),
             Self::Starter => write!(f, "starter"),
             Self::Pro => write!(f, "pro"),
             Self::Enterprise => write!(f, "enterprise"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[sqlx(type_name = "key_type", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum KeyType {
+    /// A sensitive, secret key used for server-to-server authentication and billing.
+    Secret,
+    /// A publicly available key used for client-side identification (e.g., client registration).
+    Publishable,
+}
+
+impl fmt::Display for KeyType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Use a match statement to map the enum variant to its lowercase string representation.
+        match self {
+            KeyType::Secret => write!(f, "secret"),
+            KeyType::Publishable => write!(f, "publishable"),
         }
     }
 }
