@@ -5,8 +5,8 @@ use axum::{
 
 use crate::{
     AppState,
-    handlers::instant_message::*,
-    middleware::{application, client::require_authenticated_client},
+    handlers::clients::instant_message::*,
+    middleware::{application, client::client_auth},
 };
 
 pub fn message_routes(state: AppState) -> Router<AppState> {
@@ -21,10 +21,7 @@ pub fn message_routes(state: AppState) -> Router<AppState> {
         // Apply middleware globally for all routes above
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            application::check_quota,
+            application::app_auth,
         ))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_authenticated_client,
-        ))
+        .layer(middleware::from_fn_with_state(state.clone(), client_auth))
 }

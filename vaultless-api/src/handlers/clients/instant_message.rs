@@ -90,7 +90,7 @@ pub async fn send_message(
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Compute content size server-side ---
-    let content_size_bytes = input.ciphertext.as_bytes().len() as i32;
+    let content_size_bytes = input.ciphertext.len() as i32;
 
     // Validate input
     input

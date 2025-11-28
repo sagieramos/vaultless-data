@@ -10,7 +10,7 @@ use uuid::Uuid;
 // Define safe maximum data points for each granularity.
 // Daily: ~3 months (100 days). Weekly: ~3 years (160 weeks).
 const CHART_MAX_POINTS_DAILY: i64 = 100;
-const CHART_MAX_POINTS_WEEKLY: i64 = 160; 
+const CHART_MAX_POINTS_WEEKLY: i64 = 160;
 
 /// Metric types the frontend can request
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
@@ -244,9 +244,9 @@ impl Application {
 
         let rows = sqlx::query_as::<_, UsageChartPoint>(&sql)
             .bind(start_ts) // $1
-            .bind(end_ts)   // $2
-            .bind(app_id)   // $3
-            .bind(user_id)  // $4
+            .bind(end_ts) // $2
+            .bind(app_id) // $3
+            .bind(user_id) // $4
             .bind(max_points) // $5: Apply the dynamic limit
             .fetch_all(exec)
             .await?;
@@ -265,9 +265,7 @@ impl Application {
         let sum_or_none = |f: fn(&UsageChartPoint) -> Option<i64>| -> Option<i64> {
             // Check if the column was selected in the SQL (i.e., if it has a value in the first row).
             // If the column was NOT selected, sqlx sets it to None, and we return None here.
-            if rows.first().and_then(f).is_none() {
-                return None;
-            }
+            rows.first().and_then(f)?;
             // If it was selected, sum all values (0s from COALESCE/gapfill will be summed correctly).
             Some(rows.iter().filter_map(f).sum())
         };
@@ -282,7 +280,7 @@ impl Application {
                 end_ts.format("%Y-%m-%d")
             ),
             granularity: granularity.as_api_str().to_owned(),
-            
+
             // Totals: These correctly return None for metrics not included in the SELECT statement
             // due to the check inside sum_or_none.
             total_messages_sent: sum_or_none(|p| p.messages_sent),
@@ -293,7 +291,7 @@ impl Application {
             total_bytes_stored: sum_or_none(|p| p.bytes_stored),
             total_rate_limit_hits: sum_or_none(|p| p.rate_limit_hits),
             total_cost_cents: sum_or_none(|p| p.cost_cents),
-            
+
             data_points: rows,
         })
     }

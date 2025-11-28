@@ -1,6 +1,4 @@
-use crate::error::{VaultlessError};
 use sqlx::{Executor, FromRow};
-use std::marker::PhantomData;
 
 pub struct PaginationMeta {
     pub total_count: i64,

@@ -1,12 +1,9 @@
-use super::types::*;
 use crate::error::{Result, VaultlessError};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 // =============================================================================
 // WEB ATTESTATION TYPES
@@ -48,8 +45,8 @@ pub fn validate_origin(origin: &str, allowed_origins: &[String]) -> Result<()> {
 
     // Check wildcard subdomain patterns (*.example.com)
     for allowed in allowed_origins {
-        if allowed.starts_with("*.") {
-            let domain = &allowed[2..]; // Remove "*."
+        if let Some(domain) = allowed.strip_prefix("*.") {
+            // Remove "*."
             if origin.ends_with(domain) {
                 return Ok(());
             }
@@ -337,10 +334,7 @@ pub async fn verify_client_origin(
 const USAGE_PREFIX: &str = "browser_usage";
 
 /// Track usage for spike detection
-pub async fn track_usage(
-    redis_pool: &RedisPool,
-    publishable_key: &str,
-) -> Result<()> {
+pub async fn track_usage(redis_pool: &RedisPool, publishable_key: &str) -> Result<()> {
     let key = format!("{}:pk:{}:hour", USAGE_PREFIX, publishable_key);
 
     let mut conn = redis_pool
@@ -378,15 +372,9 @@ pub async fn check_usage_spike(
         .await
         .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
 
-    let current: u32 = conn
-        .get(&current_key)
-        .await
-        .unwrap_or(0);
+    let current: u32 = conn.get(&current_key).await.unwrap_or(0);
 
-    let baseline: u32 = conn
-        .get(&baseline_key)
-        .await
-        .unwrap_or(0);
+    let baseline: u32 = conn.get(&baseline_key).await.unwrap_or(0);
 
     // Update baseline (rolling average)
     if current > 0 {
@@ -397,7 +385,7 @@ pub async fn check_usage_spike(
         };
 
         let _: () = conn
-            .set_ex(&baseline_key, new_baseline, (baseline_hours * 3600) as u64)
+            .set_ex(&baseline_key, new_baseline, baseline_hours * 3600)
             .await
             .map_err(|e| VaultlessError::Internal(format!("Redis SET failed: {}", e)))?;
     }
@@ -441,12 +429,7 @@ pub async fn validate_browser_request(
     }
 
     // 3. Rate limiting
-    check_request_rate_limit(
-        redis_pool,
-        ip_address,
-        config.max_requests_per_ip_per_hour,
-    )
-    .await?;
+    check_request_rate_limit(redis_pool, ip_address, config.max_requests_per_ip_per_hour).await?;
 
     Ok(())
 }
@@ -479,17 +462,17 @@ mod tests {
 
     #[test]
     fn test_validate_referer() {
-        assert!(validate_referer(
-            Some("https://app.example.com/page"),
-            "https://app.example.com"
-        )
-        .is_ok());
+        assert!(
+            validate_referer(
+                Some("https://app.example.com/page"),
+                "https://app.example.com"
+            )
+            .is_ok()
+        );
 
-        assert!(validate_referer(
-            Some("https://evil.com/page"),
-            "https://app.example.com"
-        )
-        .is_err());
+        assert!(
+            validate_referer(Some("https://evil.com/page"), "https://app.example.com").is_err()
+        );
 
         assert!(validate_referer(None, "https://app.example.com").is_err());
     }

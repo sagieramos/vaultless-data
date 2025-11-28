@@ -3,17 +3,14 @@ use axum::{
     routing::{get, post},
 };
 
-use crate::{AppState, middleware::user::user_auth, handlers::user::*, state};
+use crate::{AppState, handlers::developer::user_auth::*, middleware::user::user_auth};
 
 pub fn user_routes(state: AppState) -> Router<AppState> {
     Router::new()
         // Protected routes (requires authenticated user)
         .route("/me", get(get_current_user))
         .route("/logout", post(logout))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            user_auth,
-        ))
+        .layer(middleware::from_fn_with_state(state.clone(), user_auth))
         // Public routes
         .route("/register", post(register))
         .route("/login", post(login))

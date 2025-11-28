@@ -110,17 +110,17 @@ pub async fn restore_recent_or_missing_periods_from_pg(
     // 2. Redis has active keys: restore only missing periods
     let mut last_period_per_key: HashMap<Uuid, DateTime<Utc>> = HashMap::new();
     for key_str in active_keys {
-        if let Ok(key) = MetricKey::try_from(key_str.to_string()) {
-            if let Some((api_key_id, period_start)) = key.parse() {
-                last_period_per_key
-                    .entry(api_key_id)
-                    .and_modify(|existing| {
-                        if period_start > *existing {
-                            *existing = period_start;
-                        }
-                    })
-                    .or_insert(period_start);
-            }
+        if let Ok(key) = MetricKey::try_from(key_str.to_string())
+            && let Some((api_key_id, period_start)) = key.parse()
+        {
+            last_period_per_key
+                .entry(api_key_id)
+                .and_modify(|existing| {
+                    if period_start > *existing {
+                        *existing = period_start;
+                    }
+                })
+                .or_insert(period_start);
         }
     }
     for (api_key_id, last_period) in last_period_per_key {

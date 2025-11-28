@@ -1,7 +1,6 @@
 // vaultless-core/src/models/session/paseto_session.rs
 
 use super::claims_keys as ck;
-use std::fmt;
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
 use chrono::{Duration, Utc};
@@ -11,6 +10,7 @@ use pasetors::keys::SymmetricKey;
 use pasetors::token::{Local, UntrustedToken};
 use pasetors::{local, version4::V4};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use uuid::Uuid;
 
 // =============================================================================

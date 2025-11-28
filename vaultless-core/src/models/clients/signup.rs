@@ -1,6 +1,5 @@
 use super::dto::*;
-use crate::{AuthConfig, cache_key};
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use crate::{ApplicationKeyView, cache_key};
 use chrono::{Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::{AsyncCommands, Script};
@@ -35,7 +34,7 @@ impl Client {
         key_manager: Arc<SessionKeyManager>,
         attestation_service: Option<Arc<AttestationService>>,
         input: RegisterClientRequest,
-        auth_config: AuthConfig,
+        auth_config: ApplicationKeyView,
     ) -> Result<RegisterClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
@@ -521,11 +520,11 @@ impl Client {
         .await?;
 
         // 9. Invalidate Redis cache
-        if let Some(redis_pool) = redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                let cache_key = cache_key!("client", "id", client_id);
-                let _ = conn.del::<_, ()>(&cache_key).await;
-            }
+        if let Some(redis_pool) = redis
+            && let Ok(mut conn) = redis_pool.get().await
+        {
+            let cache_key = cache_key!("client", "id", client_id);
+            let _ = conn.del::<_, ()>(&cache_key).await;
         }
 
         tracing::info!(

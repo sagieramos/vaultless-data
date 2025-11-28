@@ -118,7 +118,7 @@ impl HybridSessionVerifier {
                 metrics::FALLBACK_TO_REDIS.inc();
                 let is_revoked = self.check_revocation_redis(&jti).await?;
                 // Detect stale cache: cached 'is_valid' should be !is_revoked
-                if is_revoked != !is_valid {
+                if is_revoked == is_valid {
                     metrics::STALE_CACHE_DETECTED.inc();
                     tracing::error!(
                         jti = %jti,

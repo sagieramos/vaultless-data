@@ -25,19 +25,19 @@ pub async fn user_auth(
     let token = super::helper::extract_bearer_token(request.headers())?;
 
     let token_service = &state.token_service;
-    let session_data = token_service.verify_access_token(&token).await?;
+    let session_data = token_service.verify_access_token(token).await?;
 
     request.extensions_mut().insert(session_data);
     Ok(next.run(request).await)
 }
 
-impl<S> FromRequestParts<S> for SessionDataUserExt
-where
-    S: Send + Sync,
-{
+impl FromRequestParts<AppState> for SessionDataUserExt {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         parts
             .extensions
             .get::<SessionDataUserExt>()

@@ -303,15 +303,14 @@ pub fn validate_bundle_id(bundle_id: &str, allowed: &[String]) -> Result<()> {
 }
 
 pub fn validate_version(app_version: Option<&str>, min_version: Option<i32>) -> Result<()> {
-    if let (Some(version_str), Some(min)) = (app_version, min_version) {
-        if let Ok(version_code) = version_str.parse::<i32>() {
-            if version_code < min {
-                return Err(VaultlessError::IntegrityCheckFailed(format!(
-                    "Version {} below minimum required {}",
-                    version_code, min
-                )));
-            }
-        }
+    if let (Some(version_str), Some(min)) = (app_version, min_version)
+        && let Ok(version_code) = version_str.parse::<i32>()
+        && version_code < min
+    {
+        return Err(VaultlessError::IntegrityCheckFailed(format!(
+            "Version {} below minimum required {}",
+            version_code, min
+        )));
     }
     Ok(())
 }

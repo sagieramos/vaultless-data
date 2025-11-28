@@ -50,12 +50,11 @@ pub async fn mv_etag_middleware(
         format!("W/\"{}\"", Utc::now().timestamp_millis())
     };
 
-    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
-        if let Ok(client_etag) = if_none_match.to_str() {
-            if client_etag == etag {
-                return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
-            }
-        }
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH)
+        && let Ok(client_etag) = if_none_match.to_str()
+        && client_etag == etag
+    {
+        return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
     }
 
     let mut response = next.run(request).await;
@@ -165,13 +164,12 @@ async fn mv_etag_middleware_configurable(
         format!("W/\"{}\"", Utc::now().timestamp_millis())
     };
 
-    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
-        if let Ok(client_etag) = if_none_match.to_str() {
-            if client_etag == etag {
-                tracing::debug!("ETag match, returning 304 Not Modified");
-                return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
-            }
-        }
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH)
+        && let Ok(client_etag) = if_none_match.to_str()
+        && client_etag == etag
+    {
+        tracing::debug!("ETag match, returning 304 Not Modified");
+        return Ok((StatusCode::NOT_MODIFIED, Body::empty()).into_response());
     }
 
     let mut response = next.run(request).await;

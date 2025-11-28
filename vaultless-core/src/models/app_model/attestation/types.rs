@@ -364,8 +364,7 @@ mod tests {
         });
         assert!(!meta.needs_reattesation(30));
 
-        meta.attestation.as_mut().unwrap().verified_at =
-            Utc::now() - chrono::Duration::days(31);
+        meta.attestation.as_mut().unwrap().verified_at = Utc::now() - chrono::Duration::days(31);
         assert!(meta.needs_reattesation(30));
     }
 }

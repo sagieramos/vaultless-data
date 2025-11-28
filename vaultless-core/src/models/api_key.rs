@@ -19,10 +19,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::models::usage::{
-    MetricKey, 
-    MetricCounters, 
-    REDIS_OPERATION_TIMEOUT_SECS,
-    MetricGranularity
+    MetricCounters, MetricGranularity, MetricKey, REDIS_OPERATION_TIMEOUT_SECS,
 };
 
 // =============================================================================
@@ -649,7 +646,7 @@ impl ApiKey {
 
     pub async fn find_by_plaintext_or_hash<'c, E>(
         exec: E,
-        key_hash_hex: &str,   // The hash of the key, used for lookup
+        key_hash_hex: &str, // The hash of the key, used for lookup
     ) -> Result<(Self, KeyType)>
     where
         E: Executor<'c, Database = Postgres>,

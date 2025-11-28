@@ -51,7 +51,7 @@ impl Application {
             let db_clone = db.clone();
             let redis_clone = redis_pool.clone();
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_id, &*db_clone, redis_clone).await {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &db_clone, redis_clone).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
                         app_id,

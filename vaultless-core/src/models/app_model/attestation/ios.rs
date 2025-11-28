@@ -232,10 +232,10 @@ pub async fn verify_ios_attestation(
         })?;
 
     // 4. Verify format
-    if let Some(fmt) = &attestation_obj.format {
-        if fmt != "apple-appattest" {
-            warnings.push(format!("Unexpected format: {}", fmt));
-        }
+    if let Some(fmt) = &attestation_obj.format
+        && fmt != "apple-appattest"
+    {
+        warnings.push(format!("Unexpected format: {}", fmt));
     }
 
     // 5. Extract certificate chain

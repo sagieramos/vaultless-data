@@ -8,7 +8,7 @@ use crate::{
                 AttestationMetadata, AttestationService, check_attestation_rate_limit,
                 track_failed_attestation,
             },
-            dto::{Application, AuthConfig},
+            dto::ApplicationKeyView,
         },
         session::paseto_session::{
             self, SessionData, SessionKeyManager, revoke_session, verify_session_token,
@@ -29,7 +29,7 @@ impl Client {
         exec: E,
         redis: Arc<RedisPool>,
         key_manager: Arc<SessionKeyManager>,
-        app_resolved: AuthConfig,
+        app_resolved: ApplicationKeyView,
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
     ) -> Result<AuthenticateClientResponse>

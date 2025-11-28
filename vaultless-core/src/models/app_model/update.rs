@@ -111,10 +111,10 @@ impl Application {
         let updated_app = query.fetch_one(&*exec).await?;
 
         // ================= CACHE INVALIDATION =================
-        if let Some(pool) = redis {
-            if let Err(e) = Self::invalidate_auth_cache(application_id, &*exec, pool).await {
-                tracing::debug!(application_id = %application_id, "Cache invalidation failed: {:?}", e);
-            }
+        if let Some(pool) = redis
+            && let Err(e) = Self::invalidate_auth_cache(application_id, &exec, pool).await
+        {
+            tracing::debug!(application_id = %application_id, "Cache invalidation failed: {:?}", e);
         }
 
         tracing::info!(application_id = %application_id, fields_updated = field_count, "Application updated successfully");

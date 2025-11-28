@@ -1,4 +1,3 @@
-use crate::models::app_model::dto::*;
 use deadpool_redis::PoolError as DeadpoolRedisPoolError;
 use redis::RedisError;
 use serde_json::Error as SerdeJsonError;
@@ -134,7 +133,7 @@ impl VaultlessError {
                 | VaultlessError::NotFound(_)
                 | VaultlessError::Duplicate(_)
                 | VaultlessError::Conflict(_)
-                | VaultlessError::Timeout(_) 
+                | VaultlessError::Timeout(_)
                 | VaultlessError::Serialization(_)
         )
     }
@@ -150,7 +149,7 @@ impl VaultlessError {
             VaultlessError::ApiKeyInactive => 403,
             VaultlessError::QuotaExceeded(_) => 429,
             VaultlessError::RateLimitExceeded(_) => 429,
-            VaultlessError::IntegrityCheckFailed(_) => 403, 
+            VaultlessError::IntegrityCheckFailed(_) => 403,
             VaultlessError::Validation(_)
             | VaultlessError::BadRequest(_)
             | VaultlessError::InvalidInput(_)

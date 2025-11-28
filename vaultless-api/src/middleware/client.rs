@@ -3,7 +3,7 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use vaultless_core::models::session::HybridSessionVerifier;
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::{AuthConfig, Client, SessionData as SessionDataClient};
+use vaultless_core::{Client, SessionData as SessionDataClient};
 
 use axum::{
     extract::{Request, State},
@@ -12,53 +12,10 @@ use axum::{
 };
 
 #[derive(Debug, Clone)]
-pub struct AuthConfigExt(pub AuthConfig);
-
-#[derive(Debug, Clone)]
 pub struct ClientExt(pub Client);
 
 #[derive(Debug, Clone)]
 pub struct SessionDataClientExt(pub SessionDataClient);
-
-pub async fn api_key_auth(
-    State(state): State<AppState>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
-    let api_key = extract_api_key(req.headers())?;
-
-    let auth_config = AuthConfig::resolve_and_validate(&*state.db, state.redis_pool, api_key)
-        .await
-        .map_err(ApiError::from)?;
-
-    tracing::debug!(
-        app_id = %auth_config.app_id,
-        developer_id = %auth_config.app_user_id,
-        "API key validated successfully"
-    );
-
-    req.extensions_mut().insert(AuthConfigExt(auth_config));
-
-    Ok(next.run(req).await)
-}
-
-impl FromRequestParts<AppState> for AuthConfigExt {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<AuthConfigExt>()
-            .cloned()
-            .ok_or_else(|| {
-                ApiError::unauthorized("Missing API key authentication")
-                    .with_code("MISSING_API_KEY_AUTH")
-            })
-    }
-}
 
 pub async fn client_auth(
     State(state): State<AppState>,

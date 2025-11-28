@@ -23,7 +23,7 @@ pub use models::{
     app_model::attestation::AttestationService,
     app_model::{
         dto::{
-            Application, ApplicationWithTier, AuthConfig, CreateApplication,
+            Application, ApplicationKeyView, ApplicationWithTier, CreateApplication,
             CreateApplicationResponse, PaginatedApplicationsWithKeys, UpdateApplication,
         },
         helper::get_global_mv_etag,
@@ -60,8 +60,8 @@ pub use crypto::{
     hash_content, sign_data, verify_hash, verify_signature,
 };
 
-pub use getrandom;
 pub use bigdecimal::BigDecimal as Decimal;
+pub use getrandom;
 
 // Version info
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

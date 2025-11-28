@@ -1,6 +1,7 @@
 use crate::{
     middleware::{
-        client::{AuthConfigExt, ClientExt, SessionDataClientExt},
+        application::ApplicationKeyViewExt,
+        client::{ClientExt, SessionDataClientExt},
         error::ApiError,
     },
     state::AppState,
@@ -57,7 +58,7 @@ pub struct ChallengeResponse {
 #[axum::debug_handler]
 pub async fn register_client(
     State(state): State<AppState>,
-    AuthConfigExt(auth_config): AuthConfigExt,
+    ApplicationKeyViewExt(auth_config): ApplicationKeyViewExt,
     Json(input): Json<RegisterClientRequest>,
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
     tracing::info!(
@@ -94,7 +95,7 @@ pub async fn register_client(
 pub async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
-    AuthConfigExt(auth_config): AuthConfigExt,
+    ApplicationKeyViewExt(auth_config): ApplicationKeyViewExt,
     Json(input): Json<AuthenticateClientRequest>,
 ) -> Result<Json<AuthenticateClientResponse>, ApiError> {
     tracing::info!(
@@ -103,29 +104,29 @@ pub async fn login(
     );
 
     // 1 Try verifying existing session token (FAST PATH with caching)
-    if let Ok(token) = crate::middleware::helper::extract_bearer_token(&headers) {
-        if let Ok(session_data) = state.session_verifier.verify_fast(token).await {
-            tracing::info!(
-                client_id = %session_data.client_id,
-                device_trusted = session_data.device_trusted,
-                platform = %session_data.platform,
-                "Valid session found - reusing token"
-            );
+    if let Ok(token) = crate::middleware::helper::extract_bearer_token(&headers)
+        && let Ok(session_data) = state.session_verifier.verify_fast(token).await
+    {
+        tracing::info!(
+            client_id = %session_data.client_id,
+            device_trusted = session_data.device_trusted,
+            platform = %session_data.platform,
+            "Valid session found - reusing token"
+        );
 
-            // Extract expiration only when needed
-            let expires_at = extract_token_expiration(&state.session_key_manager, token)
-                .unwrap_or_else(|_| Utc::now() + chrono::Duration::days(30));
+        // Extract expiration only when needed
+        let expires_at = extract_token_expiration(&state.session_key_manager, token)
+            .unwrap_or_else(|_| Utc::now() + chrono::Duration::days(30));
 
-            let response = AuthenticateClientResponse {
-                client_id: session_data.client_id,
-                session_token: token.to_string(),
-                expires_at,
-                is_new_session: false,
-                was_reattested: false,
-            };
+        let response = AuthenticateClientResponse {
+            client_id: session_data.client_id,
+            session_token: token.to_string(),
+            expires_at,
+            is_new_session: false,
+            was_reattested: false,
+        };
 
-            return Ok(Json(response));
-        }
+        return Ok(Json(response));
     }
 
     // 2 Challenge-based authentication

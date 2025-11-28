@@ -2,7 +2,7 @@ use super::error::ApiError;
 use axum::http::{HeaderMap, HeaderName};
 use hyper::header;
 
-pub fn extract_bearer_token<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
+pub fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
     let auth_header = headers.get(header::AUTHORIZATION).ok_or_else(|| {
         ApiError::unauthorized("Missing Authorization header").with_code("MISSING_AUTH_HEADER")
     })?;
@@ -27,7 +27,7 @@ pub fn extract_bearer_token<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiEr
     Ok(token)
 }
 
-pub fn extract_api_key<'a>(headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
+pub fn extract_api_key(headers: &HeaderMap) -> Result<&str, ApiError> {
     static API_KEY_HEADER: HeaderName = HeaderName::from_static("x-api-key");
 
     let api_key_header = headers.get(&API_KEY_HEADER).ok_or_else(|| {

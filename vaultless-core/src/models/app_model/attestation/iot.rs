@@ -220,23 +220,23 @@ pub async fn verify_iot_certificate(
                 if !bc.value.ca {
                     warnings.push(format!(
                         "Allowed CA '{}' lacks Basic Constraints cA=true",
-                        ca_cert.subject().to_string()
+                        ca_cert.subject()
                     ));
                     continue;
                 }
             } else {
                 warnings.push(format!(
                     "Allowed CA '{}' missing Basic Constraints extension",
-                    ca_cert.subject().to_string()
+                    ca_cert.subject()
                 ));
                 continue;
             }
             let ca_spki_der = ca_cert.tbs_certificate.subject_pki.raw;
-            if let Ok(ca_key) = VerifyingKey::from_public_key_der(ca_spki_der) {
-                if ca_key.verify_strict(tbs, &cert_sig).is_ok() {
-                    signed_by_allowed = true;
-                    break;
-                }
+            if let Ok(ca_key) = VerifyingKey::from_public_key_der(ca_spki_der)
+                && ca_key.verify_strict(tbs, &cert_sig).is_ok()
+            {
+                signed_by_allowed = true;
+                break;
             }
         }
     }
@@ -249,7 +249,7 @@ pub async fn verify_iot_certificate(
             platform: Platform::IoT,
             device_trusted: false,
             verdict: Some("CA_NOT_AUTHORIZED".into()),
-            error: Some(format!("Certificate not signed by allowed Root CA")),
+            error: Some("Certificate not signed by allowed Root CA".to_string()),
             warnings: Some(warnings),
             verified_at: Utc::now(),
         });

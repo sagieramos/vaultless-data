@@ -107,7 +107,7 @@ impl TokenService {
 
         // 1. Store session in Dragonfly (hot path)
         let session_data = SessionData {
-            user_id: user_id,
+            user_id,
             scope: scope.clone(),
             is_admin,
             created_at: now,
@@ -125,8 +125,8 @@ impl TokenService {
 
         // 2. Store refresh token in Dragonfly
         let refresh_cache = RefreshTokenCache {
-            user_id: user_id,
-            token_family: token_family,
+            user_id,
+            token_family,
             is_used: false,
             is_revoked: false,
             expires_at: now + (refresh_ttl_days * 86400),
@@ -329,8 +329,8 @@ impl TokenService {
 
         // Mark old refresh token as used in cache
         let updated_cache = RefreshTokenCache {
-            user_id: user_id,
-            token_family: token_family,
+            user_id,
+            token_family,
             is_used: true,
             is_revoked: false,
             expires_at: Utc::now().timestamp() + (30 * 86400),
@@ -366,8 +366,8 @@ impl TokenService {
 
         // Store new refresh token in cache
         let new_refresh_cache = RefreshTokenCache {
-            user_id: user_id,
-            token_family: token_family,
+            user_id,
+            token_family,
             is_used: false,
             is_revoked: false,
             expires_at: Utc::now().timestamp() + (30 * 86400),

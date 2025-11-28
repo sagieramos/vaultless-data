@@ -4,8 +4,7 @@ use crate::error::{Result, VaultlessError};
 use crate::models::{ApiKey, CreateApiKey};
 use crate::types::KeyType;
 use deadpool_redis::Pool as RedisPool;
-use sqlx::types::chrono::{DateTime, Utc};
-use sqlx::{Acquire, Executor, FromRow, Postgres};
+use sqlx::{Acquire, Executor, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -21,13 +20,11 @@ const PROJECTION: &str = "id, user_id, name,
 impl Application {
     /// Create a new application with secret and publishable keys
     pub async fn create(
-        db_pool: Arc<sqlx::Pool<Postgres>>, 
+        db_pool: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
         input: CreateApplication,
-    ) -> Result<CreateApplicationResponse>
-    {
-        let mut tx = (&*db_pool).begin().await
-            .map_err(|e| VaultlessError::Database(e))?;
+    ) -> Result<CreateApplicationResponse> {
+        let mut tx = (*db_pool).begin().await.map_err(VaultlessError::Database)?;
 
         // Validate input
         input
@@ -154,7 +151,7 @@ impl Application {
         // 5. RETURN RESPONSE
         // ============================================================
         Ok(CreateApplicationResponse {
-            application: app.into(),
+            application: app,
             secret_key: Some(secret_key), // plaintext
             publishable_key_plaintext: publishable_key,
         })
@@ -179,7 +176,7 @@ impl Application {
         .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
     }
 
-    // Find application by ID and User ID 
+    // Find application by ID and User ID
     pub async fn find_by_id_and_user_id<'c, E>(
         exec: E,
         id: Uuid,
@@ -200,7 +197,7 @@ impl Application {
         .fetch_optional(exec)
         .await?
         .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
-    }   
+    }
 
     /// Find application by publishable key (for client registration) (UNCHANGED logic)
     pub async fn find_by_publishable_key<'c, E>(
@@ -254,15 +251,14 @@ impl Application {
     pub async fn deactivate_deep(
         exec: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
-        app_id: Uuid, 
-        user_id: Uuid, 
-    ) -> Result<()>
-    {
+        app_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<()> {
         let row = sqlx::query(
         "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2",
         )
         .bind(app_id)
-        .bind(user_id) 
+        .bind(user_id)
         .fetch_optional(&*exec)
         .await?;
 
@@ -284,7 +280,7 @@ impl Application {
         if let Some(redis_pool) = redis {
             super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_id, &*exec, redis_pool).await {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &exec, redis_pool).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
                         app_id,
@@ -306,8 +302,7 @@ impl Application {
         redis: Option<Arc<RedisPool>>,
         app_id: Uuid,
         user_id: Uuid,
-    ) -> Result<()>
-    {
+    ) -> Result<()> {
         let row = sqlx::query!(
             r#"
         UPDATE applications
@@ -331,7 +326,7 @@ impl Application {
         if let Some(redis_pool) = redis {
             super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_row.id, &*exec, redis_pool).await {
+                if let Err(e) = Self::invalidate_auth_cache(app_row.id, &exec, redis_pool).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
                         app_row.id,
@@ -369,7 +364,7 @@ impl Application {
         if let Some(redis_pool) = redis {
             super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
             tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_id, &*exec, redis_pool).await {
+                if let Err(e) = Self::invalidate_auth_cache(app_id, &exec, redis_pool).await {
                     tracing::error!(
                         "Background cache invalidation failed for app {}: {}",
                         app_id,

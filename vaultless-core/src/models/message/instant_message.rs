@@ -1060,7 +1060,7 @@ async fn verify_envelope_soft_static(
     };
     // 3. Serialize and verify the signature
     if let Ok(bytes) = serde_json::to_vec(&envelope) {
-        if verify_signature(&bytes, &signature_str, &msg.envelope_public_key).is_ok() {
+        if verify_signature(&bytes, signature_str, &msg.envelope_public_key).is_ok() {
             // Signature SUCCESSFUL. Call the proof verified metrics function.
             if let Err(e) = increment_proof_verified_pool(redis_pool, msg.api_key_id, config).await
             {

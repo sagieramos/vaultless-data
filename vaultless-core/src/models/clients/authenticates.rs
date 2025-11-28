@@ -12,9 +12,7 @@ use uuid::Uuid;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
-    models::session::paseto_session::{
-        SessionData, SessionKeyManager, revoke_session, verify_session_token,
-    },
+    models::session::paseto_session::{SessionKeyManager, revoke_session, verify_session_token},
 };
 
 const CHALLENGE_EXPIRY_SECONDS: u64 = 300; // 5 minutes

@@ -48,11 +48,7 @@ struct TurnstileVerifyResponse {
     hostname: Option<String>,
 }
 
-async fn verify_turnstile(
-    token: &str,
-    secret: &str,
-    ip_address: Option<&str>,
-) -> Result<bool> {
+async fn verify_turnstile(token: &str, secret: &str, ip_address: Option<&str>) -> Result<bool> {
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -229,15 +225,15 @@ async fn verify_recaptcha(
     }
 
     // Check score for v3 (optional)
-    if let Some(score) = verify_response.score {
-        if score < min_score {
-            tracing::warn!(
-                score = score,
-                min_score = min_score,
-                "reCAPTCHA score too low"
-            );
-            return Ok(false);
-        }
+    if let Some(score) = verify_response.score
+        && score < min_score
+    {
+        tracing::warn!(
+            score = score,
+            min_score = min_score,
+            "reCAPTCHA score too low"
+        );
+        return Ok(false);
     }
 
     Ok(true)
@@ -257,9 +253,7 @@ pub async fn verify_captcha(
 ) -> Result<bool> {
     match provider {
         CaptchaProvider::Turnstile => verify_turnstile(token, secret, ip_address).await,
-        CaptchaProvider::HCaptcha => {
-            verify_hcaptcha(token, secret, site_key, ip_address).await
-        }
+        CaptchaProvider::HCaptcha => verify_hcaptcha(token, secret, site_key, ip_address).await,
         CaptchaProvider::ReCaptcha => {
             verify_recaptcha(token, secret, ip_address, 0.5).await // Default min score 0.5
         }
@@ -309,30 +303,18 @@ mod tests {
     #[test]
     fn test_validate_captcha_config() {
         // Valid Turnstile config
-        assert!(validate_captcha_config(
-            CaptchaProvider::Turnstile,
-            None,
-            Some("secret")
-        )
-        .is_ok());
+        assert!(validate_captcha_config(CaptchaProvider::Turnstile, None, Some("secret")).is_ok());
 
         // Invalid - missing secret
         assert!(validate_captcha_config(CaptchaProvider::Turnstile, None, None).is_err());
 
         // Invalid - hCaptcha needs site key
-        assert!(validate_captcha_config(
-            CaptchaProvider::HCaptcha,
-            None,
-            Some("secret")
-        )
-        .is_err());
+        assert!(validate_captcha_config(CaptchaProvider::HCaptcha, None, Some("secret")).is_err());
 
         // Valid hCaptcha
-        assert!(validate_captcha_config(
-            CaptchaProvider::HCaptcha,
-            Some("site_key"),
-            Some("secret")
-        )
-        .is_ok());
+        assert!(
+            validate_captcha_config(CaptchaProvider::HCaptcha, Some("site_key"), Some("secret"))
+                .is_ok()
+        );
     }
 }

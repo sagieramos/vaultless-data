@@ -1,6 +1,6 @@
-use super::dto::*;
 use super::attestation::dto::*;
 use super::attestation::types::*;
+use super::dto::*;
 use crate::error::{Result, VaultlessError};
 pub struct IntegrityConfigHandler<'a> {
     config: &'a serde_json::Value,
@@ -62,7 +62,12 @@ impl<'a> IntegrityConfigHandler<'a> {
             return Ok(());
         }
 
-        if config.browser.authorized_origins.iter().any(|o| o == origin) {
+        if config
+            .browser
+            .authorized_origins
+            .iter()
+            .any(|o| o == origin)
+        {
             Ok(())
         } else {
             Err(VaultlessError::IntegrityCheckFailed(format!(
@@ -126,33 +131,33 @@ impl<'a> IntegrityConfigHandler<'a> {
     }
 
     pub fn validate_bundle_id(&self, platform: Platform, bundle_id: &str) -> Result<()> {
-        if let Some(allowed_bundles) = self.get_allowed_bundle_ids(platform) {
-            if !allowed_bundles.contains(&bundle_id.to_string()) {
-                let id_type = match platform {
-                    Platform::IoT => "Device ID",
-                    _ => "Bundle ID",
-                };
-                return Err(VaultlessError::IntegrityCheckFailed(format!(
-                    "{} '{}' is not in the allowed list",
-                    id_type, bundle_id
-                )));
-            }
+        if let Some(allowed_bundles) = self.get_allowed_bundle_ids(platform)
+            && !allowed_bundles.contains(&bundle_id.to_string())
+        {
+            let id_type = match platform {
+                Platform::IoT => "Device ID",
+                _ => "Bundle ID",
+            };
+            return Err(VaultlessError::IntegrityCheckFailed(format!(
+                "{} '{}' is not in the allowed list",
+                id_type, bundle_id
+            )));
         }
         Ok(())
     }
 
     pub fn validate_app_version(&self, platform: Platform, version_code: i32) -> Result<()> {
-        if let Some(min_version) = self.get_min_version_code(platform) {
-            if version_code < min_version {
-                let version_type = match platform {
-                    Platform::IoT => "Firmware version",
-                    _ => "App version",
-                };
-                return Err(VaultlessError::IntegrityCheckFailed(format!(
-                    "{} {} is below minimum required version {}",
-                    version_type, version_code, min_version
-                )));
-            }
+        if let Some(min_version) = self.get_min_version_code(platform)
+            && version_code < min_version
+        {
+            let version_type = match platform {
+                Platform::IoT => "Firmware version",
+                _ => "App version",
+            };
+            return Err(VaultlessError::IntegrityCheckFailed(format!(
+                "{} {} is below minimum required version {}",
+                version_type, version_code, min_version
+            )));
         }
         Ok(())
     }
@@ -214,14 +219,14 @@ impl<'a> IntegrityConfigHandler<'a> {
     }
 }
 
-// Then both Application and AuthConfig use references:
+// Then both Application and ApplicationKeyView use references:
 impl Application {
     pub fn integrity(&self) -> IntegrityConfigHandler {
         IntegrityConfigHandler::new(&self.integrity_config)
     }
 }
 
-impl AuthConfig {
+impl ApplicationKeyView {
     pub fn integrity(&self) -> IntegrityConfigHandler {
         IntegrityConfigHandler::new(&self.app_integrity_config)
     }

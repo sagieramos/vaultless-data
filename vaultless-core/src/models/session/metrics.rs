@@ -1,7 +1,7 @@
-use prometheus::{
-    register_histogram, register_int_counter, register_int_gauge, Histogram, IntCounter, IntGauge,
-};
 use once_cell::sync::Lazy;
+use prometheus::{
+    Histogram, IntCounter, IntGauge, register_histogram, register_int_counter, register_int_gauge,
+};
 
 pub static CACHE_HITS: Lazy<IntCounter> = Lazy::new(|| {
     register_int_counter!(

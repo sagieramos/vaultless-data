@@ -381,6 +381,5 @@ pub async fn get_current_user(
     State(_state): State<AppState>,
     UserExt(user): UserExt,
 ) -> Result<Json<UserResponse>, ApiError> {
-    
     Ok(Json(UserResponse::from(user)))
 }

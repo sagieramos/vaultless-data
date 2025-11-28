@@ -129,16 +129,16 @@ pub async fn verify_android_attestation(
 
     // 5. CRITICAL: Verify Timestamp (REPLAY ATTACK PROTECTION)
     if let Some(timestamp_str) = &payload.request_details.timestamp_millis {
-        let timestamp_ms = timestamp_str.parse::<i64>().map_err(|_| {
-            VaultlessError::IntegrityCheckFailed("Invalid timestamp format".into())
-        })?;
+        let timestamp_ms = timestamp_str
+            .parse::<i64>()
+            .map_err(|_| VaultlessError::IntegrityCheckFailed("Invalid timestamp format".into()))?;
 
         let now_ms = Utc::now().timestamp_millis();
         let age_ms = now_ms - timestamp_ms;
 
         // Allow 5 seconds clock skew forward, reject if older than max_token_age
         let max_age_ms = (max_token_age_seconds * 1000) as i64;
-        
+
         if age_ms > max_age_ms {
             return Ok(AttestationResult {
                 is_valid: false,
@@ -164,7 +164,9 @@ pub async fn verify_android_attestation(
                 platform: Platform::Android,
                 device_trusted: false,
                 verdict: Some("TIMESTAMP_IN_FUTURE".to_string()),
-                error: Some("Token timestamp is in the future (possible clock skew attack)".to_string()),
+                error: Some(
+                    "Token timestamp is in the future (possible clock skew attack)".to_string(),
+                ),
                 warnings: Some(warnings),
                 verified_at: Utc::now(),
             });
@@ -276,7 +278,7 @@ pub async fn verify_android_attestation(
 
     if !device_trusted {
         let error_msg = format!("Device integrity failed: {:?}", device_verdicts);
-        
+
         if reject_untrusted_device {
             return Ok(AttestationResult {
                 is_valid: false,
@@ -295,12 +297,11 @@ pub async fn verify_android_attestation(
     }
 
     // 11. Check account licensing (informational)
-    if let Some(account) = &payload.account_details {
-        if let Some(licensing) = &account.app_licensing_verdict {
-            if licensing != "LICENSED" {
-                warnings.push(format!("App licensing status: {}", licensing));
-            }
-        }
+    if let Some(account) = &payload.account_details
+        && let Some(licensing) = &account.app_licensing_verdict
+        && licensing != "LICENSED"
+    {
+        warnings.push(format!("App licensing status: {}", licensing));
     }
 
     // 12. Success

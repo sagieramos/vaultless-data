@@ -11,16 +11,7 @@ use chrono::{DateTime, Datelike, Utc};
 use hyper::header;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use vaultless_core::{
-    PaginatedApplicationsWithKeys, get_global_mv_etag,
-    models::{
-        Application, ApplicationWithTier, CreateApplication, UpdateApplication,
-        app_model::{chart::*, dto::*},
-        usage::MetricCounters,
-        user::User,
-    },
-    types::SubscriptionTier,
-};
+use vaultless_core::{models::app_model::dto::*, types::SubscriptionTier};
 
 use chrono::Timelike;
 
@@ -110,7 +101,7 @@ pub async fn get_application_quota_status(
     let usage_percentage = app.quota_usage_percentage;
     let is_over_quota = app
         .monthly_message_quota
-        .map(|quota| app.current_month_messages_sent > quota as i64)
+        .map(|quota| app.current_month_messages_sent > quota)
         .unwrap_or(false);
 
     let overage_count = if is_over_quota {

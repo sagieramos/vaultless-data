@@ -1,20 +1,19 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 /// Health tracker for pub/sub connection
 #[derive(Clone)]
 pub struct PubSubHealth {
     /// Is pub/sub currently connected?
     connected: Arc<AtomicBool>,
-    
+
     /// Timestamp of last received message (nanoseconds since epoch)
     last_message_ns: Arc<AtomicU64>,
-    
+
     /// Total messages received
     messages_received: Arc<AtomicU64>,
-    
+
     /// Total reconnection attempts
     reconnect_attempts: Arc<AtomicU64>,
 }
@@ -46,10 +45,8 @@ impl PubSubHealth {
     /// Record that a message was received
     pub fn record_message(&self) {
         let now = Instant::now();
-        self.last_message_ns.store(
-            now.elapsed().as_nanos() as u64,
-            Ordering::SeqCst,
-        );
+        self.last_message_ns
+            .store(now.elapsed().as_nanos() as u64, Ordering::SeqCst);
         self.messages_received.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -60,7 +57,7 @@ impl PubSubHealth {
     }
 
     /// Check if pub/sub is healthy
-    /// 
+    ///
     /// Considers healthy if:
     /// 1. Connected = true
     /// 2. Received a message in last 2 minutes (heartbeat interval)

@@ -76,8 +76,8 @@ pub struct MetricsConfig {
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            max_batch_size: DEFAULT_MAX_BATCH_SIZE,  // Size: 1000
-            metric_ttl_secs: DEFAULT_METRIC_TTL_SECS, // 2 hours
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,           // Size: 1000
+            metric_ttl_secs: DEFAULT_METRIC_TTL_SECS,         // 2 hours
             flush_interval_secs: DEFAULT_FLUSH_INTERVAL_SECS, // 5 minutes
             redis_operation_timeout_secs: REDIS_OPERATION_TIMEOUT_SECS, // 30 seconds
         }
@@ -522,7 +522,7 @@ where
     .await?;
 
     // If application doesn't exist, return zeros
-    Ok(result.unwrap_or_else(|| UsageAggregate {
+    Ok(result.unwrap_or(UsageAggregate {
         total_messages_sent: 0,
         total_messages_received: 0,
         total_proofs_verified: 0,

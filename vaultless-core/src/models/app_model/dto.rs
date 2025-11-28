@@ -109,7 +109,7 @@ pub enum KeyGranularity {
 }
 
 #[derive(Debug, Clone, FromRow, Deserialize)]
-pub struct AuthConfig {
+pub struct ApplicationKeyView {
     pub app_id: Uuid,
     pub app_user_id: Uuid,
     pub app_name: String,
@@ -236,7 +236,7 @@ pub struct PaginatedApplicationsWithKeys {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedAuthConfig {
+pub struct CachedApplicationKeyView {
     pub app_id: Uuid,
     pub app_user_id: Uuid,
     pub app_name: String,
@@ -251,9 +251,9 @@ pub struct CachedAuthConfig {
     pub sk_rate_limit_per_minute: Option<i32>,
 }
 
-impl From<AuthConfig> for CachedAuthConfig {
-    fn from(a: AuthConfig) -> Self {
-        CachedAuthConfig {
+impl From<ApplicationKeyView> for CachedApplicationKeyView {
+    fn from(a: ApplicationKeyView) -> Self {
+        CachedApplicationKeyView {
             app_id: a.app_id,
             app_user_id: a.app_user_id,
             app_name: a.app_name,
@@ -318,6 +318,7 @@ pub struct ApplicationWithKeys {
     pub webhooks: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PaginatedQuotaWarnings {
     pub data: Vec<QuotaWarning>,
     pub total_count: i64,

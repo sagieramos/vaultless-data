@@ -13,7 +13,7 @@ use std::sync::Arc;
 const PUBLISHABLE_KEY_PREFIX: &str = "pk_";
 const SECRET_KEY_PREFIX: &str = "sk_";
 
-impl AuthConfig {
+impl ApplicationKeyView {
     pub async fn validate_hot(&self, redis_pool: Arc<RedisPool>) -> Result<()> {
         if !self.app_is_active {
             return Err(VaultlessError::Forbidden(
@@ -30,12 +30,12 @@ impl AuthConfig {
         let results: Vec<Option<i64>> = redis::pipe()
             .atomic()
             .get(&monthly_key)
-            .hget(&period_key.as_str(), "messages_sent")
-            .hget(&period_key.as_str(), "messages_received")
+            .hget(period_key.as_str(), "messages_sent")
+            .hget(period_key.as_str(), "messages_received")
             .query_async(&mut *conn)
             .await?;
 
-        let monthly_messages = results.get(0).copied().flatten().unwrap_or(0);
+        let monthly_messages = results.first().copied().flatten().unwrap_or(0);
         let messages_sent = results.get(1).copied().flatten().unwrap_or(0);
         let messages_received = results.get(2).copied().flatten().unwrap_or(0);
         let total_requests = messages_sent + messages_received;
@@ -54,7 +54,7 @@ impl AuthConfig {
 
             tokio::spawn(async move {
                 let _ =
-                    increment_rate_limit_hit_pool(&*pool_clone, sk_id, &MetricsConfig::default())
+                    increment_rate_limit_hit_pool(&pool_clone, sk_id, &MetricsConfig::default())
                         .await;
             });
 

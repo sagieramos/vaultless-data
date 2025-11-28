@@ -1,7 +1,5 @@
 use super::dto::*;
-use crate::{
-    error::{Result, VaultlessError},
-};
+use crate::error::{Result, VaultlessError};
 use bigdecimal::BigDecimal as Decimal;
 use sqlx::{Executor, Postgres};
 use uuid::Uuid;

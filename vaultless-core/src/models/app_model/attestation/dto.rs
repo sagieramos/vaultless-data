@@ -32,56 +32,56 @@ pub struct BrowserIntegrityConfig {
     #[serde(default)]
     #[validate(length(max = 100))]
     pub authorized_origins: Vec<String>,
-    
+
     #[serde(default = "default_true")]
     pub require_origin_header: bool,
-    
+
     #[serde(default = "default_true")]
     pub require_referer_header: bool,
-    
+
     #[serde(default = "default_true")]
     pub cors_strict_mode: bool,
-    
+
     // CAPTCHA configuration
     #[serde(default = "default_true")]
     pub require_captcha_on_registration: bool,
-    
+
     #[serde(default = "default_captcha_provider")]
     pub captcha_provider: String, // "turnstile" | "hcaptcha" | "recaptcha"
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captcha_site_key: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captcha_secret_key: Option<String>,
-    
+
     // Client binding
     #[serde(default = "default_true")]
     pub bind_client_to_origin: bool,
-    
+
     #[serde(default = "default_true")]
     pub track_origin_changes: bool,
-    
+
     #[serde(default = "default_max_origin_changes")]
     pub max_origin_changes_per_client: u32,
-    
+
     // Rate limiting
     #[serde(default = "default_max_clients_per_ip")]
     pub max_clients_per_ip: u32,
-    
+
     #[serde(default = "default_max_registrations_per_hour")]
     pub max_registrations_per_ip_per_hour: u32,
-    
+
     #[serde(default = "default_max_requests_per_hour")]
     pub max_requests_per_ip_per_hour: u32,
-    
+
     // Usage spike detection
     #[serde(default = "default_true")]
     pub alert_on_usage_spike: bool,
-    
+
     #[serde(default = "default_usage_spike_threshold")]
     pub usage_spike_threshold: f64,
-    
+
     #[serde(default = "default_usage_baseline_hours")]
     pub usage_baseline_hours: u64,
 }

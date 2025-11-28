@@ -1,17 +1,16 @@
 use axum::{
-    body::Body,
+    debug_handler,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Json},
 };
 use chrono::{DateTime, NaiveDate, Utc};
-use vaultless_core::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
+use vaultless_core::Decimal;
 use vaultless_core::{
-    PaginatedApplicationsWithKeys, get_global_mv_etag,
     models::{
         Application, ApplicationWithTier, CreateApplication, UpdateApplication,
         app_model::{chart::*, dto::*},
@@ -358,7 +357,7 @@ pub async fn get_user_usage_summary(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
 ) -> Result<Json<UserUsageSummary>, ApiError> {
-    let summary = Application::get_user_usage_summary(&*state.db, user.user_id)
+    let summary = Application::get_user_usage_summary(&state.db, user.user_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -373,13 +372,14 @@ pub async fn get_user_usage_summary(
 /// - threshold: Percentage threshold (default: 80)
 /// - page: Page number (default: 1)
 /// - page_size: Items per page (default: 20)
+#[debug_handler]
 pub async fn get_quota_warnings(
-    Query(params): Query<QuotaWarningsQuery>,
-    SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
+    SessionDataUserExt(user): SessionDataUserExt,
+    Query(params): Query<QuotaWarningsQuery>,
 ) -> Result<Json<PaginatedQuotaWarnings>, ApiError> {
     let warnings = Application::get_quota_warnings(
-       &*state.db,
+        &state.db,
         user.user_id,
         params.threshold,
         params.page,
@@ -396,18 +396,14 @@ pub async fn get_quota_warnings(
 /// Route: GET /api/applications/:id/with_keys
 pub async fn get_application_with_keys_handler(
     State(state): State<AppState>,
- SessionDataUserExt( session): SessionDataUserExt,
+    SessionDataUserExt(session): SessionDataUserExt,
     Path(application_id): Path<Uuid>,
 ) -> Result<Json<ApplicationWithKeys>, ApiError> {
     let user_id = session.user_id;
 
-    let app_with_keys = Application::get_application_with_keys(
-        &state.db,
-        application_id,
-        user_id,
-    )
-    .await
-    .map_err(ApiError::from)?;
+    let app_with_keys = Application::get_application_with_keys(&state.db, application_id, user_id)
+        .await
+        .map_err(ApiError::from)?;
 
     Ok(Json(app_with_keys))
 }
