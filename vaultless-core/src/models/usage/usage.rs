@@ -13,16 +13,14 @@
 //! - Idempotent processing with exactly-once semantics
 //! - Graceful shutdown with final flush
 //! - Health metrics and monitoring
-use std::fmt::Write;
-
+use crate::models::app_model::helper::trigger_view_refresh_debounced;
 use crate::{
-    cache_key, crypto,
+    cache_key,
     error::{Result, VaultlessError},
-    models::{ApiKey, Application},
+    models::ApiKey,
 };
-use chrono::{
-    DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveDateTime, Timelike, Utc,
-};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Timelike, Utc};
+use std::fmt::Write;
 
 use deadpool_redis::Pool as RedisPool;
 use once_cell::sync::Lazy;
@@ -78,10 +76,10 @@ pub struct MetricsConfig {
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
-            metric_ttl_secs: DEFAULT_METRIC_TTL_SECS,
-            flush_interval_secs: DEFAULT_FLUSH_INTERVAL_SECS,
-            redis_operation_timeout_secs: REDIS_OPERATION_TIMEOUT_SECS,
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,  // Size: 1000
+            metric_ttl_secs: DEFAULT_METRIC_TTL_SECS, // 2 hours
+            flush_interval_secs: DEFAULT_FLUSH_INTERVAL_SECS, // 5 minutes
+            redis_operation_timeout_secs: REDIS_OPERATION_TIMEOUT_SECS, // 30 seconds
         }
     }
 }
@@ -586,7 +584,7 @@ impl MetricCounters {
 pub fn start_redis_flusher(
     redis_pool: Arc<RedisPoolType>,
     pg_pool: Arc<PgPool>,
-    config: MetricsConfig,
+    config: Arc<MetricsConfig>,
     metrics: Option<Arc<FlusherMetrics>>,
 ) -> (tokio::task::JoinHandle<()>, Arc<Notify>) {
     let shutdown = Arc::new(Notify::new());
@@ -983,6 +981,10 @@ async fn flush_batch_to_pg(
     }
 
     info!(keys_flushed = flushed_count, "Flushed batch to Postgres");
+
+    if flushed_count > 0 {
+        trigger_view_refresh_debounced(Arc::new(pg.clone()), redis_pool.clone());
+    }
 
     Ok(())
 }

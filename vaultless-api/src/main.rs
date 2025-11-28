@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::{Router, middleware as axum_middleware, routing::get};
 use deadpool_redis::Config as RedisConfig;
 use sqlx::postgres::PgPoolOptions;
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{net::TcpListener, signal};
 use tower_http::{
     compression::CompressionLayer,
@@ -11,8 +11,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use vaultless_core::models::usage::MetricsConfig;
-
+use vaultless_core::models::usage::{FlusherMetrics, MetricsConfig, start_redis_flusher};
 mod config;
 mod handlers;
 mod middleware;
@@ -68,22 +67,33 @@ async fn main() -> anyhow::Result<()> {
     // 4. Build AppState
     //----------------------------------------------------
 
-    let metrics_config = MetricsConfig {
+    let metrics_config = Arc::new(MetricsConfig {
         max_batch_size: config.metrics_max_batch_size.unwrap_or(1000),
-        metric_ttl_secs: config.metrics_ttl_secs.unwrap_or(2592000),
+        metric_ttl_secs: config.metrics_ttl_secs.unwrap_or(7200),
         flush_interval_secs: config.metrics_flush_interval_secs.unwrap_or(60),
-        redis_operation_timeout_secs: config.metrics_redis_timeout_secs.unwrap_or(5),
-    };
+        redis_operation_timeout_secs: config.metrics_redis_timeout_secs.unwrap_or(30),
+    });
 
     let session_key_manager = config.security.paseto_client_session_key_manager.clone();
 
     let app_state = AppState::new(
         db,
         redis_pool,
-        metrics_config,
+        Arc::clone(&metrics_config),
         config.cache.url,
         session_key_manager,
     )?;
+
+    let flusher_metrics = Arc::new(FlusherMetrics::new());
+
+    let (flusher_handle, shutdown_notify) = start_redis_flusher(
+        app_state.redis_pool.clone(),
+        app_state.db.clone(),
+        Arc::clone(&metrics_config),
+        Some(Arc::clone(&flusher_metrics)),
+    );
+
+    tracing::info!("✅ Redis metrics flusher started");
 
     //----------------------------------------------------
     // 5. Routers
@@ -125,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_notify, flusher_handle))
         .await?;
 
     Ok(())
@@ -167,7 +177,10 @@ async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response:
 //----------------------------------------------------
 // Graceful shutdown signal
 //----------------------------------------------------
-async fn shutdown_signal() {
+async fn shutdown_signal(
+    flusher_shutdown: Arc<tokio::sync::Notify>,
+    flusher_handle: tokio::task::JoinHandle<()>,
+) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -191,6 +204,14 @@ async fn shutdown_signal() {
     }
 
     tracing::warn!("🛑 Shutdown signal received, shutting down gracefully...");
+    flusher_shutdown.notify_one();
+
+    // Wait for flusher to complete final flush
+    if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(30), flusher_handle).await {
+        tracing::warn!("Flusher did not complete within 30s: {:?}", e);
+    } else {
+        tracing::info!("✅ Redis flusher shutdown complete");
+    }
 }
 /* ```
 

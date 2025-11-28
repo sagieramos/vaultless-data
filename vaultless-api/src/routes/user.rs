@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post},
 };
 
-use crate::{AppState, middleware::user::require_user_auth, handlers::user::*, state};
+use crate::{AppState, middleware::user::user_auth, handlers::user::*, state};
 
 pub fn user_routes(state: AppState) -> Router<AppState> {
     Router::new()
@@ -12,7 +12,7 @@ pub fn user_routes(state: AppState) -> Router<AppState> {
         .route("/logout", post(logout))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_user_auth,
+            user_auth,
         ))
         // Public routes
         .route("/register", post(register))

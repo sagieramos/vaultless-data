@@ -186,7 +186,7 @@ pub struct ApplicationWithUsageResponse {
 
     // Secret key tier info
     pub tier: Option<String>,
-    pub monthly_message_quota: Option<i32>,
+    pub monthly_message_quota: Option<i64>,
     pub rate_limit_per_minute: Option<i32>,
     pub message_retention_seconds: Option<i32>,
 

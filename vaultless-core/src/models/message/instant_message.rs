@@ -174,13 +174,13 @@ pub struct InstantMessage {
     redis_pool: Arc<RedisPool>,
     db_pool: Arc<PgPool>,
     weak_db_pool: Weak<PgPool>, // For queue_delete fallback
-    config: MetricsConfig,
+    config: Arc<MetricsConfig>,
     sender: mpsc::Sender<Message>,
     delete_sender: mpsc::Sender<DeleteTask>,
 }
 impl InstantMessage {
     /// Creates a new InstantMessage instance and spawns background tasks.
-    pub fn new(redis_pool: RedisPool, db_pool: PgPool, config: MetricsConfig) -> Result<Self> {
+    pub fn new(redis_pool: RedisPool, db_pool: PgPool, config: Arc<MetricsConfig>) -> Result<Self> {
         let db_pool_arc = Arc::new(db_pool);
         let weak_db_pool = Arc::downgrade(&db_pool_arc);
         let (tx, rx) = mpsc::channel(CHANNEL_BUFFER);

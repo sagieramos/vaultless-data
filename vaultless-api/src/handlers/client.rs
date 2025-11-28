@@ -18,7 +18,7 @@ use vaultless_core::{
     RegisterClientResponse,
 };
 
-use vaultless_core::models::session::paseto_session::{verify_session_token};
+use vaultless_core::models::session::paseto_session::verify_session_token;
 
 // =============================================================================
 // Request/Response Types
@@ -276,8 +276,7 @@ pub async fn deactivate_client(
         Some(&state.redis_pool),
         session_data.client_id,
     )
-    .await
-    .map_err(ApiError::from)?;
+    .await?;
 
     tracing::info!("Client {} deactivated", session_data.client_id);
 

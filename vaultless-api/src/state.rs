@@ -25,40 +25,33 @@ impl AppState {
     pub fn new(
         db: PgPool,
         redis_pool: RedisPool,
-        metrics_config: MetricsConfig,
+        metrics_config: Arc<MetricsConfig>,
         redis_url: String,
         session_key_manager: Arc<SessionKeyManager>,
     ) -> anyhow::Result<Self> {
         let im_db_clone = db.clone();
         let im_redis_pool_clone = redis_pool.clone();
-        
-        let instant_message = InstantMessage::new(
-            im_redis_pool_clone, 
-            im_db_clone,         
-            metrics_config
-        )?;
+
+        let instant_message =
+            InstantMessage::new(im_redis_pool_clone, im_db_clone, metrics_config)?;
 
         let arc_db = Arc::new(db);
         let arc_redis_pool = Arc::new(redis_pool);
 
-        let attestation_service =
-            AttestationService::new(arc_redis_pool.clone(), arc_db.clone());
+        let attestation_service = AttestationService::new(arc_redis_pool.clone(), arc_db.clone());
 
         let session_verifier = Arc::new(HybridSessionVerifier::with_defaults(
-            session_key_manager.clone(), 
+            session_key_manager.clone(),
             arc_redis_pool.clone(),
             redis_url,
         ));
 
-        let token_service = Arc::new(TokenService::new(
-            arc_db.clone(),
-            arc_redis_pool.clone(),
-        ));
+        let token_service = Arc::new(TokenService::new(arc_db.clone(), arc_redis_pool.clone()));
 
         Ok(Self {
             db: arc_db,
             redis_pool: arc_redis_pool,
-            session_key_manager, 
+            session_key_manager,
             token_service,
             instant_message: Arc::new(instant_message),
             session_verifier,

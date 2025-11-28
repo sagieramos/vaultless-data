@@ -1,12 +1,9 @@
-pub mod analytics;
-// pub mod api_keys;
 pub mod application_route;
 pub mod client;
 pub mod health;
 pub mod instant_message;
 //pub mod proof;
 pub mod user;
-use analytics::analytics_routes;
 use axum::{Router, middleware, routing::get};
 
 use application_route::application_routes;
