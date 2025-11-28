@@ -221,13 +221,13 @@ impl<'a> IntegrityConfigHandler<'a> {
 
 // Then both Application and ApplicationKeyView use references:
 impl Application {
-    pub fn integrity(&self) -> IntegrityConfigHandler {
+    pub fn integrity(&self) -> IntegrityConfigHandler<'_> {
         IntegrityConfigHandler::new(&self.integrity_config)
     }
 }
 
 impl ApplicationKeyView {
-    pub fn integrity(&self) -> IntegrityConfigHandler {
+    pub fn integrity(&self) -> IntegrityConfigHandler<'_> {
         IntegrityConfigHandler::new(&self.app_integrity_config)
     }
 }

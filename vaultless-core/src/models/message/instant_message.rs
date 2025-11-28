@@ -1,3 +1,4 @@
+// FILE: instant_message.rs
 use crate::cache_key;
 use crate::crypto::verify_signature;
 use crate::error::{Result, VaultlessError};
@@ -513,18 +514,33 @@ impl InstantMessage {
         }
         // Remove processed IDs from inbox (pipeline for efficiency)
         if !msg_id_strs.is_empty() {
-            let mut pipe = redis::pipe();
-            for id_str in &msg_id_strs {
-                pipe.lrem(&queue_key, 1, id_str);
-            }
-            if let Err(e) = pipe.query_async::<()>(&mut conn).await {
-                error!(
-                    recipient = %recipient_client_id,
-                    error = %e,
-                    "Failed to trim inbox queue using Redis pipeline"
-                );
-            }
+            let queue_key = instant_inbox_key(recipient_client_id);
+
+            let lua_script = r#"
+                for i = 1, #ARGV do
+                    redis.call("LREM", KEYS[1], 1, ARGV[i])
+                end
+                return #ARGV
+            "#;
+
+            // Execute Lua atomically
+            let _: i32 = redis::cmd("EVAL")
+                .arg(lua_script)
+                .arg(1) // one key: queue_key
+                .arg(&queue_key)
+                .arg(&msg_id_strs)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| {
+                    error!(
+                        recipient = %recipient_client_id,
+                        error = %e,
+                        "Failed to trim inbox queue using Lua script"
+                    );
+                    VaultlessError::Internal(e.to_string())
+                })?;
         }
+
         let from_redis = messages.len();
         // Clone self to ensure thread-safe access to Arc<RedisPool> and MetricsConfig
         let self_clone = self.clone();
@@ -813,16 +829,31 @@ impl InstantMessage {
             return Ok(());
         }
         let queue_key = instant_inbox_key(recipient_client_id);
-        // Use pipeline for efficiency
-        let mut pipe = redis::pipe();
-        for id in &undelivered {
-            pipe.rpush(&queue_key, id.to_string());
-        }
-        pipe.expire(&queue_key, CACHE_TTL_SECS as i64);
-        let _: () = pipe
+
+        // Prepare Lua script: push all IDs and set TTL atomically
+        let lua_script = r#"
+            local ttl = tonumber(ARGV[#ARGV])
+            for i = 1, #ARGV - 1 do
+                redis.call("RPUSH", KEYS[1], ARGV[i])
+            end
+            redis.call("EXPIRE", KEYS[1], ttl)
+            return #ARGV - 1
+        "#;
+
+        // Prepare arguments: undelivered IDs + TTL as last argument
+        let mut args: Vec<String> = undelivered.iter().map(|id| id.to_string()).collect();
+        args.push(CACHE_TTL_SECS.to_string()); // last arg = TTL
+
+        // Execute Lua script atomically
+        let _: i32 = redis::cmd("EVAL")
+            .arg(lua_script)
+            .arg(1) // one key: queue_key
+            .arg(&queue_key)
+            .arg(args)
             .query_async(conn)
             .await
             .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
         info!(
             recipient = %recipient_client_id,
             count = undelivered.len(),

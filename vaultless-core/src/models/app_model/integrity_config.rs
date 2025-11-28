@@ -3,7 +3,7 @@ use super::dto::*;
 use crate::error::{Result, VaultlessError};
 use crate::models::app_model::attestation::types::Platform;
 use deadpool_redis::Pool as RedisPool;
-use sqlx::{Executor, Postgres};
+use sqlx::Postgres;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;

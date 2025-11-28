@@ -126,17 +126,13 @@ fn default_page_size() -> i64 {
 /// POST /api/applications
 pub async fn create_application(
     State(state): State<AppState>,
-    SessionDataUserExt(user): SessionDataUserExt,
+    SessionDataUserExt(session): SessionDataUserExt,
     Json(req): Json<CreateApplicationRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let user_id = user.user_id;
-    let user = User::find_by_id(&state.db, user_id)
-        .await
-        .map_err(ApiError::from)?;
 
     // Create application input
     let input = CreateApplication {
-        user_id: user.id,
+        user_id: session.user_id,
         name: req.name,
         description: req.description,
         max_ttl_seconds: None,
@@ -150,7 +146,7 @@ pub async fn create_application(
         .map_err(ApiError::from)?;
 
     tracing::info!(
-        user_id = %user.id,
+        user_id = %session.user_id,
         application_id = %response.application.id,
         "Application created"
     );

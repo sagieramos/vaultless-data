@@ -2,7 +2,7 @@ use super::dto::*;
 use crate::error::{Result, VaultlessError};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
-use sqlx::{Executor, Postgres};
+use sqlx::Postgres;
 use std::sync::Arc;
 use uuid::Uuid;
 
