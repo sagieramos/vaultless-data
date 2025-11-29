@@ -5182,6 +5182,7 @@ dependencies = [
  "deadpool-redis",
  "ed25519",
  "ed25519-dalek",
+ "futures",
  "futures-util",
  "getrandom 0.3.4",
  "hex",

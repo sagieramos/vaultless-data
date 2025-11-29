@@ -85,7 +85,7 @@ pub enum VaultlessError {
     Decryption(String),
 
     #[error("Signature verification failed")]
-    SignatureVerificationFailed,
+    SignatureVerificationFailed(String),
 
     #[error("Invalid proof")]
     InvalidProof,
@@ -107,6 +107,12 @@ pub enum VaultlessError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    #[error("Metrics nncrement failed")]
+    MetricsIncrementFailed(String),
+    
+    #[error("Circuit breaker open")]
+    CircuitBreakerOpen(String),
 }
 
 pub type Result<T> = std::result::Result<T, VaultlessError>;

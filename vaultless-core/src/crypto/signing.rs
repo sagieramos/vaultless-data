@@ -119,7 +119,7 @@ pub fn verify_signature(data: &[u8], signature: &str, public_key: &str) -> Resul
     // Verify
     verifying_key
         .verify(data, &signature)
-        .map_err(|_| VaultlessError::SignatureVerificationFailed)?;
+        .map_err(|_| VaultlessError::SignatureVerificationFailed("invalid signature".into()))?;
 
     Ok(())
 }
