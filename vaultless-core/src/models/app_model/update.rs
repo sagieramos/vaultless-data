@@ -110,11 +110,24 @@ impl Application {
         let query = qb.build_query_as::<Application>();
         let updated_app = query.fetch_one(&*exec).await?;
 
-        // ================= CACHE INVALIDATION =================
-        if let Some(pool) = redis
-            && let Err(e) = Self::invalidate_auth_cache(application_id, &exec, pool).await
-        {
-            tracing::debug!(application_id = %application_id, "Cache invalidation failed: {:?}", e);
+        // Handle cache invalidation
+        if let Some(pool) = redis {
+            super::helper::trigger_view_refresh_debounced(exec.clone(), pool.clone());
+            tokio::spawn(async move {
+                if let Err(e) = Self::invalidate_auth_cache(application_id, &exec, pool).await
+                {
+                    tracing::error!(
+                        "Background cache invalidation failed for app {}: {}",
+                        application_id,
+                        e
+                    );
+                }
+            });
+        } else {
+            tracing::warn!(
+                "Redis pool not provided. Skipping cache invalidation for deactivated app {}.",
+                application_id
+            );
         }
 
         tracing::info!(application_id = %application_id, fields_updated = field_count, "Application updated successfully");

@@ -75,7 +75,7 @@ impl Application {
         let secret_key_hash = crypto::hash_content(secret_key.as_bytes());
         let secret_key_prefix = secret_key.chars().take(8).collect::<String>();
 
-        let created_secret_key = ApiKey::create(
+        let _created_secret_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
                 user_id: input.user_id,
@@ -98,7 +98,7 @@ impl Application {
         let publishable_key = crypto::generate_api_key("pk", "live")?;
         let pk_prefix = publishable_key.chars().take(16).collect::<String>();
 
-        let created_publishable_key = ApiKey::create(
+        let _created_publishable_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
                 user_id: input.user_id,

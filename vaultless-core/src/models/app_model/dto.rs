@@ -8,6 +8,7 @@ use std::clone::Clone;
 use std::fmt::Debug;
 use uuid::Uuid;
 use validator::Validate;
+use  serde_json::Value;
 
 /// Application table model — matches the `public.applications` schema.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -152,6 +153,20 @@ pub struct ApplicationKeysInfo {
     pub secret_key_id: Uuid,
     pub publishable_keys: serde_json::Value,
 }
+
+fn is_json_value_empty(value: &Value) -> bool {
+    // Check if it's an Object and the map is empty
+    if let Some(map) = value.as_object() {
+        return map.is_empty();
+    }
+    // Check if it's an Array and the vec is empty
+    if let Some(array) = value.as_array() {
+        return array.is_empty();
+    }
+    // All other values (string, number, bool, null) are considered non-empty
+    false
+}
+
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ApplicationWithKeysResponse {
