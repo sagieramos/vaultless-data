@@ -27,7 +27,10 @@ pub async fn user_auth(
     let token_service = &state.token_service;
     let session_data = token_service.verify_access_token(token).await?;
 
-    request.extensions_mut().insert(session_data);
+    request
+        .extensions_mut()
+        .insert(SessionDataUserExt(session_data));
+    
     Ok(next.run(request).await)
 }
 

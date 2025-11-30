@@ -117,3 +117,10 @@ ADD CONSTRAINT required_key_data_check CHECK (
         key_hash IS NULL
     )
 );
+
+ALTER TABLE public.api_keys
+ADD CONSTRAINT check_secret_key_tier
+CHECK (
+    (key_type = 'secret'::key_type AND tier IS NOT NULL)
+    OR (key_type = 'publishable'::key_type)
+);

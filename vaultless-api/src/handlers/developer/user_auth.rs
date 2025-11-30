@@ -81,7 +81,6 @@ pub async fn register(
         user_id = %user.id,
         email = %user.email,
         // secure: do not log url in production logs
-        verification_url = "GET /verify-email?token=[redacted]",
         "User registered successfully"
     );
 

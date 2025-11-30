@@ -50,15 +50,19 @@ impl User {
             password,
             name,
         };
-        // Hash password (bcrypt with cost 12)
         let password_hash = bcrypt::hash(user.password, 12)
             .map_err(|e| VaultlessError::Internal(format!("Password hashing failed: {}", e)))?;
 
-        // Generate email verification token
         let verification_token = Self::generate_token().map_err(|e| {
             VaultlessError::Internal(format!("Failed to generate verification token: {}", e))
         })?;
+
+        let token = hash_content(verification_token.as_bytes());
         let verification_expires = Utc::now() + Duration::hours(24);
+
+        tracing::warn!(
+           email_verification_token = %verification_token
+        );
 
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -70,7 +74,7 @@ impl User {
         .bind(&user.email)
         .bind(&password_hash)
         .bind(user.name)
-        .bind(&verification_token)
+        .bind(token)
         .bind(verification_expires)
         .fetch_one(pool)
         .await
