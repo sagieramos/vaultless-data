@@ -34,7 +34,7 @@ impl Client {
         key_manager: Arc<SessionKeyManager>,
         attestation_service: Option<Arc<AttestationService>>,
         input: RegisterClientRequest,
-        auth_config: ApplicationKeyView,
+        auth_config: Arc<ApplicationKeyView>,
     ) -> Result<RegisterClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,

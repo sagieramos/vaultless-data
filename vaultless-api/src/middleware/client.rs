@@ -4,7 +4,7 @@ use vaultless_core::models::session::HybridSessionVerifier;
 
 use crate::{middleware::error::ApiError, state::AppState};
 use vaultless_core::{Client, SessionData as SessionDataClient};
-
+use std::sync::Arc;
 use axum::{
     extract::{Request, State},
     middleware::Next,
@@ -12,7 +12,7 @@ use axum::{
 };
 
 #[derive(Debug, Clone)]
-pub struct ClientExt(pub Client);
+pub struct ClientExt(pub Arc<Client>);
 
 #[derive(Debug, Clone)]
 pub struct SessionDataClientExt(pub SessionDataClient);
@@ -40,7 +40,6 @@ pub async fn client_auth(
     Ok(next.run(req).await)
 }
 
-// ADD THIS: FromRequestParts for SessionDataClientExt
 impl FromRequestParts<AppState> for SessionDataClientExt {
     type Rejection = ApiError;
 
@@ -75,6 +74,6 @@ impl FromRequestParts<AppState> for ClientExt {
                 .await
                 .map_err(ApiError::from)?;
 
-        Ok(ClientExt(client))
+        Ok(ClientExt(Arc::new(client)))
     }
 }

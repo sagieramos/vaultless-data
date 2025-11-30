@@ -3,17 +3,18 @@ pub mod error;
 pub mod models;
 pub mod types;
 pub mod utils;
+pub mod circuit_breaker;
 
 // Re-export commonly used types
 pub use error::{Result, VaultlessError};
 pub use types::SubscriptionTier;
+pub use futures_util;
 
 // Re-export models
 pub use models::{
     ApiKey,
     CreateApiKey,
     CreateProof,
-    Message,
     MessageProof,
     ProofVerificationResult,
     RefreshToken,
@@ -40,7 +41,6 @@ pub use models::{
     dashboard::get_live_usage,
 
     message::*,
-    message::{InstantMessage, P2PFile, ReadReceipt, instant_message},
     session::{
         claims_keys,
         paseto_session::{SessionData, SessionKeyManager},

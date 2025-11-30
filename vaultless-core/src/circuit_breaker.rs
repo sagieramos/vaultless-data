@@ -1,10 +1,8 @@
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{result::Result as std_result, sync::Arc};
 use crate::error::{Result, VaultlessError};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::{info, debug, error};
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{error, info};
 
 /// Circuit breaker states
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,7 +33,7 @@ impl CircuitBreaker {
     }
 
     /// Check if request should be allowed
-    pub fn allow_request(&self) -> Result<CircuitBreakerGuard> {
+    pub fn allow_request(&self) -> Result<CircuitBreakerGuard<'_>> {
         let packed = self.state.load(Ordering::Acquire);
         let state = self.unpack_state(packed);
 
@@ -174,22 +172,4 @@ impl<'a> CircuitBreakerGuard<'a> {
     pub fn failure(self) {
         self.breaker.record_failure();
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthStatus {
-    pub flusher_channel_capacity: usize,
-    pub flusher_channel_available: usize,
-    pub deleter_channel_capacity: usize,
-    pub deleter_channel_available: usize,
-    pub dlq_channel_capacity: usize,
-    pub dlq_channel_available: usize,
-    pub failed_verifications: usize,
-    pub failed_metrics_increments: usize,
-    pub emergency_writes: usize,
-    pub dlq_entries: usize,
-    pub db_pool_dropped_deletes: usize,
-    pub db_pool_available: bool,
-    pub redis_circuit_state: String,
-    pub db_circuit_state: String,
 }

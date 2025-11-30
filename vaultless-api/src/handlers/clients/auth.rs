@@ -18,7 +18,7 @@ use vaultless_core::{
     AuthenticateClientRequest, AuthenticateClientResponse, Client, RegisterClientRequest,
     RegisterClientResponse,
 };
-
+use std::sync::Arc;
 use vaultless_core::models::session::paseto_session::verify_session_token;
 
 // =============================================================================
@@ -186,7 +186,7 @@ pub async fn lookup_client(
         Some(state.redis_pool.clone()),
         query.pubkey.as_deref(),
         query.identifier.as_deref(),
-        None, // client_identifier is never passed from the query
+        None,
     )
     .await
     .map_err(ApiError::from)?;
@@ -213,7 +213,7 @@ pub async fn health_check() -> Json<serde_json::Value> {
 
 /// Get current authenticated client info
 /// GET /api/clients/me
-pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Client> {
+pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Arc<Client>> {
     Json(client)
 }
 

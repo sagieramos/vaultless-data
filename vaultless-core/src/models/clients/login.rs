@@ -29,7 +29,7 @@ impl Client {
         exec: E,
         redis: Arc<RedisPool>,
         key_manager: Arc<SessionKeyManager>,
-        app_resolved: ApplicationKeyView,
+        app_resolved: Arc<ApplicationKeyView>,
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
     ) -> Result<AuthenticateClientResponse>

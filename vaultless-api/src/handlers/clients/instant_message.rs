@@ -1,5 +1,8 @@
 use crate::{
-    middleware::{client::SessionDataClientExt, error::ApiError},
+    middleware::{
+        application::ApplicationKeyViewExt, client::SessionDataClientExt, error::ApiError,
+    },
+    services::real_time_message::InstantMessageExt,
     state::AppState,
 };
 use axum::{
@@ -10,29 +13,35 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 use vaultless_core::Client;
-use vaultless_core::models::instant_message::{Message, ReadReceipt};
+use vaultless_core::models::message::dto::{HealthStatus, Message, ReadReceipt};
 
 // =============================================================================
-// Request Types
+// Request Types (UPDATED)
 // =============================================================================
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct SendMessageRequest {
     pub recipient_identifier: Option<String>,
     pub recipient_pubkey: Option<String>,
+
     /// Encrypted message content (base64 or hex)
-    #[validate(length(min = 1, max = 1048576))] // 1MB max
+    #[validate(length(min = 1, max = 10485760))] // UPDATED: 10MB max (was 1MB)
     pub ciphertext: String,
 
     /// Nonce for encryption
     pub nonce: Uuid,
 
-    /// Ed25519/P-256 signature of envelope
+    /// Ed25519/P-256 signature of envelope (NOW REQUIRED if verification enabled)
     #[validate(length(min = 64, max = 256))]
     pub signature: Option<String>,
 
-    /// Whether to require proof verification
+    /// Whether to require proof verification (defaults to true)
+    #[serde(default = "default_require_verification")]
     pub require_proof_verification: bool,
+}
+
+fn default_require_verification() -> bool {
+    true // Default to requiring verification for security
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,7 +51,7 @@ pub struct FetchMessagesQuery {
 }
 
 // =============================================================================
-// Response Types
+// Response Types (UPDATED)
 // =============================================================================
 
 #[derive(Debug, Serialize)]
@@ -50,6 +59,8 @@ pub struct SendMessageResponse {
     pub success: bool,
     pub message_id: Uuid,
     pub created_at: String,
+    /// Whether recipient is online (WebSocket connected)
+    pub recipient_online: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,6 +74,7 @@ pub struct FetchMessagesResponse {
 pub struct MarkReadResponse {
     pub success: bool,
     pub message: String,
+    pub read_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,41 +87,55 @@ pub struct ReadReceiptsResponse {
 #[derive(Debug, Serialize)]
 pub struct HealthStatusResponse {
     pub success: bool,
-    pub status: vaultless_core::models::instant_message::HealthStatus,
+    pub status: HealthStatus,
+    pub websocket_connections: usize,
 }
 
 // =============================================================================
-// Message Handlers
+// UPDATED Message Handlers
 // =============================================================================
 
-/// Send an instant message (P2P)
-/// POST /api/messages/send#
+/// Send an instant message (P2P) - UPDATED WITH ALL FIXES
+/// POST /api/messages/send
 pub async fn send_message(
     State(state): State<AppState>,
     SessionDataClientExt(sender): SessionDataClientExt,
+    ApplicationKeyViewExt(app): ApplicationKeyViewExt,
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
-    // --- 1. Compute content size server-side ---
-    let content_size_bytes = input.ciphertext.len() as i32;
-
-    // Validate input
+    // --- 1. Validate input ---
     input
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()).with_code("VALIDATION_ERROR"))?;
 
-    // --- 2. Resolve recipient ---
+    // --- 2. Compute content size server-side (NOW i64 for large files) ---
+    let content_size_bytes = input.ciphertext.len() as i64; // FIXED: i32 -> i64
+
+    // --- 3. Verify signature is provided if verification required ---
+    if input.require_proof_verification && input.signature.is_none() {
+        return Err(
+            ApiError::bad_request("Signature required when proof verification is enabled")
+                .with_code("SIGNATURE_REQUIRED"),
+        );
+    }
+
+    // --- 4. Resolve recipient ---
     let recipient = Client::resolve_client(
         &*state.db,
         Some(state.redis_pool.clone()),
-        input.recipient_pubkey.as_deref(), // public key takes priority
+        input.recipient_pubkey.as_deref(),
         input.recipient_identifier.as_deref(),
         None,
     )
     .await?
     .ok_or_else(|| ApiError::not_found("Recipient client not found"))?;
 
-    let sender_pubkey = recipient.public_key.ok_or_else(|| {
-        tracing::error!("Sender public key not found in database");
+    // --- 5. Get sender's public key for envelope verification ---
+    let sender_pubkey = sender.pubkey.clone().ok_or_else(|| {
+        tracing::error!(
+            sender_id = %sender.client_id,
+            "Sender public key not found in session"
+        );
         ApiError::bad_request("Sender public key not found")
     })?;
 
@@ -117,10 +143,11 @@ pub async fn send_message(
         sender = %sender.client_id,
         recipient = %recipient.id,
         size = content_size_bytes,
+        requires_verification = input.require_proof_verification,
         "Sending instant message"
     );
 
-    // --- 3. Send message ---
+    // --- 6. Send message (now with signature verification at send time) ---
     let message_id = state
         .instant_message
         .send_instant_message(
@@ -129,7 +156,7 @@ pub async fn send_message(
             input.ciphertext.clone(),
             input.nonce,
             content_size_bytes,
-            input.nonce,
+            app.sk_id,
             input.signature.clone(),
             sender_pubkey,
             input.require_proof_verification,
@@ -138,29 +165,59 @@ pub async fn send_message(
         .map_err(|e| {
             tracing::error!(
                 sender = %sender.client_id,
+                recipient = %recipient.id,
                 error = %e,
                 "Failed to send message"
             );
+
+            // Map specific errors to appropriate HTTP status codes
             ApiError::from(e)
         })?;
+
+    // --- 7. Send WebSocket notification to recipient (if connected) ---
+    let recipient_online = state.ws_manager.is_connected(&recipient.id);
+
+    if recipient_online {
+        state
+            .instant_message
+            .notify_message_sent(
+                &state.ws_manager,
+                message_id,
+                sender.client_id,
+                recipient.id,
+            )
+            .await;
+    }
+
+    tracing::info!(
+        sender = %sender.client_id,
+        recipient = %recipient.id,
+        message_id = %message_id,
+        recipient_online = recipient_online,
+        "Message sent successfully"
+    );
 
     Ok(Json(SendMessageResponse {
         success: true,
         message_id,
         created_at: chrono::Utc::now().to_rfc3339(),
+        recipient_online,
     }))
 }
 
-/// Fetch messages for current user (inbox)
+/// Fetch messages for current user (inbox) - UPDATED
 /// GET /api/messages/inbox
 pub async fn fetch_inbox(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
     Query(_query): Query<FetchMessagesQuery>,
 ) -> Result<Json<FetchMessagesResponse>, ApiError> {
-    tracing::debug!(recipient = %client_info.client_id, "Fetching inbox");
+    tracing::debug!(
+        recipient = %client_info.client_id,
+        "Fetching inbox"
+    );
 
-    // Fetch messages from InstantMessage service
+    // Fetch messages (now with atomic delivery counting & signature verification)
     let messages = state
         .instant_message
         .fetch_messages_for_recipient(client_info.client_id)
@@ -189,7 +246,7 @@ pub async fn fetch_inbox(
     }))
 }
 
-/// Mark a message as read
+/// Mark a message as read - UPDATED
 /// POST /api/messages/{message_id}/read
 pub async fn mark_message_read(
     State(state): State<AppState>,
@@ -202,6 +259,7 @@ pub async fn mark_message_read(
         "Marking message as read"
     );
 
+    // Mark as read (now handles pending reads for Redis-only messages)
     state
         .instant_message
         .mark_read_instant_message(client_info.client_id, message_id)
@@ -216,6 +274,8 @@ pub async fn mark_message_read(
             ApiError::from(e)
         })?;
 
+    let read_at = chrono::Utc::now();
+
     tracing::info!(
         reader = %client_info.client_id,
         message_id = %message_id,
@@ -225,14 +285,16 @@ pub async fn mark_message_read(
     Ok(Json(MarkReadResponse {
         success: true,
         message: "Message marked as read".to_string(),
+        read_at: read_at.to_rfc3339(),
     }))
 }
 
-/// Get read receipts for a message
+/// Get read receipts for a message - UPDATED
 /// GET /api/messages/{message_id}/receipts
 pub async fn get_read_receipts(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
+    ApplicationKeyViewExt(app): ApplicationKeyViewExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<ReadReceiptsResponse>, ApiError> {
     tracing::debug!(
@@ -263,14 +325,16 @@ pub async fn get_read_receipts(
     }))
 }
 
-/// Health check for InstantMessage service
+/// Health check for InstantMessage service - UPDATED
 /// GET /api/messages/health
 #[axum::debug_handler]
 pub async fn message_health_check(State(state): State<AppState>) -> Json<HealthStatusResponse> {
     let status = state.instant_message.get_health_status();
+    let ws_connections = state.ws_manager.connection_count();
 
     Json(HealthStatusResponse {
         success: true,
         status,
+        websocket_connections: ws_connections,
     })
 }
