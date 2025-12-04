@@ -6,7 +6,6 @@ use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
 use webpki::{EndEntityCert, Time};
 use x509_parser::asn1_rs::Tag;
 use x509_parser::der_parser::parse_der;
@@ -157,88 +156,42 @@ pub fn verify_app_id_from_certificate(
 // =============================================================================
 // iOS APP ATTEST VERIFICATION
 // =============================================================================
-
 pub async fn verify_ios_attestation(
     token: &str,
     expected_bundle_id: &str,
     expected_team_id: &str,
-    expected_challenge: &str,
     allowed_certificate_hashes: &[String],
     reject_untrusted_device: bool,
-    redis_pool: Option<Arc<RedisPool>>,
 ) -> Result<AttestationResult> {
     let mut warnings = Vec::new();
 
-    // 1. CRITICAL: Verify challenge exists and is valid (REPLAY PROTECTION)
-    if let Some(pool) = &redis_pool {
-        let mut hasher = Sha256::new();
-        hasher.update(expected_challenge.as_bytes());
-        let challenge_hash = hex::encode(hasher.finalize());
-        let cache_key = cache_key!(IOS_CHALLENGE_KEY, challenge_hash);
-
-        let mut conn = pool
-            .get()
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-        let exists: Option<String> = conn
-            .get(&cache_key)
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis GET failed: {}", e)))?;
-
-        if exists.is_none() {
-            return Ok(AttestationResult {
-                is_valid: false,
-                certificate_hash: String::new(),
-                bundle_id: expected_bundle_id.to_string(),
-                platform: Platform::IOS,
-                device_trusted: false,
-                verdict: Some("CHALLENGE_EXPIRED_OR_REPLAYED".to_string()),
-                error: Some("Challenge expired, invalid, or already used".to_string()),
-                warnings: Some(warnings),
-                verified_at: Utc::now(),
-            });
-        }
-
-        // Challenge will be deleted AFTER successful verification
-    } else {
-        warnings
-            .push("Redis pool not configured; challenge replay protection disabled".to_string());
-    }
-
-    // 2. Decode base64 token
+    // 1. Decode base64 token
     let attestation_bytes = BASE64.decode(token).map_err(|e| {
         VaultlessError::IntegrityCheckFailed(format!("Invalid base64 token: {}", e))
     })?;
 
-    // 3. Parse attestation object (CBOR format)
-    let attestation_obj: AppAttestObject =
-        serde_json::from_slice(&attestation_bytes).or_else(|_| {
-            #[cfg(feature = "cbor")]
-            {
-                ciborium::de::from_reader(&attestation_bytes[..]).map_err(|e| {
-                    VaultlessError::IntegrityCheckFailed(format!(
-                        "Invalid attestation format: {}",
-                        e
-                    ))
-                })
-            }
-            #[cfg(not(feature = "cbor"))]
-            {
-                Err(VaultlessError::IntegrityCheckFailed(
-                    "CBOR parsing not available".into(),
-                ))
-            }
-        })?;
+    // 2. Parse attestation object (CBOR format)
+    #[cfg(feature = "cbor")]
+    let attestation_obj: AppAttestObject = {
+        ciborium::de::from_reader(&attestation_bytes[..]).map_err(|e| {
+            VaultlessError::IntegrityCheckFailed(format!(
+                "Invalid attestation format (CBOR): {}",
+                e
+            ))
+        })?
+    };
 
-    // 4. Verify format
+    #[cfg(not(feature = "cbor"))]
+    compile_error!("CBOR feature must be enabled for iOS AppAttest verification");
+
+    // 3. Verify format
     if let Some(fmt) = &attestation_obj.format
         && fmt != "apple-appattest"
     {
         warnings.push(format!("Unexpected format: {}", fmt));
     }
 
-    // 5. Extract certificate chain
+    // 4. Extract certificate chain
     let cert_chain = attestation_obj
         .att_stmt
         .x5c
@@ -250,20 +203,20 @@ pub async fn verify_ios_attestation(
         ));
     }
 
-    // 6. Get leaf certificate
+    // 5. Get leaf certificate
     let leaf_cert_b64 = &cert_chain[0];
     let leaf_cert_der = BASE64
         .decode(leaf_cert_b64)
         .map_err(|e| VaultlessError::IntegrityCheckFailed(format!("Invalid certificate: {}", e)))?;
 
-    // 7. Calculate SHA-256 of certificate
+    // 6. Calculate SHA-256 of certificate
     let cert_hash = {
         let mut hasher = Sha256::new();
         hasher.update(&leaf_cert_der);
         format!("{:x}", hasher.finalize())
     };
 
-    // 8. Verify certificate hash (if pinning is configured)
+    // 7. Verify certificate hash (if pinning is configured)
     if !allowed_certificate_hashes.is_empty() {
         let cert_match = allowed_certificate_hashes
             .iter()
@@ -284,10 +237,10 @@ pub async fn verify_ios_attestation(
         }
     }
 
-    // 9. Verify certificate chain against Apple root CA
+    // 8. Verify certificate chain against Apple root CA
     verify_apple_certificate_chain(&cert_chain)?;
 
-    // 10. Verify RP ID hash from authData (bundle ID verification)
+    // 9. Verify RP ID hash from authData (bundle ID verification)
     if let Some(auth_data_b64) = &attestation_obj.auth_data {
         let auth_data = BASE64.decode(auth_data_b64).map_err(|e| {
             VaultlessError::IntegrityCheckFailed(format!("Invalid authData: {}", e))
@@ -317,67 +270,17 @@ pub async fn verify_ios_attestation(
                     verified_at: Utc::now(),
                 });
             }
-
-            // CRITICAL: Verify challenge is in authData (bytes 37+)
-            // The challenge should be part of the client data hash
-            let client_data_hash = if auth_data.len() >= 69 {
-                Some(&auth_data[37..69]) // 32 bytes after flags+counter
-            } else {
-                None
-            };
-
-            if let Some(cdh) = client_data_hash {
-                let expected_challenge_hash = {
-                    let mut hasher = Sha256::new();
-                    hasher.update(expected_challenge.as_bytes());
-                    hasher.finalize()
-                };
-
-                if cdh != &expected_challenge_hash[..] {
-                    return Ok(AttestationResult {
-                        is_valid: false,
-                        certificate_hash: cert_hash,
-                        bundle_id: expected_bundle_id.to_string(),
-                        platform: Platform::IOS,
-                        device_trusted: false,
-                        verdict: Some("CHALLENGE_MISMATCH".to_string()),
-                        error: Some("Challenge verification failed".to_string()),
-                        warnings: Some(warnings),
-                        verified_at: Utc::now(),
-                    });
-                }
-            } else {
-                warnings.push("AuthData missing challenge hash".to_string());
-            }
         }
     } else {
         return Err(VaultlessError::IntegrityCheckFailed(
-            "Missing authData (required for challenge verification)".into(),
+            "Missing authData (required for bundle ID verification)".into(),
         ));
     }
 
-    // 11. Verify App ID from certificate extension
+    // 10. Verify App ID from certificate extension
     verify_app_id_from_certificate(&leaf_cert_der, expected_team_id, expected_bundle_id)?;
 
-    // 12. Delete challenge AFTER successful verification (one-time use)
-    if let Some(pool) = redis_pool {
-        let mut hasher = Sha256::new();
-        hasher.update(expected_challenge.as_bytes());
-        let challenge_hash = hex::encode(hasher.finalize());
-        let cache_key = cache_key!(IOS_CHALLENGE_KEY, challenge_hash);
-
-        let mut conn = pool
-            .get()
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-        let _: () = conn
-            .del(&cache_key)
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis DEL failed: {}", e)))?;
-    }
-
-    // 13. Success - iOS App Attest verified
+    // 11. Success - iOS App Attest verified
     Ok(AttestationResult {
         is_valid: true,
         certificate_hash: cert_hash,

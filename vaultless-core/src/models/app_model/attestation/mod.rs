@@ -1,10 +1,12 @@
 // Core types and configuration
+pub mod andriod_offline;
 pub mod config;
 pub mod dto;
+pub mod integrity_handler;
 pub mod types;
+pub mod validators;
 
-// Platform-specific validators
-pub mod android;
+pub mod android_online;
 pub mod browser;
 pub mod captcha;
 pub mod ios;
@@ -24,7 +26,7 @@ pub use config::{
 pub use service::{AttestationService, check_attestation_rate_limit, track_failed_attestation};
 
 // Platform-specific exports
-pub use android::verify_android_attestation;
+pub use android_online::verify_android_attestation_online;
 pub use browser::{
     bind_client_to_origin, check_usage_spike, track_usage, validate_browser_request,
     validate_origin, verify_client_origin,

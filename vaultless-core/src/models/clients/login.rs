@@ -1,4 +1,5 @@
 use super::dto::*;
+use crate::models::app_model::attestation::integrity_handler::IntegrityConfigHandler;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
@@ -45,7 +46,6 @@ impl Client {
         let cache_key = cache_auth_challenge_key(&challenge_hash);
         let mut conn = redis.get().await?;
 
-        // Use GETDEL: Get the value and delete the key atomically
         let challenge_check: Option<i32> = conn.get_del(&cache_key).await?;
 
         if challenge_check.is_none() {
@@ -111,7 +111,6 @@ impl Client {
         }
 
         // --- 5. Check if re-attestation is required ---
-        // Note: needs_reattesation logic likely checks the metadata inside Client
         let requires_reattestation = client.needs_reattesation(30);
 
         if requires_reattestation && input.attestation.is_none() {
@@ -137,10 +136,11 @@ impl Client {
                 "Verifying platform attestation during authentication"
             );
 
+            // Get IntegrityConfigHandler once and reuse it
+            let integrity_handler = app_resolved.integrity()?;
+
             // Rate limiting check
-            let rate_limit = app_resolved
-                .integrity()
-                .get_attestation_rate_limit(attestation_request.platform);
+            let rate_limit = integrity_handler.get_attestation_rate_limit();
 
             if let Err(e) = check_attestation_rate_limit(
                 &redis,
@@ -159,24 +159,27 @@ impl Client {
                 return Err(e);
             }
 
-            // Verify attestation using new service
+            // Verify attestation using service
             let attestation_svc = attestation_service.ok_or_else(|| {
                 VaultlessError::Internal("Attestation service not configured".into())
             })?;
 
-            let integrity_config =
-                serde_json::to_value(&app_resolved.integrity().get_integrity_config()?)
-                    .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
-
             let attestation_result = attestation_svc
-                .verify_attestation(&attestation_request, &integrity_config, app_resolved.app_id)
+                .verify_attestation(
+                    &attestation_request,
+                    &integrity_handler.config,
+                    app_resolved.app_id,
+                )
                 .await;
 
             match attestation_result {
                 Ok(result) => {
                     if !result.is_valid {
                         // Track failed attempt
-                        let max_failures = app_resolved.integrity().get_max_failed_attempts();
+                        let max_failures = integrity_handler
+                            .config
+                            .rate_limits
+                            .max_failed_attempts_before_lockout;
                         let _ = track_failed_attestation(
                             &redis,
                             &attestation_request.device_id,
@@ -202,8 +205,7 @@ impl Client {
 
                     // Check if untrusted devices should be rejected
                     if !result.device_trusted
-                        && app_resolved
-                            .integrity()
+                        && integrity_handler
                             .should_reject_untrusted_device(attestation_request.platform)
                     {
                         tracing::warn!(
@@ -240,7 +242,7 @@ impl Client {
                     .execute(exec.clone())
                     .await?;
 
-                    // Update local client struct to reflect metadata change (for session token generation context)
+                    // Update local client struct to reflect metadata change
                     client.metadata = Some(updated_metadata);
 
                     tracing::info!(
@@ -253,7 +255,10 @@ impl Client {
                 }
                 Err(e) => {
                     // Track failed attempt
-                    let max_failures = app_resolved.integrity().get_max_failed_attempts();
+                    let max_failures = integrity_handler
+                        .config
+                        .rate_limits
+                        .max_failed_attempts_before_lockout;
                     let _ = track_failed_attestation(
                         &redis,
                         &attestation_request.device_id,
@@ -286,7 +291,6 @@ impl Client {
         // --- 8. Generate PASETO Session Token ---
         let ttl_seconds = SESSION_DURATION_HOURS * 3600;
 
-        // Prepare session claims
         let session_data = SessionData {
             client_id: client.id,
             application_id: client.application_id,
@@ -297,28 +301,19 @@ impl Client {
             pubkey: None,
         };
 
-        // Generate the token
         let session_token =
             paseto_session::create_session_token(key_manager.current(), session_data, ttl_seconds)?;
 
-        // IMPORTANT: Parse the token immediately to extract the JTI (Token Identifier).
-        // We need this to store in `last_jti` for revocation support.
         let (_, new_jti) = verify_session_token(&key_manager, &session_token)?;
 
         // --- 9. Handle Session Revocation & DB Update ---
-
-        // If a previous session exists, revoke it in Redis
         if let Some(old_jti) = &client.last_jti {
-            // Revoke for the duration of the remaining session window (safeguard default 30 days)
-            // We use a background spawn or just await it. Since speed matters, we await but ignore errors?
-            // Better to await to ensure security.
             let _ = revoke_session(&redis, old_jti, ttl_seconds).await;
             tracing::debug!(client_id = %client.id, old_jti = %old_jti, "Revoked previous session JTI");
         }
 
         let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS as i64);
 
-        // Update client with new JTI and last seen
         sqlx::query(
             r#"
             UPDATE clients

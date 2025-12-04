@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::convert::TryInto;
+use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 use x509_parser::prelude::*;
@@ -40,7 +41,6 @@ pub struct IoTAttestationRequest {
 // =============================================================================
 // IoT CERTIFICATE VERIFICATION WITH REVOCATION
 // =============================================================================
-
 pub async fn verify_iot_certificate(
     device_certificate: &str,
     challenge_signature: &str,
@@ -48,14 +48,13 @@ pub async fn verify_iot_certificate(
     device_id: &str,
     allowed_certificate_authorities: &[String],
     require_cn_match: bool,
-    redis_pool: RedisPool,
-    postgres_pool: PgPool,
+    postgres_pool: Arc<PgPool>,
     application_id: Uuid,
 ) -> Result<AttestationResult> {
     let mut warnings: Vec<String> = Vec::new();
 
     // ---------------------------
-    // 0. Calculate certificate hash
+    // 1. Calculate certificate hash
     // ---------------------------
 
     let cert_der = BASE64.decode(device_certificate).map_err(|e| {
@@ -69,7 +68,7 @@ pub async fn verify_iot_certificate(
     };
 
     // ---------------------------
-    // 0.5 CHECK DEVICE REVOCATION (POSTGRES)
+    // 2. CHECK DEVICE REVOCATION (POSTGRES)
     // ---------------------------
     let revoked = sqlx::query_scalar::<_, i64>(
         r#"
@@ -82,7 +81,7 @@ pub async fn verify_iot_certificate(
     )
     .bind(application_id)
     .bind(&cert_hash)
-    .fetch_optional(&postgres_pool)
+    .fetch_optional(&*postgres_pool)
     .await
     .map_err(|e| VaultlessError::Internal(format!("Database query failed: {}", e)))?;
 
@@ -101,41 +100,7 @@ pub async fn verify_iot_certificate(
     }
 
     // ---------------------------
-    // 1. REPLAY PROTECTION: Check challenge exists
-    // ---------------------------
-    let challenge_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(challenge.as_bytes());
-        hex::encode(hasher.finalize())
-    };
-    let cache_key = cache_key!(IOT_CHALLENGE_KEY, challenge_hash);
-
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-    let exists: Option<String> = conn
-        .get(&cache_key)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis GET failed: {}", e)))?;
-
-    if exists.is_none() {
-        return Ok(AttestationResult {
-            is_valid: false,
-            certificate_hash: cert_hash,
-            bundle_id: device_id.to_string(),
-            platform: Platform::IoT,
-            device_trusted: false,
-            verdict: Some("CHALLENGE_EXPIRED_OR_REPLAYED".into()),
-            error: Some("Challenge expired, invalid, or already used".into()),
-            warnings: Some(warnings),
-            verified_at: Utc::now(),
-        });
-    }
-
-    // ---------------------------
-    // 2. Decode device certificate
+    // 3. Decode device certificate
     // ---------------------------
     let cert_der = BASE64.decode(device_certificate).map_err(|e| {
         VaultlessError::IntegrityCheckFailed(format!("Invalid certificate base64: {}", e))
@@ -146,7 +111,7 @@ pub async fn verify_iot_certificate(
     })?;
 
     // ---------------------------
-    // 3. SECURITY CHECK: KeyUsage digitalSignature
+    // 4. SECURITY CHECK: KeyUsage digitalSignature
     // ---------------------------
     if let Ok(Some(ku)) = cert.key_usage() {
         if !ku.value.digital_signature() {
@@ -167,7 +132,7 @@ pub async fn verify_iot_certificate(
     }
 
     // ---------------------------
-    // 4. Validity period check
+    // 5. Validity period check
     // ---------------------------
     if !cert.validity().is_valid() {
         return Ok(AttestationResult {
@@ -184,7 +149,7 @@ pub async fn verify_iot_certificate(
     }
 
     // ---------------------------
-    // 5. Verify CA signature
+    // 6. Verify CA signature
     // ---------------------------
     let tbs = cert.tbs_certificate.as_ref();
     let cert_sig_bytes = cert.signature_value.data.as_ref();
@@ -256,7 +221,7 @@ pub async fn verify_iot_certificate(
     }
 
     // ---------------------------
-    // 6. Validate CN against device_id
+    // 7. Validate CN against device_id
     // ---------------------------
     let device_cn = cert
         .subject()
@@ -284,7 +249,7 @@ pub async fn verify_iot_certificate(
     }
 
     // ---------------------------
-    // 7. Verify challenge signature (Proof of Possession)
+    // 8. Verify challenge signature (Proof of Possession)
     // ---------------------------
     let device_spki_der = cert.tbs_certificate.subject_pki.raw;
     let device_key = VerifyingKey::from_public_key_der(device_spki_der).map_err(|e| {
@@ -324,26 +289,6 @@ pub async fn verify_iot_certificate(
             verified_at: Utc::now(),
         });
     }
-
-    // ---------------------------
-    // 8. Delete challenge from Redis
-    // ---------------------------
-    let challenge_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(challenge.as_bytes());
-        hex::encode(hasher.finalize())
-    };
-    let key = cache_key!(IOT_CHALLENGE_KEY, challenge_hash);
-
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-    let _: () = conn
-        .del(&key)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis DEL failed: {}", e)))?;
 
     // ---------------------------
     // 9. SUCCESS

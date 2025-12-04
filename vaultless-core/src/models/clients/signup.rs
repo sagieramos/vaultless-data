@@ -115,16 +115,12 @@ impl Client {
                 "Verifying platform attestation during registration"
             );
 
+            // FIX: Get integrity handler once
+            let integrity_handler = auth_config.integrity()?;
+
             // Rate limiting check
             if let Some(redis_pool) = &redis {
-                // Extract rate limit from integrity_config
-                let integrity_config: IntegrityConfig =
-                    serde_json::from_value(auth_config.app_integrity_config.clone())
-                        .unwrap_or_default();
-
-                let rate_limit = integrity_config
-                    .rate_limits
-                    .max_attestations_per_user_per_hour;
+                let rate_limit = integrity_handler.get_attestation_rate_limit();
 
                 if let Err(e) = check_attestation_rate_limit(
                     redis_pool,
@@ -143,15 +139,16 @@ impl Client {
                 }
             }
 
-            // Verify attestation using new service
+            // Verify attestation using service
             let attestation_svc = attestation_service.ok_or_else(|| {
                 VaultlessError::Internal("Attestation service not configured".into())
             })?;
 
+            // FIX: Pass IntegrityConfig directly
             let attestation_result = attestation_svc
                 .verify_attestation(
                     &attestation_request,
-                    &auth_config.app_integrity_config,
+                    &integrity_handler.config,
                     auth_config.app_id,
                 )
                 .await;
@@ -161,13 +158,10 @@ impl Client {
                     if !result.is_valid {
                         // Track failed attempt
                         if let Some(redis_pool) = &redis {
-                            let integrity_config: IntegrityConfig =
-                                serde_json::from_value(auth_config.app_integrity_config.clone())
-                                    .unwrap_or_default();
-
-                            let max_failures = integrity_config
+                            let max_failures = integrity_handler.config
                                 .rate_limits
                                 .max_failed_attempts_before_lockout;
+                            
                             let _ = track_failed_attestation(
                                 redis_pool,
                                 &attestation_request.device_id,
@@ -192,29 +186,18 @@ impl Client {
                     }
 
                     // Check if untrusted devices should be rejected
-                    if !result.device_trusted {
-                        let integrity_config: IntegrityConfig =
-                            serde_json::from_value(auth_config.app_integrity_config.clone())
-                                .unwrap_or_default();
+                    if !result.device_trusted 
+                        && integrity_handler.should_reject_untrusted_device(attestation_request.platform)
+                    {
+                        tracing::warn!(
+                            platform = %attestation_request.platform,
+                            device_id = %attestation_request.device_id,
+                            "Untrusted device rejected"
+                        );
 
-                        let should_reject = match attestation_request.platform {
-                            Platform::IOS => integrity_config.ios.reject_untrusted_device,
-                            Platform::Android => integrity_config.android.reject_untrusted_device,
-                            Platform::IoT => true, // IoT always requires trusted devices
-                            Platform::Browser => false,
-                        };
-
-                        if should_reject {
-                            tracing::warn!(
-                                platform = %attestation_request.platform,
-                                device_id = %attestation_request.device_id,
-                                "Untrusted device rejected"
-                            );
-
-                            return Err(VaultlessError::IntegrityCheckFailed(
-                                "Device did not pass integrity checks".to_string(),
-                            ));
-                        }
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "Device did not pass integrity checks".to_string(),
+                        ));
                     }
 
                     // Update trust state
@@ -243,13 +226,10 @@ impl Client {
                 Err(e) => {
                     // Track failed attempt
                     if let Some(redis_pool) = &redis {
-                        let integrity_config: IntegrityConfig =
-                            serde_json::from_value(auth_config.app_integrity_config.clone())
-                                .unwrap_or_default();
-
-                        let max_failures = integrity_config
+                        let max_failures = integrity_handler.config
                             .rate_limits
                             .max_failed_attempts_before_lockout;
+                        
                         let _ = track_failed_attestation(
                             redis_pool,
                             &attestation_request.device_id,
@@ -273,28 +253,9 @@ impl Client {
         } else {
             // Check if attestation is required
             if let Some(attestation_platform) = input.attestation_platform {
-                let integrity_config: IntegrityConfig =
-                    serde_json::from_value(auth_config.app_integrity_config.clone())
-                        .unwrap_or_default();
+                let integrity_handler = auth_config.integrity()?;
 
-                let requires_attestation = match attestation_platform {
-                    Platform::IOS => {
-                        integrity_config.ios.apple_team_id.is_some()
-                            || !integrity_config.ios.allowed_bundle_ids.is_empty()
-                    }
-                    Platform::Android => integrity_config
-                        .android
-                        .allowed_certificate_sha256
-                        .is_some(),
-                    Platform::IoT => {
-                        integrity_config.iot.require_device_certificate
-                            && !integrity_config
-                                .iot
-                                .allowed_certificate_authorities
-                                .is_empty()
-                    }
-                    Platform::Browser => false,
-                };
+                let requires_attestation = integrity_handler.requires_attestation(attestation_platform);
 
                 if requires_attestation {
                     tracing::warn!(
@@ -319,11 +280,8 @@ impl Client {
             .map(|ci| crypto::hash_content(ci.as_bytes()));
 
         // --- 7. Generate Client ID & PASETO Session Token ---
-
-        // We must generate the UUID here so we can embed it in the token claims
         let client_id = Uuid::new_v4();
 
-        // Prepare session data
         let session_data = SessionData {
             client_id,
             application_id: auth_config.app_id,
@@ -336,11 +294,9 @@ impl Client {
 
         let ttl_seconds = SESSION_DURATION_HOURS * 3600;
 
-        // Create token
         let session_token =
             paseto_session::create_session_token(key_manager.current(), session_data, ttl_seconds)?;
 
-        // Extract JTI (Join Token ID) for DB storage (revocation handle)
         let (_, jti) = verify_session_token(&key_manager, &session_token)?;
 
         let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS as i64);
@@ -364,11 +320,11 @@ impl Client {
             RETURNING *
             "#,
         )
-        .bind(client_id) // Bind the pre-generated ID
+        .bind(client_id)
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
         .bind(&pubkey)
-        .bind(&jti) // Store the JTI
+        .bind(&jti)
         .bind(&merged_metadata)
         .bind(auth_config.app_user_id)
         .bind(auth_config.app_id)
@@ -437,11 +393,12 @@ impl Client {
             VaultlessError::Validation(format!("Invalid attestation request: {}", e))
         })?;
 
+        // FIX: Get integrity handler once
+        let integrity_handler = app.integrity()?;
+
         // 4. Rate limiting
         if let Some(redis_pool) = &redis {
-            let rate_limit = app
-                .integrity()
-                .get_attestation_rate_limit(attestation_request.platform);
+            let rate_limit = integrity_handler.get_attestation_rate_limit();
 
             check_attestation_rate_limit(
                 redis_pool,
@@ -452,14 +409,11 @@ impl Client {
             .await?;
         }
 
-        // 5. Verify attestation
-        let integrity_config = serde_json::to_value(&app.get_integrity_config()?)
-            .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
-
+        // 5. Verify attestation - FIX: Pass IntegrityConfig directly
         let attestation_result = attestation_service
             .verify_attestation(
                 &attestation_request,
-                &integrity_config,
+                &integrity_handler.config,  // ← Direct reference
                 client.application_id,
             )
             .await?;
@@ -467,7 +421,10 @@ impl Client {
         if !attestation_result.is_valid {
             // Track failed attempt
             if let Some(redis_pool) = &redis {
-                let max_failures = app.integrity().get_max_failed_attempts();
+                let max_failures = integrity_handler.config
+                    .rate_limits
+                    .max_failed_attempts_before_lockout;
+                
                 let _ = track_failed_attestation(
                     redis_pool,
                     &attestation_request.device_id,
@@ -485,9 +442,7 @@ impl Client {
 
         // 6. Check device trust
         if !attestation_result.device_trusted
-            && app
-                .integrity()
-                .should_reject_untrusted_device(attestation_request.platform)
+            && integrity_handler.should_reject_untrusted_device(attestation_request.platform)
         {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Device did not pass integrity checks".to_string(),
@@ -503,8 +458,6 @@ impl Client {
         let updated_metadata = attestation_meta.merge_into_metadata(client.metadata.clone())?;
 
         // 8. Update database
-        // Note: re_attest does not rotate session key (that's authenticate),
-        // so last_jti is not touched here.
         sqlx::query(
             r#"
             UPDATE clients

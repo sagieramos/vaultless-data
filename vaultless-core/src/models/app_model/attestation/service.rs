@@ -1,5 +1,7 @@
-use super::android::verify_android_attestation;
+use super::andriod_offline::verify_android_attestation_offline;
+use super::android_online::verify_android_attestation_online;
 use super::config::*;
+use super::dto::{AndroidIntegrityConfig, IntegrityConfig, IoTIntegrityConfig, IosIntegrityConfig};
 use super::ios::{generate_ios_challenge, verify_ios_attestation};
 use super::iot::{IoTAttestationRequest, generate_iot_challenge, verify_iot_certificate};
 use super::types::*;
@@ -16,7 +18,6 @@ pub struct AttestationService {
     redis_pool: Arc<RedisPool>,
     postgres_pool: Arc<PgPool>,
 }
-
 impl AttestationService {
     pub fn new(redis_pool: Arc<RedisPool>, postgres_pool: Arc<PgPool>) -> Self {
         Self {
@@ -25,26 +26,23 @@ impl AttestationService {
         }
     }
 
-    /// Verify attestation for any platform
+    /// Verify attestation for any platform using strong types
     pub async fn verify_attestation(
         &self,
         request: &AttestationRequest,
-        integrity_config: &serde_json::Value,
+        config: &IntegrityConfig, 
         application_id: Uuid,
     ) -> Result<AttestationResult> {
-        // Validate request
+        // Validate request format
         request.validate().map_err(|e| {
             VaultlessError::Validation(format!("Invalid attestation request: {}", e))
         })?;
 
         // Route to platform-specific verification
         match request.platform {
-            Platform::Android => self.verify_android(request, integrity_config).await,
-            Platform::IOS => self.verify_ios(request, integrity_config).await,
-            Platform::IoT => {
-                self.verify_iot(request, integrity_config, application_id)
-                    .await
-            }
+            Platform::Android => self.verify_android_offline(request, &config.android).await,
+            Platform::IOS => self.verify_ios(request, &config.ios).await,
+            Platform::IoT => self.verify_iot(request, &config.iot, application_id).await,
             Platform::Browser => Err(VaultlessError::Validation(
                 "Browser platform does not support mobile attestation".into(),
             )),
@@ -52,35 +50,95 @@ impl AttestationService {
     }
 
     /// Verify Android Play Integrity attestation
-    async fn verify_android(
+    async fn verify_android_online(
         &self,
         request: &AttestationRequest,
-        integrity_config: &serde_json::Value,
+        config: &AndroidIntegrityConfig,
     ) -> Result<AttestationResult> {
-        let config = extract_android_config(integrity_config)?;
+        // 1. Validate Bundle ID
+        validate_identifier(&request.bundle_id, &config.allowed_bundle_ids, "Bundle ID")?;
 
-        // Validate bundle ID
-        validate_bundle_id(&request.bundle_id, &config.base.allowed_bundle_ids)?;
+        // 2. Validate App Version
+        validate_version(request.app_version.as_deref(), config.min_version_code)?;
 
-        // Validate version
-        validate_version(request.app_version.as_deref(), config.base.min_version_code)?;
-
-        // Extract nonce (required for Android)
+        // 3. Extract Nonce
         let nonce = request.challenge.as_deref().ok_or_else(|| {
             VaultlessError::IntegrityCheckFailed("Nonce required for Android attestation".into())
         })?;
 
-        // Call Android verification
-        verify_android_attestation(
+        let cloud_project = config.google_cloud_project.as_deref().ok_or_else(|| {
+            VaultlessError::IntegrityCheckFailed(
+                "google_cloud_project is required for online attestation".into(),
+            )
+        })?;
+
+        let api_key = config.google_api_key.as_deref().ok_or_else(|| {
+            VaultlessError::IntegrityCheckFailed(
+                "google_api_key is required for online attestation".into(),
+            )
+        })?;
+
+        // 4. Required: expected certificate hash
+        let cert_hash = config
+            .allowed_certificate_sha256
+            .as_deref()
+            .ok_or_else(|| {
+                VaultlessError::IntegrityCheckFailed(
+                    "allowed_certificate_sha256 is required for offline attestation".into(),
+                )
+            })?;
+
+        // 5. Verify via Google Play API
+        verify_android_attestation_online(
             &request.attestation_token,
             &request.bundle_id,
-            &config.certificate_sha256,
+            &cert_hash,
             nonce,
-            &config.google_cloud_project,
-            &config.google_api_key,
+            cloud_project,
+            api_key,
             config.max_token_age_seconds,
             config.reject_unrecognized_version,
-            config.base.reject_untrusted_device,
+            config.reject_untrusted_device,
+        )
+        .await
+    }
+
+    /// Verify Android Offline attestation
+    async fn verify_android_offline(
+        &self,
+        request: &AttestationRequest,
+        config: &AndroidIntegrityConfig,
+    ) -> Result<AttestationResult> {
+        // 1. Validate Bundle ID
+        validate_identifier(&request.bundle_id, &config.allowed_bundle_ids, "Bundle ID")?;
+
+        // 2. Validate App Version
+        validate_version(request.app_version.as_deref(), config.min_version_code)?;
+
+        // 3. Extract Nonce
+        let nonce = request.challenge.as_deref().ok_or_else(|| {
+            VaultlessError::IntegrityCheckFailed("Nonce required for Android attestation".into())
+        })?;
+
+        // 4. Required: expected certificate hash
+        let cert_hash = config
+            .allowed_certificate_sha256
+            .as_deref()
+            .ok_or_else(|| {
+                VaultlessError::IntegrityCheckFailed(
+                    "allowed_certificate_sha256 is required for offline attestation".into(),
+                )
+            })?;
+
+        // 5. Verify via Offline method
+        verify_android_attestation_offline(
+            &request.attestation_token,
+            &request.bundle_id,
+            &cert_hash,
+            nonce,
+            config.max_token_age_seconds,
+            config.reject_unrecognized_version,
+            config.reject_untrusted_device,
         )
         .await
     }
@@ -89,29 +147,34 @@ impl AttestationService {
     async fn verify_ios(
         &self,
         request: &AttestationRequest,
-        integrity_config: &serde_json::Value,
+        config: &IosIntegrityConfig,
     ) -> Result<AttestationResult> {
-        let config = extract_ios_config(integrity_config)?;
+        // 1. Validate Bundle ID
+        validate_identifier(&request.bundle_id, &config.allowed_bundle_ids, "Bundle ID")?;
 
-        // Validate bundle ID
-        validate_bundle_id(&request.bundle_id, &config.base.allowed_bundle_ids)?;
+        // 2. Validate App Version
+        validate_version(request.app_version.as_deref(), config.min_version_code)?;
 
-        // Validate version
-        validate_version(request.app_version.as_deref(), config.base.min_version_code)?;
-
-        // Extract challenge (required for iOS)
+        // 3. Extract Challenge
         let expected_challenge = request.challenge.as_deref().ok_or_else(|| {
             VaultlessError::IntegrityCheckFailed("Challenge required for iOS attestation".into())
         })?;
 
-        // Call iOS verification
+        // 4. Required: expected Apple Team ID
+        let team_id = config.apple_team_id.as_deref().ok_or_else(|| {
+            VaultlessError::IntegrityCheckFailed(
+                "apple_team_id is required for iOS attestation".into(),
+            )
+        })?;
+
+        // 5. Verify via Apple App Attest
         verify_ios_attestation(
             &request.attestation_token,
             &request.bundle_id,
-            &config.apple_team_id,
+            &team_id,
             expected_challenge,
             &config.allowed_certificate_hashes,
-            config.base.reject_untrusted_device,
+            config.reject_untrusted_device,
             Some(self.redis_pool.clone()),
         )
         .await
@@ -121,38 +184,33 @@ impl AttestationService {
     async fn verify_iot(
         &self,
         request: &AttestationRequest,
-        integrity_config: &serde_json::Value,
+        config: &IoTIntegrityConfig,
         application_id: Uuid,
     ) -> Result<AttestationResult> {
-        let config = extract_iot_config(integrity_config)?;
+        // 1. Validate Device ID (mapped to allowed_device_ids in config)
+        validate_identifier(&request.bundle_id, &config.allowed_device_ids, "Device ID")?;
 
-        // Validate device ID (using bundle_id field for IoT)
-        validate_bundle_id(&request.bundle_id, &config.base.allowed_bundle_ids)?;
+        // 2. Validate Firmware Version
+        validate_version(request.app_version.as_deref(), config.min_firmware_version)?;
 
-        // Validate firmware version
-        validate_version(request.app_version.as_deref(), config.base.min_version_code)?;
-
-        // Parse IoT-specific attestation token (JSON structure)
+        // 3. Parse IoT Token
         let iot_request: IoTAttestationRequest = serde_json::from_str(&request.attestation_token)
             .map_err(|e| {
-            VaultlessError::IntegrityCheckFailed(format!("Invalid IoT attestation: {}", e))
+            VaultlessError::IntegrityCheckFailed(format!("Invalid IoT attestation JSON: {}", e))
         })?;
 
         iot_request.validate().map_err(|e| {
             VaultlessError::Validation(format!("Invalid IoT attestation request: {}", e))
         })?;
 
-        // Verify device_id matches request
+        // 4. Consistency Check
         if iot_request.device_id != request.device_id {
             return Err(VaultlessError::Validation(
                 "Device ID mismatch between request and attestation token".into(),
             ));
         }
 
-        // Call IoT verification
-        // FIX: The function expects RedisPool and PgPool (raw types passed by value).
-        // Since the service stores Arc<Pool>, we dereference the Arc (to get &Pool)
-        // and then call .clone() on the inner Pool instance to get a new Pool by value.
+        // 5. Verify Certificate Chain
         verify_iot_certificate(
             &iot_request.device_certificate,
             &iot_request.challenge_signature,
@@ -160,46 +218,70 @@ impl AttestationService {
             &iot_request.device_id,
             &config.allowed_certificate_authorities,
             config.require_cn_match,
-            // FIX 1: Pass RedisPool by value
-            (*self.redis_pool).clone(),
-            // FIX 2: Pass PgPool by value
-            (*self.postgres_pool).clone(),
+            Arc::clone(&self.redis_pool),   
+            Arc::clone(&self.postgres_pool),
             application_id,
         )
         .await
     }
 
     /// Generate challenge for iOS attestation
-    pub async fn generate_ios_challenge(
-        &self,
-        integrity_config: &serde_json::Value,
-    ) -> Result<String> {
-        let config = extract_ios_config(integrity_config)?;
-
-        // NOTE: generate_ios_challenge expects &RedisPool, so cloning the Arc and
-        // getting a reference (&*Arc) is correct here.
-        let redis_pool = &*self.redis_pool;
-
-        generate_ios_challenge(redis_pool, config.challenge_ttl_seconds).await
+    pub async fn generate_ios_challenge(&self, config: &IosIntegrityConfig) -> Result<String> {
+        generate_ios_challenge(&*self.redis_pool, config.challenge_ttl_seconds).await
     }
 
     /// Generate challenge for IoT attestation
-    pub async fn generate_iot_challenge(
-        &self,
-        integrity_config: &serde_json::Value,
-    ) -> Result<String> {
-        let config = extract_iot_config(integrity_config)?;
-
-        // NOTE: generate_iot_challenge expects &RedisPool, so getting a reference
-        // (&*Arc) is correct here.
-        let redis_pool = &*self.redis_pool;
-
-        generate_iot_challenge(redis_pool, config.challenge_ttl_seconds).await
+    pub async fn generate_iot_challenge(&self, config: &IoTIntegrityConfig) -> Result<String> {
+        generate_iot_challenge(&*self.redis_pool, config.challenge_ttl_seconds).await
     }
 }
 
 // =============================================================================
-// RATE LIMITING (optional, can be extracted to separate module)
+// HELPER FUNCTIONS (No longer extracting from JSON)
+// =============================================================================
+
+fn validate_identifier(id: &str, allowed_list: &[String], id_type: &str) -> Result<()> {
+    if allowed_list.is_empty() {
+        return Ok(()); // No restrictions if list is empty
+    }
+    if !allowed_list.contains(&id.to_string()) {
+        return Err(VaultlessError::IntegrityCheckFailed(format!(
+            "{} '{}' is not in the allowed list",
+            id_type, id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_version(current_version: Option<&str>, min_version: Option<i32>) -> Result<()> {
+    // If no minimum version is set, everything is allowed
+    let min_v = match min_version {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+
+    // If minimum version is set but current version is missing -> Fail
+    let current_v_str = current_version.ok_or_else(|| {
+        VaultlessError::IntegrityCheckFailed("Version code is required by configuration".into())
+    })?;
+
+    // Parse current version
+    let current_v_int: i32 = current_v_str.parse().map_err(|_| {
+        VaultlessError::Validation(format!("Invalid version code format: {}", current_v_str))
+    })?;
+
+    if current_v_int < min_v {
+        return Err(VaultlessError::IntegrityCheckFailed(format!(
+            "Version {} is below minimum required version {}",
+            current_v_int, min_v
+        )));
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// RATE LIMITING
 // =============================================================================
 
 /// Check rate limit for attestation attempts
@@ -210,36 +292,20 @@ pub async fn check_attestation_rate_limit(
     max_attempts_per_hour: u32,
 ) -> Result<()> {
     use redis::AsyncCommands;
-
     let key = cache_key!("rate_limit", "attestation", platform.as_str(), client_id);
+    let mut conn = redis_pool.get().await?;
 
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-    // Increment counter
-    let count: u32 = conn
-        .incr(&key, 1)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis INCR failed: {}", e)))?;
-
-    // Set expiry on first attempt
+    let count: u32 = conn.incr(&key, 1).await?;
     if count == 1 {
-        let _: () = conn
-            .expire(&key, 3600) // 1 hour
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis EXPIRE failed: {}", e)))?;
+        let _: () = conn.expire(&key, 3600).await?;
     }
 
-    // Check limit
     if count > max_attempts_per_hour {
         return Err(VaultlessError::RateLimitExceeded(format!(
             "Too many {} attestation attempts. Try again later.",
             platform
         )));
     }
-
     Ok(())
 }
 
@@ -250,24 +316,12 @@ pub async fn track_failed_attestation(
     max_failures: u32,
 ) -> Result<()> {
     use redis::AsyncCommands;
-
     let key = cache_key!("failed_attestations", client_id);
+    let mut conn = redis_pool.get().await?;
 
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-    let count: u32 = conn
-        .incr(&key, 1)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis INCR failed: {}", e)))?;
-
+    let count: u32 = conn.incr(&key, 1).await?;
     if count == 1 {
-        let _: () = conn
-            .expire(&key, 3600) // 1 hour lockout
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis EXPIRE failed: {}", e)))?;
+        let _: () = conn.expire(&key, 3600).await?;
     }
 
     if count >= max_failures {
@@ -275,42 +329,5 @@ pub async fn track_failed_attestation(
             "Too many failed attestation attempts. Account temporarily locked.".into(),
         ));
     }
-
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-
-    // FIX: Update test harness to correctly initialize AttestationService with dummy Arcs
-    // NOTE: This test block is likely incomplete or requires mocking in a real project
-    // but the test case itself is modified to match the new constructor.
-    // I'll skip fixing all test imports/definitions since that's out of scope of the error.
-
-    /*
-    #[test]
-    fn test_service_creation() {
-        let service = AttestationService::new(None, None); // This will error unless RedisPool/PgPool are mocked
-        assert!(service.redis_pool.is_none());
-    }
-
-    #[test]
-    fn test_invalid_platform_rejection() {
-        let request = AttestationRequest {
-            platform: Platform::Browser,
-            bundle_id: "com.example.app".to_string(),
-            device_id: "device-123".to_string(),
-            attestation_token: "token".to_string(),
-            challenge: None,
-            app_version: None,
-            device_info: None,
-        };
-
-        let config = json!({});
-        let service = AttestationService::new(None, None); // This will error
-
-        let result = tokio_test::block_on(service.verify_attestation(&request, &config));
-        assert!(result.is_err());
-    }
-    */
 }

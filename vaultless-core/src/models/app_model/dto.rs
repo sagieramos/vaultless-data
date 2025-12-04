@@ -1,14 +1,16 @@
+use super::attestation::dto::IntegrityConfig;
+use super::attestation::integrity_handler::IntegrityConfigHandler;
 use crate::cache_key;
 use crate::types::SubscriptionTier;
 use bigdecimal::BigDecimal as Decimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::FromRow;
 use std::clone::Clone;
 use std::fmt::Debug;
 use uuid::Uuid;
 use validator::Validate;
-use  serde_json::Value;
 
 /// Application table model — matches the `public.applications` schema.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -62,36 +64,10 @@ pub struct UpdateApplication {
     #[validate(length(max = 1000))]
     pub internal_notes: Option<String>,
 
-    pub integrity_config: Option<serde_json::Value>,
+    pub integrity_config: Option<IntegrityConfig>,
 }
 
-/// Data Transfer Object used to display a complete view of an Application,
-/// including its current tier limits and both secret and publishable key information.
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct ApplicationWithTier {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 
-    pub max_ttl_seconds: i32,
-    pub is_key_rotation_forced: bool,
-    pub internal_notes: Option<String>,
-    pub integrity_config: Option<serde_json::Value>,
-
-    // Joined secret key values
-    pub tier: String,
-    pub monthly_message_quota: i32,
-    pub rate_limit_per_minute: i32,
-    pub message_retention_seconds: Option<i32>,
-    pub api_key_active: bool,
-
-    // Publishable key
-    pub publishable_key_plaintext: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateApplicationResponse {
@@ -127,6 +103,16 @@ pub struct ApplicationKeyView {
     pub sk_message_retention_seconds: Option<i32>,
     pub sk_rate_limit_per_minute: Option<i32>,
 }
+
+impl ApplicationKeyView {
+    pub fn integrity(&self) -> crate::error::Result<IntegrityConfigHandler> {
+        IntegrityConfigHandler::new(&self.app_integrity_config)
+    }
+}
+
+// Usage:
+/* auth_config.integrity().requires_attestation(Platform::IOS);
+application.integrity().get_integrity_config()?; */
 
 #[derive(Debug, Clone, FromRow)]
 pub struct ApplicationWithKeysFromView {
@@ -166,7 +152,6 @@ fn is_json_value_empty(value: &Value) -> bool {
     // All other values (string, number, bool, null) are considered non-empty
     false
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ApplicationWithKeysResponse {

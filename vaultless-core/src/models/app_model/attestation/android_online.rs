@@ -65,7 +65,7 @@ struct AccountDetails {
 // =============================================================================
 
 /// Verify Android Play Integrity attestation with full security checks
-pub async fn verify_android_attestation(
+pub async fn verify_android_attestation_online(
     token: &str,
     expected_package_name: &str,
     expected_cert_hash: &str,

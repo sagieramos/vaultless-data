@@ -28,39 +28,30 @@ pub async fn reject_all_query(req: Request<Body>, next: Next) -> Result<Response
 ///
 /// This helps prevent SQL injection, malformed queries,
 /// and unauthorized attempts.
-pub async fn reject_suspicious_query(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
-    let query_opt = req.uri().query();
+/// 
+use once_cell::sync::Lazy;
+use regex::Regex;
 
-    if let Some(query) = query_opt {
-        // List of suspicious patterns...
-        let suspicious_patterns = [
-            r"(?i)\b(drop|delete|update|insert|alter|truncate|grant|revoke)\b",
-            r"(?i)--",
-            r"(?i);",
-            r"(?i)union\s+select",
-            r"(?i)exec\s",
-            r"(?i)sleep\(",
-            r"(?i)\$\w+",
-        ];
+static SUSPICIOUS_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    vec![
+        Regex::new(r"(?i)\b(drop|delete|update|insert|alter|truncate|grant|revoke)\b").unwrap(),
+        Regex::new(r"--").unwrap(),
+        Regex::new(r";").unwrap(),
+        Regex::new(r"(?i)union\s+select").unwrap(),
+        Regex::new(r"(?i)exec\s").unwrap(),
+        Regex::new(r"(?i)sleep\(").unwrap(),
+        Regex::new(r"\$\w+").unwrap(),
+    ]
+});
 
-        for pattern in suspicious_patterns {
-            let re = match Regex::new(pattern) {
-                // If a pattern is invalid (internal error), return 500
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("Internal regex pattern error: {}", e);
-                    // This is an internal server issue, so 500 is appropriate here.
-                    return Err(ApiError::internal_server_error(
-                        "Failed to process security checks",
-                    ));
-                }
-            };
-
-            if re.is_match(query) {
-                warn!(
-                    "Rejected suspicious query: {} | pattern matched: {}",
-                    query, pattern
-                );
+pub async fn reject_suspicious_query(
+    req: Request<Body>,
+    next: Next
+) -> Result<Response, ApiError> {
+    if let Some(query) = req.uri().query() {
+        for pattern in SUSPICIOUS_PATTERNS.iter() {
+            if pattern.is_match(query) {
+                warn!("Rejected suspicious query: {}", query);
 
                 return Err(ApiError::forbidden(
                     "Request blocked due to suspicious query content.",

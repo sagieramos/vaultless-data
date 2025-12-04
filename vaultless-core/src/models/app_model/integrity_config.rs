@@ -1,55 +1,225 @@
-use super::attestation::dto::*;
 use super::dto::*;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::attestation::types::Platform;
 use deadpool_redis::Pool as RedisPool;
 use sqlx::Postgres;
 use std::sync::Arc;
-use uuid::Uuid;
 use validator::Validate;
+
+use serde::{Deserialize, Serialize};
+
+/// Request for updating integrity configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+pub struct IntegrityConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_unauthenticated: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserIntegrityConfigRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ios: Option<IosIntegrityConfigRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub android: Option<AndroidIntegrityConfigRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iot: Option<IoTIntegrityConfigRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<RateLimitsRequest>,
+}
+
+// -----------------------------------------------------------------------------
+// Browser
+// -----------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+pub struct BrowserIntegrityConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(max = 100))]
+    pub authorized_origins: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_origin_header: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_referer_header: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cors_strict_mode: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_captcha_on_registration: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captcha_provider: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captcha_site_key: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captcha_secret_key: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bind_client_to_origin: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_origin_changes: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_origin_changes_per_client: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_clients_per_ip: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_registrations_per_ip_per_hour: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_requests_per_ip_per_hour: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_on_usage_spike: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_spike_threshold: Option<f64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_baseline_hours: Option<u64>,
+}
+
+// -----------------------------------------------------------------------------
+// iOS
+// -----------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+pub struct IosIntegrityConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(min = 10, max = 10))]
+    pub apple_team_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(max = 50))]
+    pub allowed_bundle_ids: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_certificate_hashes: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_version_code: Option<i32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reject_untrusted_device: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub challenge_ttl_seconds: Option<u64>,
+}
+
+// -----------------------------------------------------------------------------
+// Android
+// -----------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+pub struct AndroidIntegrityConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(min = 32, max = 128))]
+    pub allowed_certificate_sha256: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(max = 50))]
+    pub allowed_bundle_ids: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_version_code: Option<i32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reject_untrusted_device: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reject_unrecognized_version: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_cloud_project: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_api_key: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_token_age_seconds: Option<u64>,
+}
+
+// -----------------------------------------------------------------------------
+// IoT
+// -----------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+pub struct IoTIntegrityConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_device_certificate: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_certificate_authorities: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_device_ids: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_firmware_version: Option<i32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub challenge_ttl_seconds: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_cn_match: Option<bool>,
+}
+
+// -----------------------------------------------------------------------------
+// Rate limits
+// -----------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, Default)]
+pub struct RateLimitsRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_attestations_per_user_per_hour: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failed_attempts_before_lockout: Option<u32>,
+}
 
 impl Application {
     pub async fn update_integrity_config(
+        &self,
         db: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
-        app_id: Uuid,
-        config: UpdateIntegrityConfigRequest,
+        config: IntegrityConfigRequest,
     ) -> Result<Application> {
         config
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid integrity config: {}", e)))?;
 
-        let integrity_config = IntegrityConfig {
-            allow_unauthenticated: config.allow_unauthenticated,
-            browser: config.browser,
-            ios: config.ios,
-            android: config.android,
-            iot: config.iot,
-            rate_limits: config.rate_limits,
-        };
-
-        let config_json = serde_json::to_value(&integrity_config)
+        // Perform JSON merge at the database level using jsonb_merge_patch
+        let config_patch = serde_json::to_value(&config)
             .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
         let updated_app = sqlx::query_as::<_, Application>(
             r#"
-        UPDATE applications
-        SET integrity_config = $1,
-            updated_at = NOW()
-        WHERE id = $2
-        RETURNING *
-        "#,
+            UPDATE applications
+            SET integrity_config = jsonb_merge_patch(integrity_config, $1),
+                updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+            "#,
         )
-        .bind(&config_json)
-        .bind(app_id)
+        .bind(&config_patch)
+        .bind(self.id)
         .fetch_one(&*db)
         .await?;
 
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh_debounced(db.clone(), redis_pool.clone());
+            super::material_view_helper::trigger_view_refresh_debounced(
+                db.clone(),
+                redis_pool.clone(),
+            );
 
             let db_clone = db.clone();
-            let redis_clone = redis_pool.clone();
+            let redis_clone = Arc::clone(&redis_pool);
+            let app_id = self.id;
+
             tokio::spawn(async move {
                 if let Err(e) = Self::invalidate_auth_cache(app_id, &db_clone, redis_clone).await {
                     tracing::error!(
@@ -62,191 +232,10 @@ impl Application {
         }
 
         tracing::info!(
-            app_id = %app_id,
+            app_id = %self.id,
             "Integrity configuration updated successfully"
         );
 
         Ok(updated_app)
-    }
-
-    /// Get parsed integrity config
-    pub fn get_integrity_config(&self) -> Result<IntegrityConfig> {
-        serde_json::from_value(self.integrity_config.clone()).map_err(|e| {
-            VaultlessError::Serialization(format!("Failed to parse integrity_config: {}", e))
-        })
-    }
-
-    /// Check if platform attestation is required for a given platform
-    pub fn requires_attestation(&self, platform: Platform) -> bool {
-        let config = match self.get_integrity_config() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        // If unauthenticated access is allowed, attestation is not required
-        if config.allow_unauthenticated {
-            return false;
-        }
-
-        match platform {
-            Platform::IOS => {
-                // Attestation required if team ID is configured
-                config.ios.apple_team_id.is_some() || !config.ios.allowed_bundle_ids.is_empty()
-            }
-            Platform::Android => config.android.allowed_certificate_sha256.is_some(),
-            Platform::IoT => {
-                // IoT attestation required if CAs are configured
-                config.iot.require_device_certificate
-                    && !config.iot.allowed_certificate_authorities.is_empty()
-            }
-            Platform::Browser => {
-                // Web uses origin validation, not attestation
-                false
-            }
-        }
-    }
-}
-
-// Helper function to create default integrity config
-impl IntegrityConfig {
-    /// Create a new empty integrity config
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Create a development/testing config (no attestation required)
-    pub fn dev_mode() -> Self {
-        Self {
-            allow_unauthenticated: true,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
-        }
-    }
-
-    /// Create a web-only config
-    pub fn browser_only(authorized_origins: Vec<String>) -> Self {
-        Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig {
-                authorized_origins,
-                ..Default::default()
-            },
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
-        }
-    }
-
-    /// Create an iOS-only config
-    pub fn ios_only(
-        apple_team_id: String,
-        bundle_ids: Vec<String>,
-        reject_untrusted: bool,
-    ) -> Self {
-        Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig {
-                apple_team_id: Some(apple_team_id),
-                allowed_bundle_ids: bundle_ids,
-                allowed_certificate_hashes: vec![],
-                min_version_code: None,
-                reject_untrusted_device: reject_untrusted,
-                challenge_ttl_seconds: 60,
-            },
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
-        }
-    }
-
-    /// Create an Android-only config
-    pub fn android_only(
-        cert_hash: String,
-        bundle_ids: Vec<String>,
-        google_cloud_project: String,
-        google_api_key: String,
-        reject_untrusted: bool,
-    ) -> Self {
-        Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig {
-                allowed_certificate_sha256: Some(cert_hash),
-                allowed_bundle_ids: bundle_ids,
-                min_version_code: None,
-                reject_untrusted_device: reject_untrusted,
-                reject_unrecognized_version: true,
-                google_cloud_project: Some(google_cloud_project),
-                google_api_key: Some(google_api_key),
-                max_token_age_seconds: 60,
-            },
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
-        }
-    }
-
-    /// Create an IoT-only config
-    pub fn iot_only(
-        allowed_cas: Vec<String>,
-        allowed_device_ids: Vec<String>,
-        require_cn_match: bool,
-    ) -> Self {
-        Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig {
-                require_device_certificate: true,
-                allowed_certificate_authorities: allowed_cas,
-                allowed_device_ids,
-                min_firmware_version: None,
-                challenge_ttl_seconds: 30,
-                require_cn_match,
-            },
-            rate_limits: RateLimits::default(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_integrity_config_dev_mode() {
-        let config = IntegrityConfig::dev_mode();
-        assert!(config.allow_unauthenticated);
-    }
-
-    #[test]
-    fn test_integrity_config_ios_only() {
-        let config = IntegrityConfig::ios_only(
-            "ABCD123456".to_string(),
-            vec!["com.example.app".to_string()],
-            true,
-        );
-        assert!(!config.allow_unauthenticated);
-        assert_eq!(config.ios.apple_team_id, Some("ABCD123456".to_string()));
-        assert!(config.ios.reject_untrusted_device);
-    }
-
-    #[test]
-    fn test_integrity_config_iot_only() {
-        let config = IntegrityConfig::iot_only(
-            vec!["ca_cert_base64".to_string()],
-            vec!["device-123".to_string()],
-            true,
-        );
-        assert!(!config.allow_unauthenticated);
-        assert!(config.iot.require_device_certificate);
-        assert!(config.iot.require_cn_match);
-        assert_eq!(config.iot.challenge_ttl_seconds, 30);
     }
 }

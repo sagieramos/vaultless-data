@@ -24,10 +24,10 @@ pub use models::{
     app_model::attestation::AttestationService,
     app_model::{
         dto::{
-            Application, ApplicationKeyView, ApplicationWithTier, CreateApplication,
+            Application, ApplicationKeyView, CreateApplication,
             CreateApplicationResponse, PaginatedApplicationsWithKeys, UpdateApplication,
         },
-        helper::get_global_mv_etag,
+        material_view_helper::get_global_mv_etag,
     },
 
     // application::{Application, CreateApplication},

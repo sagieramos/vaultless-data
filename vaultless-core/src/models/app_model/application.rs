@@ -1,3 +1,4 @@
+use super::attestation::integrity_handler::IntegrityConfigHandler;
 use super::dto::*;
 use crate::SubscriptionTier;
 use crate::crypto;
@@ -10,13 +11,11 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-// --- CRITICAL CHANGE 1: Update PROJECTION to remove deleted columns ---
 const PROJECTION: &str = "id, user_id, name, 
     description, is_active, created_at, 
     updated_at, max_ttl_seconds, is_key_rotation_forced, 
     deletion_requested_at, 
     internal_notes, integrity_config";
-// Removed: secret_key_id, bundle_id, platform, webhook_url
 
 impl Application {
     /// Create a new application with secret and publishable keys
@@ -119,7 +118,7 @@ impl Application {
         tx.commit().await?;
 
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh(db_pool.clone(), redis_pool.clone());
+            super::material_view_helper::trigger_view_refresh(db_pool.clone(), redis_pool.clone());
         }
 
         tracing::info!(
@@ -255,7 +254,10 @@ impl Application {
 
         // 4. Handle cache invalidation
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            super::material_view_helper::trigger_view_refresh_debounced(
+                exec.clone(),
+                redis_pool.clone(),
+            );
             tokio::spawn(async move {
                 if let Err(e) = Self::invalidate_auth_cache(app_id, &exec, redis_pool).await {
                     tracing::error!(
@@ -301,7 +303,10 @@ impl Application {
         };
 
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            super::material_view_helper::trigger_view_refresh_debounced(
+                exec.clone(),
+                redis_pool.clone(),
+            );
             tokio::spawn(async move {
                 if let Err(e) = Self::invalidate_auth_cache(app_row.id, &exec, redis_pool).await {
                     tracing::error!(
@@ -339,7 +344,10 @@ impl Application {
 
         // 3. Invalidate cache using spawned worker
         if let Some(redis_pool) = redis {
-            super::helper::trigger_view_refresh_debounced(exec.clone(), redis_pool.clone());
+            super::material_view_helper::trigger_view_refresh_debounced(
+                exec.clone(),
+                redis_pool.clone(),
+            );
             tokio::spawn(async move {
                 if let Err(e) = Self::invalidate_auth_cache(app_id, &exec, redis_pool).await {
                     tracing::error!(
@@ -380,5 +388,9 @@ impl Application {
         );
 
         Ok(usage)
+    }
+
+    pub fn integrity(&self) -> Result<IntegrityConfigHandler> {
+        IntegrityConfigHandler::new(&self.integrity_config)
     }
 }

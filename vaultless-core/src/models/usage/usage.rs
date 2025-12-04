@@ -13,7 +13,7 @@
 //! - Idempotent processing with exactly-once semantics
 //! - Graceful shutdown with final flush
 //! - Health metrics and monitoring
-use crate::models::app_model::helper::trigger_view_refresh_debounced;
+use crate::models::app_model::material_view_helper::trigger_view_refresh_debounced;
 use crate::{
     cache_key,
     error::{Result, VaultlessError},
