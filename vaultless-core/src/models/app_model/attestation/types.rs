@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use validator::{Validate, ValidationErrors};
 
 // =============================================================================
-// PLATFORM ENUM (simple enum identifying type)
+// PLATFORM ENUM
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -27,27 +26,32 @@ impl Platform {
     }
 }
 
-impl fmt::Display for Platform {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
 // =============================================================================
-// PLATFORM-SPECIFIC STRUCTS
+// PLATFORM-SPECIFIC DATA
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct IOSData {
     #[validate(length(min = 1, max = 255))]
-    pub app_id: String,
+    pub bundle_id: Option<String>,
+
+    #[validate(length(min = 1, max = 255))]
+    pub team_id: Option<String>,
 
     #[validate(length(min = 32, max = 8192))]
     pub attestation_token: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_info: Option<DeviceInfo>,
+    pub device_info: Option<serde_json::Value>,
 }
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AndroidData {
@@ -76,17 +80,17 @@ pub struct BrowserData {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct IoTData {
     #[validate(length(min = 1, max = 255))]
-    pub device_id: String,
+    pub device_cn: String,
 
     #[validate(length(min = 1, max = 255))]
     pub firmware_version: String,
 
     #[validate(length(min = 32, max = 8192))]
-    pub attestation_token: String,
+    pub device_signature: String,
 }
 
 // =============================================================================
-// UNIFIED ENUM
+// UNIFIED PLATFORM ENUM
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,7 +103,6 @@ pub enum PlatformAttestationData {
 }
 
 impl PlatformAttestationData {
-    /// returns the platform
     pub fn platform(&self) -> Platform {
         match self {
             PlatformAttestationData::IOS(_) => Platform::IOS,
@@ -110,7 +113,7 @@ impl PlatformAttestationData {
     }
 }
 
-/// Manual validation
+/// Manual validation for enum variants
 impl Validate for PlatformAttestationData {
     fn validate(&self) -> std::result::Result<(), ValidationErrors> {
         match self {
@@ -123,32 +126,8 @@ impl Validate for PlatformAttestationData {
 }
 
 // =============================================================================
-// REQUEST + RESULT TYPES
+// ATTESTATION REQUEST
 // =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum PlatformResultData {
-    IOS {
-        team_id: String,
-        app_id: String,
-        certificate_chain: Vec<String>,
-    },
-
-    Android {
-        device_integrity: bool,
-        account_integrity: bool,
-        app_integrity: bool,
-        nonce: String,
-    },
-
-    IoT {
-        firmware_hash: String,
-        public_key_fingerprint: String,
-    },
-
-    None,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AttestationRequest {
@@ -164,12 +143,13 @@ pub struct AttestationRequest {
     pub app_version: Option<String>,
 }
 
+// =============================================================================
+// ATTESTATION RESULT
+// =============================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationResult {
     pub is_valid: bool,
-    pub certificate_hash: String,
-    pub client_app_id: String,
-    pub platform: Platform,
     pub device_trusted: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,6 +162,8 @@ pub struct AttestationResult {
     pub warnings: Option<Vec<String>>,
 
     pub verified_at: DateTime<Utc>,
+
+    pub platform_data: PlatformAttestationData,
 }
 
 // =============================================================================
@@ -192,9 +174,6 @@ pub struct AttestationResult {
 pub struct AttestationMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<Platform>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bundle_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
@@ -227,6 +206,10 @@ pub struct AttestationDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
 }
+
+// =============================================================================
+// DEVICE INFO
+// =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {

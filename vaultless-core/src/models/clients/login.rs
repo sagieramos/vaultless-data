@@ -1,5 +1,4 @@
 use super::dto::*;
-use crate::models::app_model::attestation::integrity_handler::IntegrityConfigHandler;
 use crate::{
     crypto,
     error::{Result, VaultlessError},

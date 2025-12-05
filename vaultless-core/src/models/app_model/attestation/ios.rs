@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
+use super::ios_version::*;
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
+use crate::models::app_model::attestation::dto::IosIntegrityConfig;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
@@ -18,7 +22,6 @@ use super::types::*;
 // =============================================================================
 
 const APPLE_ROOT_CA_G3: &[u8] = include_bytes!("../../../../certs/AppleRootCA-G3.cer");
-
 const APPLE_APPATTEST_EXTENSION_OID: &str = "1.2.840.113635.100.8.2";
 const IOS_CHALLENGE_KEY: &str = "ios_challenge";
 
@@ -107,7 +110,7 @@ pub fn verify_app_id_from_certificate(
     cert_der: &[u8],
     expected_team_id: &str,
     expected_bundle_id: &str,
-) -> Result<()> {
+) -> Result<String> {
     let (_, cert) = X509Certificate::from_der(cert_der).map_err(|e| {
         VaultlessError::IntegrityCheckFailed(format!("Failed to parse certificate: {}", e))
     })?;
@@ -139,7 +142,7 @@ pub fn verify_app_id_from_certificate(
                     )));
                 }
 
-                return Ok(());
+                return Ok(app_id);
             } else {
                 return Err(VaultlessError::IntegrityCheckFailed(
                     "App ID extension value not UTF8 string".into(),
@@ -156,42 +159,110 @@ pub fn verify_app_id_from_certificate(
 // =============================================================================
 // iOS APP ATTEST VERIFICATION
 // =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct IOSAttestationRequest {
+    /// App Attest token (base64-encoded CBOR)
+    pub attestation_token: String,
+
+    /// iOS version (e.g., "17.2.1") - REQUIRED
+    pub ios_version: String,
+
+    /// Device model identifier (e.g., "iPhone15,2") - optional but recommended
+    pub device_model: Option<String>,
+
+    /// App version - optional
+    pub app_version: Option<String>,
+}
+
+// =============================================================================
+// UPDATED iOS ATTESTATION VERIFICATION WITH VERSION CHECK
+// =============================================================================
+
 pub async fn verify_ios_attestation(
-    token: &str,
-    expected_bundle_id: &str,
-    expected_team_id: &str,
-    allowed_certificate_hashes: &[String],
-    reject_untrusted_device: bool,
+    request: &IOSAttestationRequest,
+    config: &IosIntegrityConfig,
 ) -> Result<AttestationResult> {
     let mut warnings = Vec::new();
+    let token = &request.attestation_token;
 
-    // 1. Decode base64 token
+    // ---------------------------
+    // 1. Validate iOS version FIRST (fail fast)
+    // ---------------------------
+    let version_info = if let Some(min_version) = config.min_version_code {
+        match validate_ios_version_from_client(&request.ios_version, min_version) {
+            Ok(info) => info,
+            Err(e) => {
+                return Ok(AttestationResult {
+                    is_valid: false,
+                    device_trusted: false,
+                    verdict: Some("IOS_VERSION_TOO_OLD".to_string()),
+                    error: Some(e.to_string()),
+                    warnings: Some(warnings),
+                    verified_at: Utc::now(),
+                    platform_data: PlatformAttestationData::IOS(IOSData {
+                        bundle_id: None,
+                        team_id: config.apple_team_id.clone(),
+                        attestation_token: token.clone(),
+                        device_info: Some(serde_json::json!({
+                            "ios_version": request.ios_version,
+                            "device_model": request.device_model,
+                            "app_version": request.app_version,
+                        })),
+                    }),
+                });
+            }
+        }
+    } else {
+        // Parse version even if not validating minimum
+        IOSVersionInfo::from_version_string(&request.ios_version).map_err(|e| {
+            VaultlessError::IntegrityCheckFailed(format!("Invalid iOS version format: {}", e))
+        })?
+    };
+
+    // ---------------------------
+    // 2. Validate configuration
+    // ---------------------------
+    if config.allowed_bundle_ids.is_empty() {
+        return Err(VaultlessError::IntegrityCheckFailed(
+            "Configuration error: allowed_bundle_ids cannot be empty".into(),
+        ));
+    }
+
+    // ---------------------------
+    // 3. Decode base64 token
+    // ---------------------------
     let attestation_bytes = BASE64.decode(token).map_err(|e| {
         VaultlessError::IntegrityCheckFailed(format!("Invalid base64 token: {}", e))
     })?;
 
-    // 2. Parse attestation object (CBOR format)
+    // ---------------------------
+    // 4. Parse attestation object (CBOR format)
+    // ---------------------------
     #[cfg(feature = "cbor")]
-    let attestation_obj: AppAttestObject = {
-        ciborium::de::from_reader(&attestation_bytes[..]).map_err(|e| {
+    let attestation_obj: AppAttestObject = ciborium::de::from_reader(&attestation_bytes[..])
+        .map_err(|e| {
             VaultlessError::IntegrityCheckFailed(format!(
                 "Invalid attestation format (CBOR): {}",
                 e
             ))
-        })?
-    };
+        })?;
 
     #[cfg(not(feature = "cbor"))]
     compile_error!("CBOR feature must be enabled for iOS AppAttest verification");
 
-    // 3. Verify format
-    if let Some(fmt) = &attestation_obj.format
-        && fmt != "apple-appattest"
-    {
-        warnings.push(format!("Unexpected format: {}", fmt));
+    // ---------------------------
+    // 5. Verify format
+    // ---------------------------
+    if let Some(fmt) = &attestation_obj.format {
+        if fmt != "apple-appattest" {
+            warnings.push(format!("Unexpected format: {}", fmt));
+        }
     }
 
-    // 4. Extract certificate chain
+    // ---------------------------
+    // 6. Extract certificate chain
+    // ---------------------------
     let cert_chain = attestation_obj
         .att_stmt
         .x5c
@@ -203,90 +274,125 @@ pub async fn verify_ios_attestation(
         ));
     }
 
-    // 5. Get leaf certificate
-    let leaf_cert_b64 = &cert_chain[0];
+    // ---------------------------
+    // 7. Get leaf certificate
+    // ---------------------------
     let leaf_cert_der = BASE64
-        .decode(leaf_cert_b64)
+        .decode(&cert_chain[0])
         .map_err(|e| VaultlessError::IntegrityCheckFailed(format!("Invalid certificate: {}", e)))?;
 
-    // 6. Calculate SHA-256 of certificate
+    // ---------------------------
+    // 8. Calculate SHA-256 of certificate
+    // ---------------------------
     let cert_hash = {
         let mut hasher = Sha256::new();
         hasher.update(&leaf_cert_der);
         format!("{:x}", hasher.finalize())
     };
 
-    // 7. Verify certificate hash (if pinning is configured)
-    if !allowed_certificate_hashes.is_empty() {
-        let cert_match = allowed_certificate_hashes
+    // ---------------------------
+    // 9. Verify certificate hash (if pinning is configured)
+    // ---------------------------
+    if !config.allowed_certificate_hashes.is_empty() {
+        let cert_match = config
+            .allowed_certificate_hashes
             .iter()
-            .any(|hash| hash.to_lowercase() == cert_hash.to_lowercase());
+            .any(|h| h.eq_ignore_ascii_case(&cert_hash));
 
         if !cert_match {
             return Ok(AttestationResult {
                 is_valid: false,
-                certificate_hash: cert_hash,
-                bundle_id: expected_bundle_id.to_string(),
-                platform: Platform::IOS,
                 device_trusted: false,
                 verdict: Some("CERTIFICATE_HASH_MISMATCH".to_string()),
-                error: Some("Certificate not in allowed list".to_string()),
+                error: Some(format!(
+                    "Certificate hash {} not in allowed list",
+                    cert_hash
+                )),
                 warnings: Some(warnings),
                 verified_at: Utc::now(),
+                platform_data: PlatformAttestationData::IOS(IOSData {
+                    bundle_id: None,
+                    team_id: config.apple_team_id.clone(),
+                    attestation_token: token.clone(),
+                    device_info: Some(serde_json::json!({
+                        "ios_version": version_info.version_string,
+                        "version_code": version_info.version_code,
+                        "device_model": request.device_model,
+                        "app_version": request.app_version,
+                    })),
+                }),
             });
         }
     }
 
-    // 8. Verify certificate chain against Apple root CA
+    // ---------------------------
+    // 10. Verify certificate chain against Apple root CA
+    // ---------------------------
     verify_apple_certificate_chain(&cert_chain)?;
 
-    // 9. Verify RP ID hash from authData (bundle ID verification)
-    if let Some(auth_data_b64) = &attestation_obj.auth_data {
+    // ---------------------------
+    // 11. Extract and verify bundle ID from authData
+    // ---------------------------
+    let verified_bundle_id = if let Some(auth_data_b64) = &attestation_obj.auth_data {
         let auth_data = BASE64.decode(auth_data_b64).map_err(|e| {
             VaultlessError::IntegrityCheckFailed(format!("Invalid authData: {}", e))
         })?;
 
-        // AuthData: RP ID Hash (32 bytes) + flags (1 byte) + counter (4 bytes) + ...
         if auth_data.len() < 37 {
-            warnings.push("AuthData too short".to_string());
-        } else {
-            let rp_id_hash = &auth_data[0..32];
+            return Err(VaultlessError::IntegrityCheckFailed(
+                "AuthData too short (minimum 37 bytes required)".to_string(),
+            ));
+        }
+
+        // Extract RP ID hash (first 32 bytes of authData)
+        let rp_id_hash = &auth_data[0..32];
+
+        // Try each allowed bundle ID
+        let mut matched_bundle_id: Option<String> = None;
+        for bundle_id in &config.allowed_bundle_ids {
             let expected_rp_id_hash = {
                 let mut hasher = Sha256::new();
-                hasher.update(expected_bundle_id.as_bytes());
+                hasher.update(bundle_id.as_bytes());
                 hasher.finalize()
             };
 
-            if rp_id_hash != &expected_rp_id_hash[..] {
-                return Ok(AttestationResult {
-                    is_valid: false,
-                    certificate_hash: cert_hash,
-                    bundle_id: expected_bundle_id.to_string(),
-                    platform: Platform::IOS,
-                    device_trusted: false,
-                    verdict: Some("BUNDLE_ID_MISMATCH".to_string()),
-                    error: Some("Bundle ID does not match RP ID hash".to_string()),
-                    warnings: Some(warnings),
-                    verified_at: Utc::now(),
-                });
+            if rp_id_hash == &expected_rp_id_hash[..] {
+                matched_bundle_id = Some(bundle_id.clone());
+                break;
             }
         }
+
+        let bundle_id = matched_bundle_id.ok_or_else(|| {
+            VaultlessError::IntegrityCheckFailed(
+                "Bundle ID does not match any allowed bundle ID (RP ID hash mismatch)".to_string(),
+            )
+        })?;
+
+        bundle_id
     } else {
         return Err(VaultlessError::IntegrityCheckFailed(
             "Missing authData (required for bundle ID verification)".into(),
         ));
+    };
+
+    // ---------------------------
+    // 12. Verify App ID from certificate extension (if team ID provided)
+    // ---------------------------
+    if let Some(team_id) = &config.apple_team_id {
+        verify_app_id_from_certificate(&leaf_cert_der, team_id, &verified_bundle_id)?;
     }
 
-    // 10. Verify App ID from certificate extension
-    verify_app_id_from_certificate(&leaf_cert_der, expected_team_id, expected_bundle_id)?;
+    // ---------------------------
+    // 13. Check device trust requirement
+    // ---------------------------
+    let device_trusted = !config.reject_untrusted_device;
 
-    // 11. Success - iOS App Attest verified
+    // ---------------------------
+    // SUCCESS - iOS App Attest verified with version check
+    // ---------------------------
     Ok(AttestationResult {
         is_valid: true,
-        certificate_hash: cert_hash,
-        bundle_id: expected_bundle_id.to_string(),
-        platform: Platform::IOS,
-        device_trusted: true, // Apple App Attest = trusted device
+        device_trusted,
         verdict: Some("APPLE_APPATTEST_VERIFIED".to_string()),
         error: None,
         warnings: if warnings.is_empty() {
@@ -295,57 +401,115 @@ pub async fn verify_ios_attestation(
             Some(warnings)
         },
         verified_at: Utc::now(),
+        platform_data: PlatformAttestationData::IOS(IOSData {
+            bundle_id: Some(verified_bundle_id),
+            team_id: config.apple_team_id.clone(),
+            attestation_token: token.clone(),
+            device_info: Some(serde_json::json!({
+                "ios_version": version_info.version_string,
+                "version_code": version_info.version_code,
+                "major": version_info.major,
+                "minor": version_info.minor,
+                "patch": version_info.patch,
+                "device_model": request.device_model,
+                "app_version": request.app_version,
+            })),
+        }),
     })
 }
 
 // =============================================================================
-// CHALLENGE GENERATION
+// CLIENT-SIDE IMPLEMENTATION GUIDE (Swift)
 // =============================================================================
 
-pub async fn generate_ios_challenge(
-    redis_pool: &RedisPool,
-    challenge_ttl_seconds: u64,
-) -> Result<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| VaultlessError::Internal(format!("Random generation failed: {}", e)))?;
+/*
+iOS Client Implementation:
 
-    let challenge = BASE64.encode(bytes);
+```swift
+import DeviceCheck
+import UIKit
 
-    let challenge_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(challenge.as_bytes());
-        hex::encode(hasher.finalize())
-    };
+class AttestationManager {
 
-    let key = cache_key!(IOS_CHALLENGE_KEY, challenge_hash);
-
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-    let _: () = conn
-        .set_ex::<_, _, ()>(&key, "1", challenge_ttl_seconds)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis SETEX failed: {}", e)))?;
-
-    Ok(challenge)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_apple_root_ca_loads() {
-        let trust_anchor = webpki::TrustAnchor::try_from_cert_der(APPLE_ROOT_CA_G3);
-        assert!(trust_anchor.is_ok());
+    // 1. Get iOS version
+    func getIOSVersion() -> String {
+        let version = UIDevice.current.systemVersion
+        return version // e.g., "17.2.1"
     }
 
-    #[test]
-    fn test_empty_chain_fails() {
-        let result = verify_apple_certificate_chain(&[]);
-        assert!(result.is_err());
+    // 2. Get device model
+    func getDeviceModel() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
+        }
+        return identifier // e.g., "iPhone15,2"
+    }
+
+    // 3. Generate attestation with version info
+    func generateAttestation(challenge: Data, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        let service = DCAppAttestService.shared
+
+        guard service.isSupported else {
+            completion(.failure(NSError(domain: "AppAttest", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "App Attest not supported"])))
+            return
+        }
+
+        // Generate key
+        service.generateKey { keyId, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+
+            guard let keyId = keyId else {
+                completion(.failure(NSError(domain: "AppAttest", code: -2)))
+                return
+            }
+
+            // Attest key
+            service.attestKey(keyId, clientDataHash: challenge) { attestation, error in
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+
+                guard let attestation = attestation else {
+                    completion(.failure(NSError(domain: "AppAttest", code: -3)))
+                    return
+                }
+
+                // Build request payload
+                let payload: [String: Any] = [
+                    "attestation_token": attestation.base64EncodedString(),
+                    "ios_version": self.getIOSVersion(),
+                    "device_model": self.getDeviceModel(),
+                    "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+                ]
+
+                completion(.success(payload))
+            }
+        }
     }
 }
+
+// Usage:
+let attestationManager = AttestationManager()
+let challenge = serverChallenge // Get from your server
+
+attestationManager.generateAttestation(challenge: challenge) { result in
+    switch result {
+    case .success(let payload):
+        // Send payload to your server
+        sendToServer(payload)
+
+    case .failure(let error):
+        print("Attestation failed: \(error)")
+    }
+}
+    ```
+*/

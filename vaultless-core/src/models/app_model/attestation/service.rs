@@ -1,9 +1,8 @@
 use super::andriod_offline::verify_android_attestation_offline;
-use super::android_online::verify_android_attestation_online;
 use super::config::*;
 use super::dto::{AndroidIntegrityConfig, IntegrityConfig, IoTIntegrityConfig, IosIntegrityConfig};
 use super::ios::{generate_ios_challenge, verify_ios_attestation};
-use super::iot::{IoTAttestationRequest, generate_iot_challenge, verify_iot_certificate};
+use super::iot::{IoTAttestationRequest, verify_iot_certificate};
 use super::types::*;
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
