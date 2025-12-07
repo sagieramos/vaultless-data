@@ -160,7 +160,6 @@ pub struct AndroidIntegrityConfig {
     pub max_token_age_seconds: u64,
 }
 
-
 impl Default for AndroidIntegrityConfig {
     fn default() -> Self {
         Self {
@@ -181,7 +180,6 @@ impl Default for AndroidIntegrityConfig {
     }
 }
 
-
 impl AndroidIntegrityConfig {
     pub fn validate(&self) -> Result<(), VaultlessError> {
         if let Some(sha) = &self.allowed_certificate_sha256 {
@@ -193,16 +191,14 @@ impl AndroidIntegrityConfig {
         Ok(())
     }
 }
-
 // =============================================================================
 // IoT INTEGRITY CONFIGURATION
 // =============================================================================
-
-/// Configuration for IoT device attestation and integrity verification.
-/// Supports enterprise-grade security controls including certificate validation,
-/// firmware attestation, hardware root of trust, and runtime security policies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IoTIntegrityConfig {
+    // -------------------------------------------------------------------------
+    // Certificate trust
+    // -------------------------------------------------------------------------
     #[serde(default)]
     pub allowed_certificate_authorities: Vec<String>,
 
@@ -212,7 +208,9 @@ pub struct IoTIntegrityConfig {
     #[serde(default = "default_true")]
     pub reject_future_certificates: bool,
 
-    // Identity
+    // -------------------------------------------------------------------------
+    // Device identity
+    // -------------------------------------------------------------------------
     #[serde(default = "default_true")]
     pub require_cn_match: bool,
 
@@ -228,93 +226,81 @@ pub struct IoTIntegrityConfig {
     #[serde(default)]
     pub allowed_manufacturers: Vec<String>,
 
-    // Firmware
+    // -------------------------------------------------------------------------
+    // Firmware trust
+    // -------------------------------------------------------------------------
     #[serde(default)]
     pub min_firmware_version: Option<i32>,
 
-    #[serde(default)]
-    pub allowed_firmware_hashes: Vec<String>,
-
-    #[serde(default)]
-    pub require_secure_boot: bool,
-
-    #[serde(default)]
-    pub require_anti_rollback: bool,
-
+    // -------------------------------------------------------------------------
     // Hardware root of trust
+    // -------------------------------------------------------------------------
     #[serde(default)]
     pub allowed_secure_element_ids: Vec<String>,
 
-    #[serde(default)]
-    pub require_hardware_bound_key: bool,
-
+    // -------------------------------------------------------------------------
     // Runtime trust
-    #[serde(default)]
-    pub min_trust_score: Option<u8>,
-
+    // -------------------------------------------------------------------------
     #[serde(default)]
     pub max_device_idle_seconds: Option<u64>,
 
+    // -------------------------------------------------------------------------
     // Replay protection
-    #[serde(default = "default_challenge_ttl")]
-    pub challenge_ttl_seconds: u64,
-
+    // -------------------------------------------------------------------------
     #[serde(default)]
-    pub reject_replayed_signatures: bool,
+    pub require_challenge_signature: bool,
 
-    // Network
-    #[serde(default)]
-    pub allowed_ip_ranges: Vec<String>,
-
-    #[serde(default)]
-    pub allowed_countries: Vec<String>,
-
-    #[serde(default)]
-    pub block_high_risk_countries: bool,
-
-    // Debug
+    // -------------------------------------------------------------------------
+    // Behavior
+    // -------------------------------------------------------------------------
     #[serde(default)]
     pub strict_mode: bool,
 }
 
+// =============================================================================
+// DEFAULT HELPERS
+// =============================================================================
+
+fn default_true() -> bool {
+    true
+}
+
+// =============================================================================
+// VALIDATION
+// =============================================================================
+
 impl IoTIntegrityConfig {
     pub fn validate(&self) -> Result<(), VaultlessError> {
-        // Certificate authorities
         if self.allowed_certificate_authorities.len() > 5 {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Maximum 5 certificate authorities allowed".into(),
             ));
         }
 
-        // SAN fields
         if self.required_san_fields.len() > 5 {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Maximum 5 SAN fields allowed".into(),
             ));
         }
 
-        // Models
         if self.allowed_models.len() > 10 {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Maximum 10 allowed models".into(),
             ));
         }
 
-        // Hardware revisions
         if self.allowed_hardware_revisions.len() > 10 {
             return Err(VaultlessError::IntegrityCheckFailed(
-                "Maximum 10 allowed hardware revisions".into(),
+                "Maximum 10 hardware revisions allowed".into(),
             ));
         }
 
-        // Manufacturers
         if self.allowed_manufacturers.len() > 10 {
             return Err(VaultlessError::IntegrityCheckFailed(
-                "Maximum 10 allowed manufacturers".into(),
+                "Maximum 10 manufacturers allowed".into(),
             ));
         }
 
-        // Firmware version
         if let Some(v) = self.min_firmware_version {
             if v < 1 || v > 999_999 {
                 return Err(VaultlessError::IntegrityCheckFailed(
@@ -323,28 +309,12 @@ impl IoTIntegrityConfig {
             }
         }
 
-        // Allowed firmware hashes
-        for hash in &self.allowed_firmware_hashes {
-            validate_sha256(hash)?;
-        }
-
-        // Secure element IDs
         if self.allowed_secure_element_ids.len() > 100 {
             return Err(VaultlessError::IntegrityCheckFailed(
                 "Maximum 100 secure element IDs allowed".into(),
             ));
         }
 
-        // Trust score
-        if let Some(score) = self.min_trust_score {
-            if score > 100 {
-                return Err(VaultlessError::IntegrityCheckFailed(
-                    "Trust score must be between 0 and 100".into(),
-                ));
-            }
-        }
-
-        // Idle time
         if let Some(seconds) = self.max_device_idle_seconds {
             if seconds < 60 || seconds > 2_592_000 {
                 return Err(VaultlessError::IntegrityCheckFailed(
@@ -353,253 +323,99 @@ impl IoTIntegrityConfig {
             }
         }
 
-        // Challenge TTL
-        if self.challenge_ttl_seconds < 30 || self.challenge_ttl_seconds > 86_400 {
-            return Err(VaultlessError::IntegrityCheckFailed(
-                "Challenge TTL must be between 30 and 86,400 seconds".into(),
-            ));
-        }
-
-        // IP ranges
-        if self.allowed_ip_ranges.len() > 20 {
-            return Err(VaultlessError::IntegrityCheckFailed(
-                "Maximum 20 allowed IP ranges".into(),
-            ));
-        }
-
-        // Countries
-        if self.allowed_countries.len() > 50 {
-            return Err(VaultlessError::IntegrityCheckFailed(
-                "Maximum 50 allowed countries".into(),
-            ));
-        }
-
         Ok(())
+    }
+
+    /// Calculate trust score based on enabled security features and constraints.
+    /// Returns a score between 0 and 100, where higher scores indicate stronger security posture.
+    pub fn calculate_trust_score(&self) -> u8 {
+        let mut score: u16 = 0;
+
+        // Certificate trust (max 20 points)
+        if !self.allowed_certificate_authorities.is_empty() {
+            score += 8;
+        }
+        if self.require_valid_certificate_expiry {
+            score += 6;
+        }
+        if self.reject_future_certificates {
+            score += 6;
+        }
+
+        // Device identity (max 25 points)
+        if self.require_cn_match {
+            score += 5;
+        }
+        if !self.required_san_fields.is_empty() {
+            score += 8;
+        }
+        if !self.allowed_models.is_empty() {
+            score += 4;
+        }
+        if !self.allowed_hardware_revisions.is_empty() {
+            score += 4;
+        }
+        if !self.allowed_manufacturers.is_empty() {
+            score += 4;
+        }
+
+        // Firmware trust (max 10 points)
+        if self.min_firmware_version.is_some() {
+            score += 10;
+        }
+
+        // Hardware root of trust (max 15 points)
+        if !self.allowed_secure_element_ids.is_empty() {
+            score += 15;
+        }
+
+        // Runtime trust (max 10 points)
+        if self.max_device_idle_seconds.is_some() {
+            score += 10;
+        }
+
+        // Challenge signature (max 15 points)
+        if self.require_challenge_signature {
+            score += 15;
+        }
+
+        // Strict mode bonus (max 5 points)
+        if self.strict_mode {
+            score += 5;
+        }
+
+        // Cap at 100
+        score.min(100) as u8
     }
 }
 
 // =============================================================================
-// DEFAULT VALUE HELPERS
-// =============================================================================
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_challenge_ttl() -> u64 {
-    300 // 5 minutes
-}
-
-// =============================================================================
-// IMPLEMENTATION
+// DEFAULT IMPLEMENTATION
 // =============================================================================
 
 impl Default for IoTIntegrityConfig {
-    /// Default configuration with balanced security for most deployments.
     fn default() -> Self {
         Self {
-            // Certificate requirements
             allowed_certificate_authorities: vec![],
             require_valid_certificate_expiry: true,
             reject_future_certificates: true,
 
-            // Identity requirements
             require_cn_match: true,
             required_san_fields: vec![],
             allowed_models: vec![],
             allowed_hardware_revisions: vec![],
             allowed_manufacturers: vec![],
 
-            // Firmware attestation
             min_firmware_version: None,
-            allowed_firmware_hashes: vec![],
-            require_secure_boot: false,
-            require_anti_rollback: false,
 
-            // Hardware root of trust
             allowed_secure_element_ids: vec![],
-            require_hardware_bound_key: false,
 
-            // Runtime trust
-            min_trust_score: None,
             max_device_idle_seconds: None,
 
-            // Replay protection
-            challenge_ttl_seconds: 300,
-            reject_replayed_signatures: false,
+            require_challenge_signature: false,
 
-            // Network restrictions
-            allowed_ip_ranges: vec![],
-            allowed_countries: vec![],
-            block_high_risk_countries: false,
-
-            // Debug controls
             strict_mode: false,
         }
-    }
-}
-
-impl IoTIntegrityConfig {
-    /// Create a minimal configuration for development/testing.
-    /// ⚠️ NOT SUITABLE FOR PRODUCTION - lacks security controls.
-    pub fn development() -> Self {
-        Self {
-            require_valid_certificate_expiry: false,
-            reject_future_certificates: false,
-            require_cn_match: false,
-            ..Default::default()
-        }
-    }
-
-    /// Create a high-security configuration for critical infrastructure.
-    /// Enforces hardware root of trust, secure boot, and strict validation.
-    pub fn high_security() -> Self {
-        Self {
-            require_valid_certificate_expiry: true,
-            reject_future_certificates: true,
-            require_cn_match: true,
-            require_secure_boot: true,
-            require_anti_rollback: true,
-            require_hardware_bound_key: true,
-            reject_replayed_signatures: true,
-            strict_mode: true,
-            challenge_ttl_seconds: 180, // 3 minutes
-            ..Default::default()
-        }
-    }
-
-    /// Create a balanced configuration for enterprise IoT deployments.
-    /// Good security without requiring specialized hardware.
-    pub fn enterprise() -> Self {
-        Self {
-            require_valid_certificate_expiry: true,
-            reject_future_certificates: true,
-            require_cn_match: true,
-            challenge_ttl_seconds: 300,
-            max_device_idle_seconds: Some(86400), // 24 hours
-            ..Default::default()
-        }
-    }
-
-    /// Validate configuration constraints.
-    pub fn validate_config(&self) -> Result<(), String> {
-        // Validate using validator crate
-        self.validate()
-            .map_err(|e| format!("Configuration validation failed: {}", e))?;
-
-        // Custom business logic validations
-        if self.require_hardware_bound_key && self.allowed_secure_element_ids.is_empty() {
-            return Err(
-                "require_hardware_bound_key is enabled but no secure element IDs specified. \
-                 Either disable hardware binding or provide allowed_secure_element_ids."
-                    .to_string(),
-            );
-        }
-
-        if !self.allowed_firmware_hashes.is_empty() {
-            for hash in &self.allowed_firmware_hashes {
-                if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err(format!(
-                        "Invalid firmware hash '{}'. Must be 64 hex characters (SHA-256).",
-                        hash
-                    ));
-                }
-            }
-        }
-
-        if !self.allowed_certificate_authorities.is_empty() {
-            for ca in &self.allowed_certificate_authorities {
-                if ca.is_empty() {
-                    return Err("Empty certificate authority in allowlist".to_string());
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check if this is a production-ready configuration.
-    pub fn is_production_ready(&self) -> bool {
-        self.require_valid_certificate_expiry
-            && self.reject_future_certificates
-            && self.require_cn_match
-            && self.challenge_ttl_seconds <= 600
-    }
-
-    /// Get a human-readable security level description.
-    pub fn security_level(&self) -> &'static str {
-        let score = self.calculate_security_score();
-        match score {
-            90..=100 => "Critical (High Security)",
-            70..=89 => "Enterprise (Strong Security)",
-            50..=69 => "Standard (Moderate Security)",
-            30..=49 => "Basic (Minimal Security)",
-            _ => "Development (Insecure)",
-        }
-    }
-
-    /// Calculate a security score (0-100) based on enabled features.
-    fn calculate_security_score(&self) -> u8 {
-        let mut score = 0u8;
-
-        // Certificate validation (30 points)
-        if self.require_valid_certificate_expiry {
-            score += 10;
-        }
-        if self.reject_future_certificates {
-            score += 5;
-        }
-        if !self.allowed_certificate_authorities.is_empty() {
-            score += 15;
-        }
-
-        // Identity validation (20 points)
-        if self.require_cn_match {
-            score += 10;
-        }
-        if !self.required_san_fields.is_empty() {
-            score += 5;
-        }
-        if !self.allowed_models.is_empty() || !self.allowed_manufacturers.is_empty() {
-            score += 5;
-        }
-
-        // Firmware attestation (25 points)
-        if self.min_firmware_version.is_some() {
-            score += 5;
-        }
-        if !self.allowed_firmware_hashes.is_empty() {
-            score += 10;
-        }
-        if self.require_secure_boot {
-            score += 5;
-        }
-        if self.require_anti_rollback {
-            score += 5;
-        }
-
-        // Hardware root of trust (15 points)
-        if self.require_hardware_bound_key {
-            score += 10;
-        }
-        if !self.allowed_secure_element_ids.is_empty() {
-            score += 5;
-        }
-
-        // Runtime security (10 points)
-        if self.reject_replayed_signatures {
-            score += 5;
-        }
-        if self.challenge_ttl_seconds <= 300 {
-            score += 5;
-        }
-
-        // Penalties
-        if !self.is_production_ready() {
-            score = score.saturating_sub(10);
-        }
-
-        score
     }
 }
 

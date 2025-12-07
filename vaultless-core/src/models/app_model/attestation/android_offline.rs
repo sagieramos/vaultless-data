@@ -153,7 +153,7 @@ async fn get_google_jwks_cached(client: &HttpClient) -> Result<Jwks> {
 }
 
 // =============================================================================
-// ATT TESTATION RESULT BUILDER (updated)
+// ATTESTATION RESULT BUILDER (updated with trust_score_percent)
 // =============================================================================
 
 struct AttestationResultBuilder {
@@ -163,6 +163,7 @@ struct AttestationResultBuilder {
     verdict: Option<String>,
     error: Option<String>,
     warnings: Vec<String>,
+    trust_score_percent: u8,
 }
 
 impl AttestationResultBuilder {
@@ -174,6 +175,7 @@ impl AttestationResultBuilder {
             verdict: None,
             error: None,
             warnings: Vec::new(),
+            trust_score_percent: 0,
         }
     }
 
@@ -202,6 +204,11 @@ impl AttestationResultBuilder {
         self
     }
 
+    fn trust_score(mut self, score: u8) -> Self {
+        self.trust_score_percent = score;
+        self
+    }
+
     fn certificate_hash(mut self, hash: String) -> Self {
         if let PlatformAttestationData::Android(ref mut data) = self.platform_data {
             data.certificate_sha256 = hash;
@@ -220,6 +227,7 @@ impl AttestationResultBuilder {
         AttestationResult {
             is_valid: self.is_valid,
             device_trusted: self.device_trusted,
+            trust_score_percent: self.trust_score_percent,
             verdict: self.verdict,
             error: self.error,
             warnings: if self.warnings.is_empty() {
@@ -254,14 +262,6 @@ fn verify_timestamp(timestamp_ms: i64, max_age_seconds: u64) -> std::result::Res
     }
 
     Ok(())
-}
-
-fn verify_package_name(actual: &str, expected: &str) -> std::result::Result<(), String> {
-    if actual != expected {
-        Err(format!("Expected package '{}', got '{}'", expected, actual))
-    } else {
-        Ok(())
-    }
 }
 
 fn verify_certificate_hash(
@@ -321,21 +321,23 @@ pub async fn verify_android_attestation_offline(
     config: &AndroidIntegrityConfig,
 ) -> Result<AttestationResult> {
     let mut warnings = Vec::new();
+    let mut score: u8 = 0;
 
     let http_client = HttpClient::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| VaultlessError::Internal(format!("HTTP client error: {}", e)))?;
 
-    // 1. Decode JWS header
+    // Header decode success = base trust
     let header = decode_header(token)
         .map_err(|e| VaultlessError::IntegrityCheckFailed(format!("Invalid JWS header: {}", e)))?;
+    score += 20;
 
     let kid = header.kid.ok_or_else(|| {
         VaultlessError::IntegrityCheckFailed("JWS missing 'kid' header".to_string())
     })?;
 
-    // 2. Fetch JWKS
+    // Fetch JWKS
     let jwks = get_google_jwks_cached(&http_client).await?;
 
     let jwk = jwks.keys.iter().find(|k| k.kid == kid).ok_or_else(|| {
@@ -346,7 +348,7 @@ pub async fn verify_android_attestation_offline(
         VaultlessError::IntegrityCheckFailed(format!("Invalid JWK RSA components: {}", e))
     })?;
 
-    // 3. Validate signature
+    // Signature validation success
     let mut validation = Validation::new(header.alg);
     validation.validate_exp = false;
     validation.validate_nbf = false;
@@ -358,10 +360,11 @@ pub async fn verify_android_attestation_offline(
                 e
             ))
         })?;
+    score += 20;
 
     let claims = token_data.claims;
 
-    // 4. Build AndroidData
+    // Build AndroidData
     let android_data = AndroidData {
         package_name: claims.app_integrity.package_name.clone(),
         certificate_sha256: claims
@@ -374,148 +377,88 @@ pub async fn verify_android_attestation_offline(
         device_info: None,
     };
 
-    let mut builder = AttestationResultBuilder::new(PlatformAttestationData::Android(android_data));
+    let builder = AttestationResultBuilder::new(PlatformAttestationData::Android(android_data));
 
-    // 5. Timestamp check
+    // Timestamp
     if let Err(e) = verify_timestamp(
         claims.request_details.timestamp_millis,
         config.max_token_age_seconds,
     ) {
         return Ok(builder
+            .trust_score(score)
             .verdict("TIMESTAMP_ERROR".to_string())
             .error(e)
             .build());
+    } else {
+        score += 15;
     }
 
-    // 6. Package allow list check
-    if !config.allowed_package_names.is_empty() {
-        let pkg = &claims.app_integrity.package_name;
-        if !config.allowed_package_names.iter().any(|p| p == pkg) {
-            return Ok(builder
-                .verdict("PACKAGE_NAME_MISMATCH".into())
-                .error(format!("Package '{}' is not allowed", pkg))
-                .build());
-        }
+    // Package
+    if !config.allowed_package_names.is_empty()
+        && config
+            .allowed_package_names
+            .iter()
+            .any(|p| p == &claims.app_integrity.package_name)
+    {
+        score += 15;
     }
 
-    // 7. Certificate hash pinning
+    // Cert hash
     if let Some(expected_hash) = &config.allowed_certificate_sha256 {
-        if let Err(e) = verify_certificate_hash(
+        if verify_certificate_hash(
             &claims.app_integrity.certificate_sha256_digest,
             expected_hash,
-        ) {
-            return Ok(builder
-                .verdict("CERT_HASH_MISMATCH".into())
-                .error(e)
-                .build());
+        )
+        .is_ok()
+        {
+            score += 15;
         }
     }
 
-    // 8. Minimum version code enforcement
-    if let Some(min_version) = config.min_version_code {
-        match claims.app_integrity.version_code {
-            Some(token_version) if token_version < min_version as i64 => {
-                return Ok(builder
-                    .verdict("VERSION_TOO_OLD".into())
-                    .error(format!(
-                        "App version code {} < required minimum {}",
-                        token_version, min_version
-                    ))
-                    .build());
-            }
-            None if config.reject_unrecognized_version => {
-                return Ok(builder
-                    .verdict("VERSION_MISSING".into())
-                    .error("Token missing versionCode".into())
-                    .build());
-            }
-            _ => {}
-        }
-    }
-
-    // 9. App recognition verdict
-    match check_app_recognition(
+    // App recognition
+    if check_app_recognition(
         &claims.app_integrity.app_recognition_verdict,
         config.reject_unrecognized_version,
-    ) {
-        Err(e) => {
-            return Ok(builder
-                .verdict(claims.app_integrity.app_recognition_verdict.clone())
-                .error(e)
-                .build());
-        }
-        Ok(Some(w)) => warnings.push(w),
-        Ok(None) => {}
+    )
+    .is_ok()
+    {
+        score += 10;
     }
 
-    // 10. Device integrity verdicts
-    let device_trusted = match check_device_integrity(
+    // Device integrity
+    let device_trusted = check_device_integrity(
         &claims.device_integrity.device_recognition_verdict,
         config.reject_untrusted_device,
-    ) {
-        Ok(trusted) => {
-            if !trusted {
-                warnings.push(format!(
-                    "Device integrity failed: {:?}",
-                    &claims.device_integrity.device_recognition_verdict
-                ));
-            }
-            trusted
-        }
-        Err(e) => {
-            return Ok(builder
-                .certificate_hash(
-                    claims
-                        .app_integrity
-                        .certificate_sha256_digest
-                        .get(0)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-                .verdict(format!(
-                    "DEVICE:{:?}",
-                    &claims.device_integrity.device_recognition_verdict
-                ))
-                .error(e)
-                .build());
-        }
-    };
+    )
+    .unwrap_or(false);
 
-    // 11. Google Play Licensing check (PRODUCTION ENFORCEMENT)
-    if config.reject_unlicensed_app {
-        match &claims.account_details {
-            Some(account) => {
-                match &account.app_licensing_verdict {
-                    Some(verdict) if verdict == "LICENSED" => {
-                        // ok
-                    }
-                    Some(verdict) => {
-                        return Ok(builder
-                            .verdict("UNLICENSED_APP".into())
-                            .error(format!("App is not licensed: {}", verdict))
-                            .build());
-                    }
-                    None => {
-                        return Ok(builder
-                            .verdict("LICENSE_MISSING".into())
-                            .error("Missing appLicensingVerdict".into())
-                            .build());
-                    }
-                }
-            }
-            None => {
-                return Ok(builder
-                    .verdict("LICENSE_BLOCK_MISSING".into())
-                    .error("Missing accountDetails block".into())
-                    .build());
-            }
-        }
+    if device_trusted {
+        score += 15;
     }
 
-    // 12. Final success
+    // Licensing
+    if config.reject_unlicensed_app {
+        if let Some(account) = &claims.account_details {
+            if let Some(verdict) = &account.app_licensing_verdict {
+                if verdict == "LICENSED" {
+                    score += 10;
+                }
+            }
+        }
+    } else {
+        score += 10;
+    }
+
+    // Cap score
+    if score > 100 {
+        score = 100;
+    }
+
+    // Final success
     Ok(builder
         .valid()
         .device_trusted(device_trusted)
+        .trust_score(score)
         .warnings(warnings)
         .build())
 }

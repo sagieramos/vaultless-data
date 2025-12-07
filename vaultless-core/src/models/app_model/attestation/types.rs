@@ -163,6 +163,8 @@ pub struct AttestationResult {
     pub is_valid: bool,
     pub device_trusted: bool,
 
+    pub trust_score_percent: u8,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
 
@@ -175,45 +177,4 @@ pub struct AttestationResult {
     pub verified_at: DateTime<Utc>,
 
     pub platform: Platform,
-}
-
-// =============================================================================
-// METADATA
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AttestationMetadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<Platform>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_version: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attestation: Option<AttestationDetails>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_info: Option<jsonValue>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttestationDetails {
-    pub certificate_hash: String,
-    pub device_trusted: bool,
-    pub verified_at: DateTime<Utc>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verdict: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_challenge: Option<String>,
-
-    #[serde(default)]
-    pub attestation_count: u32,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub warnings: Option<Vec<String>>,
 }

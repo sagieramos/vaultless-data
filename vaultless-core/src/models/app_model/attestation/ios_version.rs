@@ -318,41 +318,6 @@ use super::types::*;
 use crate::models::app_model::attestation::dto::IosIntegrityConfig;
 use chrono::Utc;
 
-/// Complete iOS attestation with version validation
-pub async fn verify_ios_attestation_with_version(
-    attestation_request: &IOSAttestationRequest,
-    config: &IosIntegrityConfig,
-) -> Result<(AttestationResult, IOSVersionInfo)> {
-    // 1. Validate iOS version first (fail fast)
-    let version_info = if let Some(min_version) = config.min_version_code {
-        validate_ios_version_from_client(&attestation_request.ios_version, min_version)?
-    } else {
-        IOSVersionInfo::from_version_string(&attestation_request.ios_version)?
-    };
-
-    // 2. Verify App Attest token (existing logic)
-    // This would call your existing verify_ios_attestation function
-
-    // For demonstration, creating a basic result
-    let attestation_result = AttestationResult {
-        is_valid: true,
-        device_trusted: !config.reject_untrusted_device,
-        verdict: Some("APPLE_APPATTEST_VERIFIED".to_string()),
-        error: None,
-        warnings: None,
-        verified_at: Utc::now(),
-        platform: Platform::IOS,
-    };
-
-    pub struct DeviceInfo {
-        pub model: Option<String>,
-        pub os_version: Option<String>,
-        pub manufacturer: Option<String>,
-        pub additional: Option<serde_json::Value>,
-    }
-
-    Ok((attestation_result, version_info))
-}
 
 // =============================================================================
 // HELPER: GENERATE MIN VERSION CODE
