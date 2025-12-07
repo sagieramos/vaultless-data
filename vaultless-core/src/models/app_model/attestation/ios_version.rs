@@ -1,8 +1,8 @@
+use crate::error::{Result, VaultlessError};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use x509_parser::prelude::*;
-use crate::error::{Result, VaultlessError};
 
 // =============================================================================
 // iOS VERSION EXTRACTION METHODS
@@ -13,16 +13,16 @@ use crate::error::{Result, VaultlessError};
 pub struct IOSVersionInfo {
     /// iOS version string (e.g., "17.2.1")
     pub version_string: String,
-    
+
     /// iOS version code as integer for comparison (e.g., 170201 for 17.2.1)
     pub version_code: i32,
-    
+
     /// Major version (e.g., 17)
     pub major: i32,
-    
+
     /// Minor version (e.g., 2)
     pub minor: i32,
-    
+
     /// Patch version (e.g., 1)
     pub patch: i32,
 }
@@ -31,32 +31,30 @@ impl IOSVersionInfo {
     /// Parse iOS version string like "17.2.1" into structured data
     pub fn from_version_string(version_str: &str) -> Result<Self> {
         let parts: Vec<&str> = version_str.split('.').collect();
-        
+
         if parts.is_empty() || parts.len() > 3 {
-            return Err(VaultlessError::IntegrityCheckFailed(
-                format!("Invalid iOS version format: {}", version_str)
-            ));
+            return Err(VaultlessError::IntegrityCheckFailed(format!(
+                "Invalid iOS version format: {}",
+                version_str
+            )));
         }
 
-        let major = parts[0].parse::<i32>()
-            .map_err(|_| VaultlessError::IntegrityCheckFailed(
-                format!("Invalid major version: {}", parts[0])
-            ))?;
+        let major = parts[0].parse::<i32>().map_err(|_| {
+            VaultlessError::IntegrityCheckFailed(format!("Invalid major version: {}", parts[0]))
+        })?;
 
         let minor = if parts.len() > 1 {
-            parts[1].parse::<i32>()
-                .map_err(|_| VaultlessError::IntegrityCheckFailed(
-                    format!("Invalid minor version: {}", parts[1])
-                ))?
+            parts[1].parse::<i32>().map_err(|_| {
+                VaultlessError::IntegrityCheckFailed(format!("Invalid minor version: {}", parts[1]))
+            })?
         } else {
             0
         };
 
         let patch = if parts.len() > 2 {
-            parts[2].parse::<i32>()
-                .map_err(|_| VaultlessError::IntegrityCheckFailed(
-                    format!("Invalid patch version: {}", parts[2])
-                ))?
+            parts[2].parse::<i32>().map_err(|_| {
+                VaultlessError::IntegrityCheckFailed(format!("Invalid patch version: {}", parts[2]))
+            })?
         } else {
             0
         };
@@ -88,13 +86,13 @@ impl IOSVersionInfo {
 pub struct IOSAttestationRequest {
     /// App Attest token
     pub attestation_token: String,
-    
+
     /// iOS version reported by client (e.g., "17.2.1")
     pub ios_version: String,
-    
+
     /// Device model (e.g., "iPhone15,2")
     pub device_model: Option<String>,
-    
+
     /// App version
     pub app_version: Option<String>,
 }
@@ -109,9 +107,7 @@ pub fn validate_ios_version_from_client(
     if !version_info.meets_minimum(min_version_code) {
         return Err(VaultlessError::IntegrityCheckFailed(format!(
             "iOS version {} (code: {}) does not meet minimum requirement (code: {})",
-            version_info.version_string,
-            version_info.version_code,
-            min_version_code
+            version_info.version_string, version_info.version_code, min_version_code
         )));
     }
 
@@ -128,19 +124,19 @@ pub struct AppAttestReceipt {
     /// Receipt type
     #[serde(rename = "receipt-type")]
     pub receipt_type: Option<String>,
-    
+
     /// App version
     #[serde(rename = "app-version")]
     pub app_version: Option<String>,
-    
+
     /// Original app version
     #[serde(rename = "original-app-version")]
     pub original_app_version: Option<String>,
-    
+
     /// Device verification value
     #[serde(rename = "device-verification")]
     pub device_verification: Option<String>,
-    
+
     /// Environment (production, sandbox)
     pub environment: Option<String>,
 }
@@ -148,17 +144,16 @@ pub struct AppAttestReceipt {
 /// Extract iOS version from App Attest receipt (if available)
 pub fn extract_version_from_receipt(receipt_b64: &str) -> Result<Option<String>> {
     // Decode base64 receipt
-    let receipt_data = BASE64.decode(receipt_b64)
-        .map_err(|e| VaultlessError::IntegrityCheckFailed(
-            format!("Invalid receipt base64: {}", e)
-        ))?;
+    let receipt_data = BASE64.decode(receipt_b64).map_err(|e| {
+        VaultlessError::IntegrityCheckFailed(format!("Invalid receipt base64: {}", e))
+    })?;
 
     // Parse receipt (this is simplified - actual receipt is ASN.1/PKCS7)
     // In production, you'd use a proper ASN.1 parser
-    
+
     // For App Attest, the receipt typically doesn't contain iOS version directly
     // You would need to parse the receipt and extract device info if present
-    
+
     // This is a placeholder - actual implementation would parse ASN.1
     Ok(None)
 }
@@ -172,13 +167,13 @@ pub fn extract_version_from_receipt(receipt_b64: &str) -> Result<Option<String>>
 pub struct DeviceCheckPayload {
     /// Device token from DeviceCheck API
     pub device_token: String,
-    
+
     /// Timestamp when token was generated
     pub timestamp: i64,
-    
+
     /// iOS version
     pub ios_version: String,
-    
+
     /// Device model identifier
     pub device_model: String,
 }
@@ -192,13 +187,13 @@ pub async fn validate_devicecheck_token(
 ) -> Result<bool> {
     // This would make a request to Apple's DeviceCheck API
     // https://developer.apple.com/documentation/devicecheck/accessing_and_modifying_per-device_data
-    
+
     // Implementation would:
     // 1. Generate JWT token using team_id, key_id, private_key
     // 2. Send request to https://api.development.devicecheck.apple.com/v1/query_two_bits
     // 3. Validate device_token
     // 4. Return whether device is trusted
-    
+
     // Placeholder
     Ok(true)
 }
@@ -212,10 +207,10 @@ pub async fn validate_devicecheck_token(
 pub struct EnhancedAppAttestObject {
     #[serde(rename = "fmt")]
     pub format: Option<String>,
-    
+
     #[serde(rename = "attStmt")]
     pub att_stmt: AttestationStatement,
-    
+
     #[serde(rename = "authData")]
     pub auth_data: Option<String>,
 }
@@ -224,7 +219,7 @@ pub struct EnhancedAppAttestObject {
 pub struct AttestationStatement {
     #[serde(rename = "x5c")]
     pub x5c: Option<Vec<String>>,
-    
+
     pub receipt: Option<String>,
 }
 
@@ -233,16 +228,16 @@ pub struct AttestationStatement {
 pub struct ClientData {
     /// Challenge from server
     pub challenge: String,
-    
+
     /// iOS version
     pub ios_version: String,
-    
+
     /// Device model
     pub device_model: String,
-    
+
     /// App version
     pub app_version: String,
-    
+
     /// Timestamp
     pub timestamp: i64,
 }
@@ -270,10 +265,10 @@ pub fn extract_client_data_from_authdata(
     // - Credential ID length: 2 bytes (optional)
     // - Credential ID: variable (optional)
     // - Extensions: variable (optional)
-    
+
     if auth_data.len() < 37 {
         return Err(VaultlessError::IntegrityCheckFailed(
-            "AuthData too short".to_string()
+            "AuthData too short".to_string(),
         ));
     }
 
@@ -292,10 +287,10 @@ pub fn extract_client_data_from_authdata(
         // Read credential ID length (2 bytes, big-endian)
         if auth_data.len() < offset + 2 {
             return Err(VaultlessError::IntegrityCheckFailed(
-                "Invalid authData: missing credential ID length".to_string()
+                "Invalid authData: missing credential ID length".to_string(),
             ));
         }
-        
+
         let cred_id_len = u16::from_be_bytes([auth_data[offset], auth_data[offset + 1]]) as usize;
         offset += 2;
 
@@ -307,7 +302,7 @@ pub fn extract_client_data_from_authdata(
         // Extensions would contain the client data hash
         // Parse CBOR extensions here
         // This is where you'd find the client data hash to verify
-        
+
         // For now, this is a placeholder
         // You would use a CBOR parser to extract the clientDataHash extension
     }
@@ -319,8 +314,8 @@ pub fn extract_client_data_from_authdata(
 // RECOMMENDED IMPLEMENTATION: COMBINED APPROACH
 // =============================================================================
 
-use crate::models::app_model::attestation::dto::IosIntegrityConfig;
 use super::types::*;
+use crate::models::app_model::attestation::dto::IosIntegrityConfig;
 use chrono::Utc;
 
 /// Complete iOS attestation with version validation
@@ -337,7 +332,7 @@ pub async fn verify_ios_attestation_with_version(
 
     // 2. Verify App Attest token (existing logic)
     // This would call your existing verify_ios_attestation function
-    
+
     // For demonstration, creating a basic result
     let attestation_result = AttestationResult {
         is_valid: true,
@@ -346,26 +341,15 @@ pub async fn verify_ios_attestation_with_version(
         error: None,
         warnings: None,
         verified_at: Utc::now(),
-        platform_data: PlatformAttestationData::IOS(IOSData {
-            bundle_id: config.allowed_bundle_ids.first().cloned(),
-            team_id: config.apple_team_id.clone(),
-            attestation_token: attestation_request.attestation_token.clone(),
-            device_info: Some(serde_json::json!({
-                "ios_version": version_info.version_string,
-                "version_code": version_info.version_code,
-                "device_model": attestation_request.device_model,
-                "app_version": attestation_request.app_version,
-            })),
-        }),
+        platform: Platform::IOS,
     };
 
     pub struct DeviceInfo {
-    pub model: Option<String>,
-    pub os_version: Option<String>,
-    pub manufacturer: Option<String>,
-    pub additional: Option<serde_json::Value>,
-}
-
+        pub model: Option<String>,
+        pub os_version: Option<String>,
+        pub manufacturer: Option<String>,
+        pub additional: Option<serde_json::Value>,
+    }
 
     Ok((attestation_result, version_info))
 }

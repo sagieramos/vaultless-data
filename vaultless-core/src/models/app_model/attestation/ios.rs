@@ -1,13 +1,8 @@
-use std::sync::Arc;
-
 use super::ios_version::*;
-use crate::cache_key;
 use crate::error::{Result, VaultlessError};
 use crate::models::app_model::attestation::dto::IosIntegrityConfig;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
-use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use webpki::{EndEntityCert, Time};
@@ -160,37 +155,17 @@ pub fn verify_app_id_from_certificate(
 // iOS APP ATTEST VERIFICATION
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
-pub struct IOSAttestationRequest {
-    /// App Attest token (base64-encoded CBOR)
-    pub attestation_token: String,
-
-    /// iOS version (e.g., "17.2.1") - REQUIRED
-    pub ios_version: String,
-
-    /// Device model identifier (e.g., "iPhone15,2") - optional but recommended
-    pub device_model: Option<String>,
-
-    /// App version - optional
-    pub app_version: Option<String>,
-}
-
-// =============================================================================
-// UPDATED iOS ATTESTATION VERIFICATION WITH VERSION CHECK
-// =============================================================================
-
 pub async fn verify_ios_attestation(
-    request: &IOSAttestationRequest,
+    token: &str,
+    ios_version: &str,
     config: &IosIntegrityConfig,
 ) -> Result<AttestationResult> {
     let mut warnings = Vec::new();
-    let token = &request.attestation_token;
-
     // ---------------------------
     // 1. Validate iOS version FIRST (fail fast)
     // ---------------------------
     let version_info = if let Some(min_version) = config.min_version_code {
-        match validate_ios_version_from_client(&request.ios_version, min_version) {
+        match validate_ios_version_from_client(ios_version, min_version) {
             Ok(info) => info,
             Err(e) => {
                 return Ok(AttestationResult {
@@ -200,22 +175,13 @@ pub async fn verify_ios_attestation(
                     error: Some(e.to_string()),
                     warnings: Some(warnings),
                     verified_at: Utc::now(),
-                    platform_data: PlatformAttestationData::IOS(IOSData {
-                        bundle_id: None,
-                        team_id: config.apple_team_id.clone(),
-                        attestation_token: token.clone(),
-                        device_info: Some(serde_json::json!({
-                            "ios_version": request.ios_version,
-                            "device_model": request.device_model,
-                            "app_version": request.app_version,
-                        })),
-                    }),
+                    platform: Platform::IOS,
                 });
             }
         }
     } else {
         // Parse version even if not validating minimum
-        IOSVersionInfo::from_version_string(&request.ios_version).map_err(|e| {
+        IOSVersionInfo::from_version_string(ios_version).map_err(|e| {
             VaultlessError::IntegrityCheckFailed(format!("Invalid iOS version format: {}", e))
         })?
     };
@@ -310,17 +276,7 @@ pub async fn verify_ios_attestation(
                 )),
                 warnings: Some(warnings),
                 verified_at: Utc::now(),
-                platform_data: PlatformAttestationData::IOS(IOSData {
-                    bundle_id: None,
-                    team_id: config.apple_team_id.clone(),
-                    attestation_token: token.clone(),
-                    device_info: Some(serde_json::json!({
-                        "ios_version": version_info.version_string,
-                        "version_code": version_info.version_code,
-                        "device_model": request.device_model,
-                        "app_version": request.app_version,
-                    })),
-                }),
+                platform: Platform::IOS,
             });
         }
     }
@@ -401,20 +357,7 @@ pub async fn verify_ios_attestation(
             Some(warnings)
         },
         verified_at: Utc::now(),
-        platform_data: PlatformAttestationData::IOS(IOSData {
-            bundle_id: Some(verified_bundle_id),
-            team_id: config.apple_team_id.clone(),
-            attestation_token: token.clone(),
-            device_info: Some(serde_json::json!({
-                "ios_version": version_info.version_string,
-                "version_code": version_info.version_code,
-                "major": version_info.major,
-                "minor": version_info.minor,
-                "patch": version_info.patch,
-                "device_model": request.device_model,
-                "app_version": request.app_version,
-            })),
-        }),
+        platform: Platform::IOS,
     })
 }
 

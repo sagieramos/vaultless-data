@@ -1,5 +1,6 @@
-use super::types::{AttestationResult, IoTData, PlatformAttestationData};
+use super::types::AttestationResult;
 use crate::error::{Result, VaultlessError};
+use crate::models::app_model::attestation::Platform;
 use crate::models::app_model::attestation::dto::IoTIntegrityConfig;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -44,8 +45,8 @@ pub async fn verify_iot_certificate(
     challenge_signature: &str,
     challenge: &str,
     application_id: Uuid,
-    postgres_pool: Arc<PgPool>,
     config: &IoTIntegrityConfig,
+    postgres_pool: Arc<PgPool>,
 ) -> Result<AttestationResult> {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -519,11 +520,7 @@ pub async fn verify_iot_certificate(
             Some(warnings)
         },
         verified_at: Utc::now(),
-        platform_data: PlatformAttestationData::IoT(IoTData {
-            device_cn,
-            firmware_version: device.firmware_version.clone().unwrap_or_default(),
-            device_signature: challenge_signature.into(),
-        }),
+        platform: Platform::IoT,
     })
 }
 
@@ -549,10 +546,6 @@ fn attestation_failure(
             Some(warnings)
         },
         verified_at: Utc::now(),
-        platform_data: PlatformAttestationData::IoT(IoTData {
-            device_cn: device_cn.into(),
-            firmware_version: "".into(),
-            device_signature: challenge_signature.into(),
-        }),
+        platform: Platform::IoT,
     }
 }

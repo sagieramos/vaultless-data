@@ -228,7 +228,7 @@ impl AttestationResultBuilder {
                 Some(self.warnings)
             },
             verified_at: Utc::now(),
-            platform_data: self.platform_data,
+            platform: Platform::Android,
         }
     }
 }
@@ -327,12 +327,15 @@ pub async fn verify_android_attestation_offline(
         .build()
         .map_err(|e| VaultlessError::Internal(format!("HTTP client error: {}", e)))?;
 
+    // 1. Decode JWS header
     let header = decode_header(token)
         .map_err(|e| VaultlessError::IntegrityCheckFailed(format!("Invalid JWS header: {}", e)))?;
 
     let kid = header.kid.ok_or_else(|| {
         VaultlessError::IntegrityCheckFailed("JWS missing 'kid' header".to_string())
     })?;
+
+    // 2. Fetch JWKS
     let jwks = get_google_jwks_cached(&http_client).await?;
 
     let jwk = jwks.keys.iter().find(|k| k.kid == kid).ok_or_else(|| {
@@ -343,6 +346,7 @@ pub async fn verify_android_attestation_offline(
         VaultlessError::IntegrityCheckFailed(format!("Invalid JWK RSA components: {}", e))
     })?;
 
+    // 3. Validate signature
     let mut validation = Validation::new(header.alg);
     validation.validate_exp = false;
     validation.validate_nbf = false;
@@ -357,17 +361,22 @@ pub async fn verify_android_attestation_offline(
 
     let claims = token_data.claims;
 
-    // Build AndroidData for platform_data
+    // 4. Build AndroidData
     let android_data = AndroidData {
         package_name: claims.app_integrity.package_name.clone(),
-        certificate_sha256: claims.app_integrity.certificate_sha256_digest.join(","),
+        certificate_sha256: claims
+            .app_integrity
+            .certificate_sha256_digest
+            .get(0)
+            .cloned()
+            .unwrap_or_default(),
         attestation_token: token.to_string(),
         device_info: None,
     };
 
     let mut builder = AttestationResultBuilder::new(PlatformAttestationData::Android(android_data));
 
-    // Timestamp check (use config TTL)
+    // 5. Timestamp check
     if let Err(e) = verify_timestamp(
         claims.request_details.timestamp_millis,
         config.max_token_age_seconds,
@@ -378,10 +387,10 @@ pub async fn verify_android_attestation_offline(
             .build());
     }
 
-    // Package name enforcement (if configured)
-    if !config.allowed_package_name.is_empty() {
+    // 6. Package allow list check
+    if !config.allowed_package_names.is_empty() {
         let pkg = &claims.app_integrity.package_name;
-        if !config.allowed_package_name.contains(pkg) {
+        if !config.allowed_package_names.iter().any(|p| p == pkg) {
             return Ok(builder
                 .verdict("PACKAGE_NAME_MISMATCH".into())
                 .error(format!("Package '{}' is not allowed", pkg))
@@ -389,7 +398,7 @@ pub async fn verify_android_attestation_offline(
         }
     }
 
-    // Certificate SHA-256 pin (if configured)
+    // 7. Certificate hash pinning
     if let Some(expected_hash) = &config.allowed_certificate_sha256 {
         if let Err(e) = verify_certificate_hash(
             &claims.app_integrity.certificate_sha256_digest,
@@ -402,42 +411,29 @@ pub async fn verify_android_attestation_offline(
         }
     }
 
-    // ---- NEW: version code enforcement ----
+    // 8. Minimum version code enforcement
     if let Some(min_version) = config.min_version_code {
         match claims.app_integrity.version_code {
-            Some(token_version) => {
-                if token_version < min_version as i64 {
-                    return Ok(builder
-                        .verdict("VERSION_TOO_OLD".into())
-                        .error(format!(
-                            "App version code {} < required minimum {}",
-                            token_version, min_version
-                        ))
-                        .build());
-                } else if config.reject_unrecognized_version == false {
-                    // explicit: version is present and acceptable; we might still log a note
-                    if config.max_token_age_seconds > 0 {
-                        // example harmless use of config to avoid "unused" lint — not required
-                    }
-                }
+            Some(token_version) if token_version < min_version as i64 => {
+                return Ok(builder
+                    .verdict("VERSION_TOO_OLD".into())
+                    .error(format!(
+                        "App version code {} < required minimum {}",
+                        token_version, min_version
+                    ))
+                    .build());
             }
-            None => {
-                // Version missing from token: treat according to reject_unrecognized_version
-                if config.reject_unrecognized_version {
-                    return Ok(builder
-                        .verdict("VERSION_MISSING".into())
-                        .error("Token missing versionCode; policy requires it".into())
-                        .build());
-                } else {
-                    warnings
-                        .push("Token missing versionCode — skipping min_version_code check".into());
-                }
+            None if config.reject_unrecognized_version => {
+                return Ok(builder
+                    .verdict("VERSION_MISSING".into())
+                    .error("Token missing versionCode".into())
+                    .build());
             }
+            _ => {}
         }
     }
-    // ---------------------------------------
 
-    // App recognition verdict handling (keep existing semantics)
+    // 9. App recognition verdict
     match check_app_recognition(
         &claims.app_integrity.app_recognition_verdict,
         config.reject_unrecognized_version,
@@ -452,7 +448,7 @@ pub async fn verify_android_attestation_offline(
         Ok(None) => {}
     }
 
-    // Device integrity (policy-driven)
+    // 10. Device integrity verdicts
     let device_trusted = match check_device_integrity(
         &claims.device_integrity.device_recognition_verdict,
         config.reject_untrusted_device,
@@ -468,7 +464,14 @@ pub async fn verify_android_attestation_offline(
         }
         Err(e) => {
             return Ok(builder
-                .certificate_hash(claims.app_integrity.certificate_sha256_digest.join(","))
+                .certificate_hash(
+                    claims
+                        .app_integrity
+                        .certificate_sha256_digest
+                        .get(0)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
                 .verdict(format!(
                     "DEVICE:{:?}",
                     &claims.device_integrity.device_recognition_verdict
@@ -478,15 +481,38 @@ pub async fn verify_android_attestation_offline(
         }
     };
 
-    // Optional licensing info
-    if let Some(account) = claims.account_details {
-        if let Some(licensing) = account.app_licensing_verdict {
-            if licensing != "LICENSED" {
-                warnings.push(format!("App licensing status: {}", licensing));
+    // 11. Google Play Licensing check (PRODUCTION ENFORCEMENT)
+    if config.reject_unlicensed_app {
+        match &claims.account_details {
+            Some(account) => {
+                match &account.app_licensing_verdict {
+                    Some(verdict) if verdict == "LICENSED" => {
+                        // ok
+                    }
+                    Some(verdict) => {
+                        return Ok(builder
+                            .verdict("UNLICENSED_APP".into())
+                            .error(format!("App is not licensed: {}", verdict))
+                            .build());
+                    }
+                    None => {
+                        return Ok(builder
+                            .verdict("LICENSE_MISSING".into())
+                            .error("Missing appLicensingVerdict".into())
+                            .build());
+                    }
+                }
+            }
+            None => {
+                return Ok(builder
+                    .verdict("LICENSE_BLOCK_MISSING".into())
+                    .error("Missing accountDetails block".into())
+                    .build());
             }
         }
     }
 
+    // 12. Final success
     Ok(builder
         .valid()
         .device_trusted(device_trusted)

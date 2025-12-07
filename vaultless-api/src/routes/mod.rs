@@ -3,9 +3,10 @@ pub mod client;
 pub mod health;
 pub mod instant_message;
 //pub mod proof;
+pub mod limits;
 pub mod user;
 
-use axum::{Router, middleware, routing::get};
+use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
 
 use application_route::application_routes;
 use client::client_routes;
@@ -33,5 +34,6 @@ pub fn build_routes(state: AppState) -> Router {
                 .nest("/messages", message_routes(state.clone())),
         )
         .layer(middleware::from_fn(reject_suspicious_query))
+        .layer(DefaultBodyLimit::max(limits.MAX_REQUEST_SIZE))
         .with_state(state)
 }

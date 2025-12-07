@@ -127,7 +127,7 @@ impl IntegrityConfigHandler {
         match platform {
             Platform::IOS => self.config.ios.min_version_code,
             Platform::Android => self.config.android.min_version_code,
-            Platform::IoT => self.config.iot.min_firmware_version.map(|v| v as i32),
+            Platform::IoT => self.config.iot.min_firmware_version,
             Platform::Browser => None,
         }
     }
@@ -135,6 +135,7 @@ impl IntegrityConfigHandler {
     pub fn validate_bundle_id(&self, platform: Platform, bundle_id: &str) -> Result<()> {
         let allowed_bundles = self.get_allowed_bundle_ids(platform).ok_or_else(|| {
             VaultlessError::IntegrityCheckFailed("No allowed bundle IDs configured".to_string())
+        })?;
         if !allowed_bundles.contains(&bundle_id.to_string()) {
             let id_type = match platform {
                 Platform::IoT => "Device ID",

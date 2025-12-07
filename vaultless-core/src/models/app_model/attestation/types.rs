@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as jsonValue;
 use validator::{Validate, ValidationErrors};
 
 // =============================================================================
@@ -38,34 +39,40 @@ impl std::fmt::Display for Platform {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct IOSData {
+    #[validate(length(min = 32, max = 8192))]
+    pub attestation_token: String,
+
+    /// iOS version reported by client (e.g., "17.2.1")
+    #[validate(length(min = 1, max = 8))]
+    pub ios_version: String,
+
+    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
     #[validate(length(min = 1, max = 255))]
     pub bundle_id: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
     #[validate(length(min = 1, max = 255))]
     pub team_id: Option<String>,
 
-    #[validate(length(min = 32, max = 8192))]
-    pub attestation_token: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_info: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
+    pub device_info: Option<jsonValue>,
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AndroidData {
-    #[validate(length(min = 1, max = 255))]
-    pub package_name: String,
-
-    #[validate(length(min = 64, max = 64))]
-    pub certificate_sha256: String,
-
     #[validate(length(min = 32, max = 8192))]
     pub attestation_token: String,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_info: Option<DeviceInfo>,
+    #[serde(skip_deserializing)]
+    #[validate(length(min = 1, max = 255))]
+    pub package_name: String,
+
+    #[serde(skip_deserializing)]
+    #[validate(length(min = 64, max = 64))]
+    pub certificate_sha256: String,
+
+    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
+    pub device_info: Option<jsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -75,12 +82,18 @@ pub struct BrowserData {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_fingerprint: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_info: Option<jsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct IoTData {
     #[validate(length(min = 1, max = 255))]
     pub device_cn: String,
+
+    #[validate(length(min = 100, max = 8192))]
+    pub device_certificate: String,
 
     #[validate(length(min = 1, max = 255))]
     pub firmware_version: String,
@@ -134,13 +147,11 @@ pub struct AttestationRequest {
     #[validate(nested)]
     pub platform_data: PlatformAttestationData,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[validate(length(min = 8, max = 128))]
-    pub challenge: Option<String>,
+    pub challenge: String,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[validate(length(max = 50))]
-    pub app_version: Option<String>,
+    #[validate(length(min = 8, max = 1024))]
+    pub challenge_signature: Option<String>,
 }
 
 // =============================================================================
@@ -163,7 +174,7 @@ pub struct AttestationResult {
 
     pub verified_at: DateTime<Utc>,
 
-    pub platform_data: PlatformAttestationData,
+    pub platform: Platform,
 }
 
 // =============================================================================
@@ -185,7 +196,7 @@ pub struct AttestationMetadata {
     pub attestation: Option<AttestationDetails>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_info: Option<DeviceInfo>,
+    pub device_info: Option<jsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,16 +216,4 @@ pub struct AttestationDetails {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
-}
-
-// =============================================================================
-// DEVICE INFO
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceInfo {
-    pub model: Option<String>,
-    pub os_version: Option<String>,
-    pub manufacturer: Option<String>,
-    pub additional: Option<serde_json::Value>,
 }

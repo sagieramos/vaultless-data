@@ -144,12 +144,22 @@ pub struct AndroidIntegrityConfig {
     pub allowed_certificate_sha256: Option<String>,
     pub allowed_package_names: Vec<String>,
     pub min_version_code: Option<i32>,
+
+    // Device / app trust enforcement
     pub reject_untrusted_device: bool,
     pub reject_unrecognized_version: bool,
+
+    // Licensing enforcement
+    pub reject_unlicensed_app: bool,
+
+    // Google API config (optional for online mode)
     pub google_cloud_project: Option<String>,
     pub google_api_key: Option<String>,
+
+    // Token freshness
     pub max_token_age_seconds: u64,
 }
+
 
 impl Default for AndroidIntegrityConfig {
     fn default() -> Self {
@@ -157,14 +167,20 @@ impl Default for AndroidIntegrityConfig {
             allowed_certificate_sha256: None,
             allowed_package_names: Vec::new(),
             min_version_code: None,
+
             reject_untrusted_device: false,
             reject_unrecognized_version: true,
+
+            reject_unlicensed_app: false,
+
             google_cloud_project: None,
             google_api_key: None,
+
             max_token_age_seconds: 60,
         }
     }
 }
+
 
 impl AndroidIntegrityConfig {
     pub fn validate(&self) -> Result<(), VaultlessError> {
