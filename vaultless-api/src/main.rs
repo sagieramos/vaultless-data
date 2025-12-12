@@ -74,14 +74,12 @@ async fn main() -> anyhow::Result<()> {
         redis_operation_timeout_secs: config.metrics_redis_timeout_secs.unwrap_or(30),
     });
 
-    let session_key_manager = config.security.paseto_client_session_key_manager.clone();
-
     let app_state = AppState::new(
         db,
         redis_pool,
         Arc::clone(&metrics_config),
         config.cache.url,
-        session_key_manager,
+        config.security.paseto_client_session_key_manager.clone(),
     )?;
 
     let flusher_metrics = Arc::new(FlusherMetrics::new());

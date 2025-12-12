@@ -80,7 +80,6 @@ impl HybridSessionVerifier {
             redis_pool,
             verifier.local_cache.clone(),
             health,
-            config,
         ));
         // Use try_write to avoid blocking in potentially concurrent context
         if let Ok(mut guard) = verifier.pubsub_handle.try_write() {
@@ -198,6 +197,10 @@ impl HybridSessionVerifier {
         Ok(())
     }
 
+    pub fn key_manager(&self) -> &Arc<SessionKeyManager> {
+        &self.key_manager
+    }
+
     /// Check if pub/sub is healthy
     pub fn is_pubsub_healthy(&self) -> bool {
         self.health
@@ -248,7 +251,6 @@ impl HybridSessionVerifier {
         redis_pool: Arc<RedisPool>,
         local_cache: Cache<String, bool>,
         health: PubSubHealth,
-        config: HybridVerifierConfig,
     ) {
         tracing::info!("Starting pub/sub listener");
         loop {

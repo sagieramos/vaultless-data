@@ -21,8 +21,10 @@ macro_rules! dynamic_update {
 macro_rules! validate_config {
     ($config:expr, $($field:ident => $msg:expr),* $(,)?) => {
         $(
-            $config.$field.validate()
-                .map_err(|e| VaultlessError::Validation(format!("{}: {}", $msg, e)))?;
+            if let Some(ref inner_config) = $config.$field {
+                inner_config.validate()
+                    .map_err(|e| VaultlessError::Validation(format!("{}: {}", $msg, e)))?;
+            }
         )*
     };
 }
@@ -263,17 +265,25 @@ mod tests {
     #[test]
     fn test_integrity_config_partial_serialization() {
         let config = IntegrityConfig {
-            ios: IosIntegrityConfig {
+            ios: Some(IosIntegrityConfig {
                 apple_team_id: Some("ABC1234567".to_string()),
                 ..Default::default()
-            },
+            }),
             ..Default::default()
         };
 
         let json = serde_json::to_value(&config).unwrap();
+
         assert_eq!(
             json,
-            serde_json::json!({"ios": {"apple_team_id": "ABC1234567"}})
+            serde_json::json!({
+                "ios": {
+                    "apple_team_id": "ABC1234567",
+                    "allowed_bundle_ids": [],
+                    "allowed_certificate_hashes": [],
+                    "reject_untrusted_device": false
+                }
+            })
         );
     }
 

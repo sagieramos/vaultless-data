@@ -1,121 +1,48 @@
 use super::dto::*;
 use super::types::*;
 use crate::error::{Result, VaultlessError};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IntegrityRequirements {
-    pub allow_unauthenticated: bool,
-    pub browser_origin_validation: bool,
-    pub ios_attestation_required: bool,
-    pub android_attestation_required: bool,
-    pub iot_attestation_required: bool,
-    pub ios_reject_untrusted: bool,
-    pub android_reject_untrusted: bool,
-    pub iot_reject_untrusted: bool,
-}
 
 pub struct IntegrityConfigHandler {
     pub config: IntegrityConfig,
-    pub requirements: IntegrityRequirements,
+    pub platform_fingerprint: PlatformConfigFingerPrint,
 }
 
 impl IntegrityConfigHandler {
-    pub fn new(config_json: &serde_json::Value) -> Result<Self> {
-        let config = serde_json::from_value(config_json.clone()).map_err(|e| {
-            VaultlessError::Serialization(format!("Failed to parse integrity_config: {}", e))
-        })?;
+    pub fn new_from_jsonb(json: &serde_json::Value) -> Result<Self> {
+        let pf_json = json
+            .get("PlatformFingerPrint")
+            .ok_or_else(|| VaultlessError::Serialization("Missing PlatformFingerPrint".into()))?;
+        let platform_fingerprint = PlatformConfigFingerPrint::from_json(pf_json);
 
-        let requirements = Self::compute_requirements(&config);
+        let ic_json = json
+            .get("IntegrityConfig")
+            .ok_or_else(|| VaultlessError::Serialization("Missing IntegrityConfig".into()))?;
+        let config: IntegrityConfig = serde_json::from_value(ic_json.clone()).map_err(|e| {
+            VaultlessError::Serialization(format!("Failed to parse IntegrityConfig: {}", e))
+        })?;
 
         Ok(Self {
             config,
-            requirements,
+            platform_fingerprint,
         })
-    }
-
-    // Private: Extract platform config without re-parsing
-    fn platform_config(&self, platform: Platform) -> Option<&dyn std::any::Any> {
-        match platform {
-            Platform::IOS => Some(&self.config.ios as &dyn std::any::Any),
-            Platform::Android => Some(&self.config.android as &dyn std::any::Any),
-            Platform::IoT => Some(&self.config.iot as &dyn std::any::Any),
-            Platform::Browser => Some(&self.config.browser as &dyn std::any::Any),
-        }
-    }
-
-    // Private: Compute requirements once (consolidates duplicated logic)
-    fn compute_requirements(config: &IntegrityConfig) -> IntegrityRequirements {
-        IntegrityRequirements {
-            allow_unauthenticated: config.allow_unauthenticated,
-            browser_origin_validation: !config.browser.authorized_origins.is_empty(),
-            ios_attestation_required: config.ios.apple_team_id.is_some()
-                || !config.ios.allowed_bundle_ids.is_empty(),
-            android_attestation_required: config.android.allowed_certificate_sha256.is_some(),
-            iot_attestation_required: !config.iot.allowed_certificate_authorities.is_empty()
-                || config.iot.require_valid_certificate_expiry,
-            ios_reject_untrusted: config.ios.reject_untrusted_device,
-            android_reject_untrusted: config.android.reject_untrusted_device,
-            iot_reject_untrusted: config.iot.strict_mode,
-        }
-    }
-
-    pub fn requires_attestation(&self, platform: Platform) -> bool {
-        if self.requirements.allow_unauthenticated {
-            return false;
-        }
-        match platform {
-            Platform::IOS => self.requirements.ios_attestation_required,
-            Platform::Android => self.requirements.android_attestation_required,
-            Platform::IoT => self.requirements.iot_attestation_required,
-            Platform::Browser => false,
-        }
-    }
-
-    pub fn allows_unauthenticated(&self) -> bool {
-        self.requirements.allow_unauthenticated
-    }
-
-    pub fn requires_origin_validation(&self) -> bool {
-        self.requirements.browser_origin_validation
-    }
-
-    pub fn validate_web_origin(&self, origin: &str) -> Result<()> {
-        if !self.requirements.browser_origin_validation {
-            return Ok(());
-        }
-        if self
-            .config
-            .browser
-            .authorized_origins
-            .iter()
-            .any(|o| o == origin)
-        {
-            Ok(())
-        } else {
-            Err(VaultlessError::IntegrityCheckFailed(format!(
-                "Origin '{}' is not authorized",
-                origin
-            )))
-        }
-    }
-
-    pub fn should_reject_untrusted_device(&self, platform: Platform) -> bool {
-        match platform {
-            Platform::IOS => self.requirements.ios_reject_untrusted,
-            Platform::Android => self.requirements.android_reject_untrusted,
-            Platform::IoT => self.requirements.iot_reject_untrusted,
-            Platform::Browser => false,
-        }
     }
 
     pub fn get_allowed_bundle_ids(&self, platform: Platform) -> Option<Vec<String>> {
         let bundle_ids = match platform {
-            Platform::IOS => &self.config.ios.allowed_bundle_ids,
-            Platform::Android => &self.config.android.allowed_package_names,
-            Platform::IoT => &self.config.iot.allowed_secure_element_ids,
+            Platform::IOS => self.config.ios.as_ref().map(|c| &c.allowed_bundle_ids),
+            Platform::Android => self
+                .config
+                .android
+                .as_ref()
+                .map(|c| &c.allowed_package_names),
+            Platform::IoT => self
+                .config
+                .iot
+                .as_ref()
+                .map(|c| &c.allowed_secure_element_ids),
             Platform::Browser => return None,
-        };
+        }?;
+
         if bundle_ids.is_empty() {
             None
         } else {
@@ -125,82 +52,114 @@ impl IntegrityConfigHandler {
 
     pub fn get_min_version_code(&self, platform: Platform) -> Option<i32> {
         match platform {
-            Platform::IOS => self.config.ios.min_version_code,
-            Platform::Android => self.config.android.min_version_code,
-            Platform::IoT => self.config.iot.min_firmware_version,
+            Platform::IOS => self.config.ios.as_ref().and_then(|c| c.min_version_code),
+            Platform::Android => self
+                .config
+                .android
+                .as_ref()
+                .and_then(|c| c.min_version_code),
+            Platform::IoT => self
+                .config
+                .iot
+                .as_ref()
+                .and_then(|c| c.min_firmware_version),
             Platform::Browser => None,
         }
     }
 
-    pub fn validate_bundle_id(&self, platform: Platform, bundle_id: &str) -> Result<()> {
-        let allowed_bundles = self.get_allowed_bundle_ids(platform).ok_or_else(|| {
-            VaultlessError::IntegrityCheckFailed("No allowed bundle IDs configured".to_string())
-        })?;
-        if !allowed_bundles.contains(&bundle_id.to_string()) {
-            let id_type = match platform {
-                Platform::IoT => "Device ID",
-                _ => "Bundle ID",
-            };
-            return Err(VaultlessError::IntegrityCheckFailed(format!(
-                "{} '{}' is not in the allowed list",
-                id_type, bundle_id
-            )));
+    pub fn get_platform_config<'a>(&'a self, platform: Platform) -> Option<PlatformConfigRef<'a>> {
+        match platform {
+            Platform::IOS => self.config.ios.as_ref().map(PlatformConfigRef::IOS),
+            Platform::Android => self.config.android.as_ref().map(PlatformConfigRef::Android),
+            Platform::IoT => self.config.iot.as_ref().map(PlatformConfigRef::IoT),
+            Platform::Browser => self.config.browser.as_ref().map(PlatformConfigRef::Browser),
         }
-        Ok(())
     }
 
-    pub fn validate_app_version(&self, platform: Platform, version_code: i32) -> Result<()> {
-        if let Some(min_version) = self.get_min_version_code(platform) {
-            if version_code < min_version {
-                let version_type = match platform {
-                    Platform::IoT => "Firmware version",
-                    _ => "App version",
-                };
-                return Err(VaultlessError::IntegrityCheckFailed(format!(
-                    "{} {} is below minimum required version {}",
-                    version_type, version_code, min_version
-                )));
+    pub fn get_android_config(&self) -> Option<&AndroidIntegrityConfig> {
+        self.config.android.as_ref()
+    }
+
+    pub fn get_ios_config(&self) -> Option<&IosIntegrityConfig> {
+        self.config.ios.as_ref()
+    }
+
+    pub fn get_iot_config(&self) -> Option<&IoTIntegrityConfig> {
+        self.config.iot.as_ref()
+    }
+
+    pub fn get_browser_config(&self) -> Option<&BrowserIntegrityConfig> {
+        self.config.browser.as_ref()
+    }
+
+    pub fn get_rate_limits(&self) -> Option<&RateLimits> {
+        self.config.rate_limits.as_ref()
+    }
+
+    /// Get trust score and reattestation days for a given platform
+    /// Returns (trust_score, reattestation_days)
+    pub fn get_trust_score_and_reattestation(&self, platform: Platform) -> (u8, u32) {
+        match platform {
+            Platform::Browser => {
+                let trust_score = self
+                    .config
+                    .browser
+                    .as_ref()
+                    .map(|c| c.calculate_trust_score())
+                    .unwrap_or(0);
+                (trust_score, 0)
+            }
+            Platform::IOS => {
+                let ios_config = self.config.ios.as_ref();
+                let trust_score = ios_config.map(|c| c.calculate_trust_score()).unwrap_or(0);
+                let reattestation = ios_config.and_then(|c| c.reattestation_days);
+                (trust_score, reattestation.unwrap_or(0))
+            }
+            Platform::Android => {
+                let android_config = self.config.android.as_ref();
+                let trust_score = android_config
+                    .map(|c| c.calculate_trust_score())
+                    .unwrap_or(0);
+                let reattestation = android_config.and_then(|c| c.reattestation_days);
+                (trust_score, reattestation.unwrap_or(0))
+            }
+            Platform::IoT => {
+                let iot_config = self.config.iot.as_ref();
+                let trust_score = iot_config.map(|c| c.calculate_trust_score()).unwrap_or(0);
+                let reattestation = iot_config.and_then(|c| c.reattestation_days);
+                (trust_score, reattestation.unwrap_or(0))
             }
         }
-        Ok(())
     }
+}
 
-    pub fn get_android_config(&self) -> &AndroidIntegrityConfig {
-        &self.config.android
-    }
+pub enum PlatformConfigRef<'a> {
+    Browser(&'a BrowserIntegrityConfig),
+    Android(&'a AndroidIntegrityConfig),
+    IOS(&'a IosIntegrityConfig),
+    IoT(&'a IoTIntegrityConfig),
+}
 
-    pub fn get_ios_config(&self) -> &IosIntegrityConfig {
-        &self.config.ios
-    }
-
-    pub fn get_iot_config(&self) -> &IoTIntegrityConfig {
-        &self.config.iot
-    }
-
-    pub fn get_rate_limits(&self) -> &RateLimits {
-        &self.config.rate_limits
-    }
-
-    pub fn get_integrity_requirements(&self) -> &IntegrityRequirements {
-        &self.requirements
-    }
-
-    // Also simplify this - attestation rate is same for all platforms
-    pub fn get_attestation_rate_limit(&self) -> u32 {
-        self.config.rate_limits.max_attestations_per_user_per_hour
-    }
-
-    // String clone is cheap here since it's Copy for primitives
-    pub fn get_expected_cert_hash(&self, platform: Platform) -> Option<&str> {
-        match platform {
-            Platform::Android => self.config.android.allowed_certificate_sha256.as_deref(),
-            Platform::IoT => self
-                .config
-                .iot
-                .allowed_certificate_authorities
-                .first()
-                .map(|s| s.as_str()),
-            _ => None,
+impl<'a> PlatformConfigRef<'a> {
+    pub fn reattestation_days(&self) -> Option<u32> {
+        match self {
+            PlatformConfigRef::Browser(_) => None,
+            PlatformConfigRef::Android(cfg) => cfg.reattestation_days,
+            PlatformConfigRef::IOS(cfg) => cfg.reattestation_days,
+            PlatformConfigRef::IoT(cfg) => cfg.reattestation_days,
         }
+    }
+
+    pub fn trust_score(&self) -> u8 {
+        match self {
+            PlatformConfigRef::Browser(cfg) => cfg.calculate_trust_score(),
+            PlatformConfigRef::Android(cfg) => cfg.calculate_trust_score(),
+            PlatformConfigRef::IOS(cfg) => cfg.calculate_trust_score(),
+            PlatformConfigRef::IoT(cfg) => cfg.calculate_trust_score(),
+        }
+    }
+
+    pub fn trust_score_and_reattestation(&self) -> (u8, Option<u32>) {
+        (self.trust_score(), self.reattestation_days())
     }
 }

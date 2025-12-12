@@ -2,13 +2,13 @@ use super::types::*;
 use crate::error::{Result, VaultlessError};
 use crate::models::app_model::attestation::dto::AndroidIntegrityConfig;
 use chrono::{DateTime, Utc};
-use std::time::Duration;
-
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use once_cell::sync::OnceCell;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as jsonValue;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 // =============================================================================
@@ -158,7 +158,9 @@ async fn get_google_jwks_cached(client: &HttpClient) -> Result<Jwks> {
 
 struct AttestationResultBuilder {
     is_valid: bool,
-    platform_data: PlatformAttestationData,
+    platform: Platform,
+    extra: jsonValue,
+
     device_trusted: bool,
     verdict: Option<String>,
     error: Option<String>,
@@ -167,10 +169,11 @@ struct AttestationResultBuilder {
 }
 
 impl AttestationResultBuilder {
-    fn new(platform_data: PlatformAttestationData) -> Self {
+    fn new(platform: Platform) -> Self {
         Self {
             is_valid: false,
-            platform_data,
+            platform,
+            extra: jsonValue::Null,
             device_trusted: false,
             verdict: None,
             error: None,
@@ -209,17 +212,8 @@ impl AttestationResultBuilder {
         self
     }
 
-    fn certificate_hash(mut self, hash: String) -> Self {
-        if let PlatformAttestationData::Android(ref mut data) = self.platform_data {
-            data.certificate_sha256 = hash;
-        } else {
-            self.platform_data = PlatformAttestationData::Android(AndroidData {
-                package_name: String::new(),
-                certificate_sha256: hash,
-                attestation_token: String::new(),
-                device_info: None,
-            });
-        }
+    fn extra(mut self, value: jsonValue) -> Self {
+        self.extra = value;
         self
     }
 
@@ -236,7 +230,7 @@ impl AttestationResultBuilder {
                 Some(self.warnings)
             },
             verified_at: Utc::now(),
-            platform: Platform::Android,
+            extra: self.extra,
         }
     }
 }
@@ -320,6 +314,8 @@ pub async fn verify_android_attestation_offline(
     token: &str,
     config: &AndroidIntegrityConfig,
 ) -> Result<AttestationResult> {
+    use serde_json::{Value as JsonValue, json};
+
     let mut warnings = Vec::new();
     let mut score: u8 = 0;
 
@@ -328,7 +324,7 @@ pub async fn verify_android_attestation_offline(
         .build()
         .map_err(|e| VaultlessError::Internal(format!("HTTP client error: {}", e)))?;
 
-    // Header decode success = base trust
+    // Header decode = base trust
     let header = decode_header(token)
         .map_err(|e| VaultlessError::IntegrityCheckFailed(format!("Invalid JWS header: {}", e)))?;
     score += 20;
@@ -348,7 +344,7 @@ pub async fn verify_android_attestation_offline(
         VaultlessError::IntegrityCheckFailed(format!("Invalid JWK RSA components: {}", e))
     })?;
 
-    // Signature validation success
+    // Signature validation
     let mut validation = Validation::new(header.alg);
     validation.validate_exp = false;
     validation.validate_nbf = false;
@@ -360,11 +356,12 @@ pub async fn verify_android_attestation_offline(
                 e
             ))
         })?;
+
     score += 20;
 
     let claims = token_data.claims;
 
-    // Build AndroidData
+    // Build AndroidData (your domain struct)
     let android_data = AndroidData {
         package_name: claims.app_integrity.package_name.clone(),
         certificate_sha256: claims
@@ -374,15 +371,25 @@ pub async fn verify_android_attestation_offline(
             .cloned()
             .unwrap_or_default(),
         attestation_token: token.to_string(),
-        device_info: None,
     };
 
-    let builder = AttestationResultBuilder::new(PlatformAttestationData::Android(android_data));
+    // Build "extra" JSON for storage
+    let extra_json = json!({
+        "pkg_name": claims.app_integrity.package_name,
+        "cert_sha256_digest": claims.app_integrity.certificate_sha256_digest,
+        "app_reg_verdict": claims.app_integrity.app_recognition_verdict,
+        "device_reg_verdict": claims.device_integrity.device_recognition_verdict,
+        "timestamp_ms": claims.request_details.timestamp_millis,
+        "account_details": claims.account_details,
+    });
 
-    // Timestamp
+    // Build the attestation result
+    let builder = AttestationResultBuilder::new(Platform::Android).extra(extra_json);
+
+    // Timestamp verification
     if let Err(e) = verify_timestamp(
         claims.request_details.timestamp_millis,
-        config.max_token_age_seconds,
+        config.max_token_age_seconds.unwrap_or(300),
     ) {
         return Ok(builder
             .trust_score(score)
@@ -393,7 +400,7 @@ pub async fn verify_android_attestation_offline(
         score += 15;
     }
 
-    // Package
+    // Check allowed package name
     if !config.allowed_package_names.is_empty()
         && config
             .allowed_package_names
@@ -403,13 +410,14 @@ pub async fn verify_android_attestation_offline(
         score += 15;
     }
 
-    // Cert hash
-    if let Some(expected_hash) = &config.allowed_certificate_sha256 {
-        if verify_certificate_hash(
-            &claims.app_integrity.certificate_sha256_digest,
-            expected_hash,
-        )
-        .is_ok()
+    // Certificate SHA256
+    let claims_hashes = &claims.app_integrity.certificate_sha256_digest;
+    let allowed_hashes = &config.allowed_certificate_sha256;
+
+    if !allowed_hashes.is_empty() {
+        if allowed_hashes
+            .iter()
+            .any(|expected_hash| verify_certificate_hash(claims_hashes, expected_hash).is_ok())
         {
             score += 15;
         }
@@ -418,7 +426,7 @@ pub async fn verify_android_attestation_offline(
     // App recognition
     if check_app_recognition(
         &claims.app_integrity.app_recognition_verdict,
-        config.reject_unrecognized_version,
+        config.reject_unrecognized_version.unwrap_or(false),
     )
     .is_ok()
     {
@@ -428,7 +436,7 @@ pub async fn verify_android_attestation_offline(
     // Device integrity
     let device_trusted = check_device_integrity(
         &claims.device_integrity.device_recognition_verdict,
-        config.reject_untrusted_device,
+        config.reject_untrusted_device.unwrap_or(false),
     )
     .unwrap_or(false);
 
@@ -437,7 +445,7 @@ pub async fn verify_android_attestation_offline(
     }
 
     // Licensing
-    if config.reject_unlicensed_app {
+    if config.reject_unlicensed_app.unwrap_or(false) {
         if let Some(account) = &claims.account_details {
             if let Some(verdict) = &account.app_licensing_verdict {
                 if verdict == "LICENSED" {
@@ -449,12 +457,11 @@ pub async fn verify_android_attestation_offline(
         score += 10;
     }
 
-    // Cap score
+    // Cap score at 100
     if score > 100 {
         score = 100;
     }
 
-    // Final success
     Ok(builder
         .valid()
         .device_trusted(device_trusted)

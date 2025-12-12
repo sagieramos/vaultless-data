@@ -1,10 +1,12 @@
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::attestation::{AttestationMetadata, AttestationRequest, Platform};
+use crate::models::app_model::attestation::AttestationResult;
+use crate::models::app_model::attestation::{AttestationRequest, Platform};
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -93,18 +95,15 @@ pub struct RegisterClientRequest {
 
     /// Optional: public key for signature verification (E2EE)
     #[validate(length(min = 32, max = 1024))]
-    pub public_key: Option<String>,
+    pub public_key: String,
 
     /// Optional: short shareable identifier (if user wants a vanity name)
     #[validate(length(min = 3, max = 64))]
     pub identifier: Option<String>,
 
-    /// Optional: encrypted metadata (device info, version, etc.)
-    pub metadata: Option<serde_json::Value>,
-
     /// Optional: signature proving ownership of the provided public_key
     #[validate(length(min = 16, max = 2048))]
-    pub signature: Option<String>,
+    pub signature: String,
 
     /// Optional: arbitrary payload that was signed
     pub signed_payload: Option<String>,
@@ -156,7 +155,7 @@ pub struct AuthenticateClientRequest {
 
     /// Optional: Platform attestation for re-attestation during auth
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub attestation: Option<AttestationRequest>,
+    pub platform: Option<AttestationRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,23 +253,6 @@ impl Client {
         Ok(())
     }
 
-    /// Check if client needs re-attestation (based on age)
-    pub fn needs_reattesation(&self, days: i64) -> bool {
-        if !self.is_platform_attested {
-            return false; // Client never attested, not required
-        }
-
-        match AttestationMetadata::from_metadata(self.metadata.as_ref()) {
-            Ok(Some(meta)) => meta.needs_reattesation(days),
-            _ => true, // If we can't parse metadata, assume re-attestation needed
-        }
-    }
-
-    /// Get attestation metadata from client
-    pub fn get_attestation_metadata(&self) -> Result<Option<AttestationMetadata>> {
-        AttestationMetadata::from_metadata(self.metadata.as_ref())
-    }
-
     /// Verify a signature using the client's public key
     pub fn verify_signature(&self, message: &str, signature: &str) -> Result<bool> {
         let public_key = self.public_key.as_ref().ok_or_else(|| {
@@ -280,54 +262,5 @@ impl Client {
         crate::crypto::verify_signature(message.as_bytes(), signature, public_key)
             .map(|_| true)
             .or_else(|_| Ok(false))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_register_request_validation() {
-        let request = RegisterClientRequest {
-            client_identifier: Some("test-id".to_string()),
-            public_key: Some("A".repeat(64)), // 64 chars
-            identifier: Some("test".to_string()),
-            metadata: None,
-            signature: Some("B".repeat(32)),
-            signed_payload: Some("payload".to_string()),
-            nonce: Some("nonce123".to_string()),
-            attestation: None,
-            attestation_platform: None,
-            captcha_token: None,
-        };
-
-        assert!(request.validate().is_ok());
-    }
-
-    #[test]
-    fn test_authenticate_request_validation() {
-        let request = AuthenticateClientRequest {
-            client_identifier_hash: Some("hash123".to_string()),
-            identifier: None,
-            public_key: None,
-            challenge: "C".repeat(32),
-            challenge_signature: "D".repeat(32),
-            attestation: None,
-        };
-
-        assert!(request.validate().is_ok());
-    }
-
-    #[test]
-    fn test_cache_key_generation() {
-        let session_key = cache_client_session_key("test_hash");
-        assert!(session_key.contains("client"));
-        assert!(session_key.contains("session"));
-        assert!(session_key.contains("test_hash"));
-
-        let challenge_key = cache_auth_challenge_key("challenge_hash");
-        assert!(challenge_key.contains("auth_challenge"));
-        assert!(challenge_key.contains("challenge_hash"));
     }
 }

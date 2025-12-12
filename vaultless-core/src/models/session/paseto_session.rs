@@ -109,7 +109,8 @@ pub struct SessionData {
     pub client_id: Uuid,
     pub application_id: Uuid,
     pub platform: String,
-    pub device_trusted: bool,
+    pub app_fingerprint: Uuid,
+    pub device_trust_score: u8,
     pub app_tier: Option<String>,
     pub application_secret_api_key_id: Option<Uuid>,
     pub pubkey: Option<String>,
@@ -135,7 +136,11 @@ pub fn create_session_token(
     // Custom Claims
     claims.add_additional(ck::APPLICATION_ID, session_data.application_id.to_string())?;
     claims.add_additional(ck::PLATFORM, session_data.platform)?;
-    claims.add_additional(ck::DEVICE_TRUSTED, session_data.device_trusted)?;
+    claims.add_additional(ck::DEVICE_TRUSTED, session_data.device_trust_score)?;
+    claims.add_additional(
+        ck::APP_FINGERPRINT,
+        session_data.app_fingerprint.to_string(),
+    )?;
 
     if let Some(tier) = session_data.app_tier {
         claims.add_additional(ck::APP_TIER, tier)?;
@@ -194,10 +199,17 @@ pub fn verify_session_token(
         .map(String::from)
         .unwrap_or_else(|| "unknown".to_string());
 
-    let device_trusted = claims
+    let device_trust_score = claims
         .get_claim(ck::DEVICE_TRUSTED)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u8)
+        .unwrap_or(0);
+
+    let app_fingerprint = claims
+        .get_claim(ck::APP_FINGERPRINT)
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or(Uuid::nil());
 
     let app_tier = claims
         .get_claim(ck::APP_TIER)
@@ -219,7 +231,8 @@ pub fn verify_session_token(
             client_id,
             application_id,
             platform,
-            device_trusted,
+            device_trust_score,
+            app_fingerprint,
             app_tier,
             application_secret_api_key_id,
             pubkey,
@@ -401,6 +414,10 @@ impl SessionVerifier {
         Ok(is_revoked == 1)
     }
 
+    pub fn key_manager(&self) -> &Arc<SessionKeyManager> {
+        &self.key_manager
+    }
+
     /// Get cache statistics (useful for monitoring)
     pub fn cache_stats(&self) -> (u64, u64) {
         (
@@ -415,60 +432,6 @@ impl SessionVerifier {
         self.revocation_cache.run_pending_tasks().await;
     }
 }
-
-// =============================================================================
-// LEGACY FUNCTIONS (for backward compatibility)
-// =============================================================================
-
-/// Revoke session (legacy function without caching)
-pub async fn revoke_session(
-    redis_pool: &RedisPool,
-    jti: &str,
-    remaining_ttl_seconds: u64,
-) -> Result<()> {
-    let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis error: {e}")))?;
-
-    let was_already_revoked: i32 = REVOKE_AND_CHECK_SCRIPT
-        .key(&key)
-        .arg("1")
-        .arg(remaining_ttl_seconds.max(1))
-        .invoke_async(&mut conn)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Lua revoke failed: {e}")))?;
-
-    tracing::info!(
-        jti = %jti,
-        ttl = remaining_ttl_seconds,
-        already_revoked = was_already_revoked == 1,
-        "Session revocation attempted"
-    );
-    Ok(())
-}
-
-/// Check if session is revoked (legacy function without caching)
-pub async fn is_session_revoked(redis_pool: &RedisPool, jti: &str) -> Result<bool> {
-    let key = cache_key!(REVOKED_SESSION_PREFIX, jti);
-
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {e}")))?;
-
-    let revoked: Option<String> = conn
-        .get(&key)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis GET failed: {e}")))?;
-
-    Ok(revoked.is_some())
-}
-
-// =============================================================================
-// TESTS
-// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -489,7 +452,8 @@ mod tests {
             client_id: Uuid::new_v4(),
             application_id: Uuid::new_v4(),
             platform: "ios".to_string(),
-            device_trusted: true,
+            device_trust_score: 85,
+            app_fingerprint: Uuid::new_v4(),
             app_tier: Some("premium".to_string()),
             application_secret_api_key_id: None,
             pubkey: None,
@@ -513,7 +477,8 @@ mod tests {
             client_id: Uuid::new_v4(),
             application_id: Uuid::new_v4(),
             platform: "android".to_string(),
-            device_trusted: false,
+            device_trust_score: 90,
+            app_fingerprint: Uuid::new_v4(),
             app_tier: None,
             application_secret_api_key_id: None,
             pubkey: None,

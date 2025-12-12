@@ -12,3 +12,4 @@ pub const APP_TIER: &str = "t";
 pub const PUBLISHABLE_KEY: &str = "k";
 pub const APP_SECRET_KEY_ID: &str = "s";
 pub const PUBKEY: &str = "b";
+pub const APP_FINGERPRINT: &str = "f";

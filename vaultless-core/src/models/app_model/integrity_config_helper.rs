@@ -7,56 +7,86 @@ impl IntegrityConfig {
 
     pub fn dev_mode() -> Self {
         Self {
-            allow_unauthenticated: true,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig::development(),
-            rate_limits: RateLimits::default(),
+            allow_unauthenticated: Some(true),
+            browser: Some(BrowserIntegrityConfig::default()),
+            ios: Some(IosIntegrityConfig::default()),
+            android: Some(AndroidIntegrityConfig::default()),
+            iot: Some(IoTIntegrityConfig::default()),
+            rate_limits: Some(RateLimits::default()),
+            allowed_platforms: Some(AllowedPlatforms {
+                browser: Some(true),
+                ios: Some(true),
+                android: Some(true),
+                iot: Some(true),
+            }),
         }
     }
 
-    pub fn browser_only(browser_config: self::BrowserIntegrityConfig) -> Self {
+    pub fn browser_only(browser_config: BrowserIntegrityConfig) -> Self {
         Self {
-            allow_unauthenticated: false,
-            browser: browser_config,
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
+            allow_unauthenticated: Some(false),
+            browser: Some(browser_config),
+            ios: Some(IosIntegrityConfig::default()),
+            android: Some(AndroidIntegrityConfig::default()),
+            iot: Some(IoTIntegrityConfig::default()),
+            rate_limits: Some(RateLimits::default()),
+            allowed_platforms: Some(AllowedPlatforms {
+                browser: Some(true),
+                ios: Some(false),
+                android: Some(false),
+                iot: Some(false),
+            }),
         }
     }
 
-    pub fn ios_only(ios_config: self::IosIntegrityConfig) -> Self {
+    pub fn ios_only(ios_config: IosIntegrityConfig) -> Self {
         Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig::default(),
-            ios: ios_config,
-            android: AndroidIntegrityConfig::default(),
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
+            allow_unauthenticated: Some(false),
+            browser: Some(BrowserIntegrityConfig::default()),
+            ios: Some(ios_config),
+            android: Some(AndroidIntegrityConfig::default()),
+            iot: Some(IoTIntegrityConfig::default()),
+            rate_limits: Some(RateLimits::default()),
+            allowed_platforms: Some(AllowedPlatforms {
+                browser: Some(false),
+                ios: Some(true),
+                android: Some(false),
+                iot: Some(false),
+            }),
         }
     }
 
-    pub fn android_only(android_config: self::AndroidIntegrityConfig) -> Self {
+    pub fn android_only(android_config: AndroidIntegrityConfig) -> Self {
         Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig::default(),
-            android: android_config,
-            iot: IoTIntegrityConfig::default(),
-            rate_limits: RateLimits::default(),
+            allow_unauthenticated: Some(false),
+            browser: Some(BrowserIntegrityConfig::default()),
+            ios: Some(IosIntegrityConfig::default()),
+            android: Some(android_config),
+            iot: Some(IoTIntegrityConfig::default()),
+            rate_limits: Some(RateLimits::default()),
+            allowed_platforms: Some(AllowedPlatforms {
+                browser: Some(false),
+                ios: Some(false),
+                android: Some(true),
+                iot: Some(false),
+            }),
         }
     }
 
-    pub fn iot_only(iot_config: self::IoTIntegrityConfig) -> Self {
+    pub fn iot_only(iot_config: IoTIntegrityConfig) -> Self {
         Self {
-            allow_unauthenticated: false,
-            browser: BrowserIntegrityConfig::default(),
-            ios: IosIntegrityConfig::default(),
-            android: AndroidIntegrityConfig::default(),
-            iot: iot_config,
-            rate_limits: RateLimits::default(),
+            allow_unauthenticated: Some(false),
+            browser: Some(BrowserIntegrityConfig::default()),
+            ios: Some(IosIntegrityConfig::default()),
+            android: Some(AndroidIntegrityConfig::default()),
+            iot: Some(iot_config),
+            rate_limits: Some(RateLimits::default()),
+            allowed_platforms: Some(AllowedPlatforms {
+                browser: Some(false),
+                ios: Some(false),
+                android: Some(false),
+                iot: Some(true),
+            }),
         }
     }
 }

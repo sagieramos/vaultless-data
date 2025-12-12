@@ -391,6 +391,6 @@ impl Application {
     }
 
     pub fn integrity(&self) -> Result<IntegrityConfigHandler> {
-        IntegrityConfigHandler::new(&self.integrity_config)
+        IntegrityConfigHandler::new_from_jsonb(&self.integrity_config)
     }
 }

@@ -1,4 +1,5 @@
 use super::attestation::dto::IntegrityConfig;
+use super::attestation::dto::PlatformConfigFingerPrint;
 use super::attestation::integrity_handler::IntegrityConfigHandler;
 use crate::cache_key;
 use crate::types::SubscriptionTier;
@@ -67,8 +68,6 @@ pub struct UpdateApplication {
     pub integrity_config: Option<IntegrityConfig>,
 }
 
-
-
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateApplicationResponse {
     pub application: Application,
@@ -106,7 +105,7 @@ pub struct ApplicationKeyView {
 
 impl ApplicationKeyView {
     pub fn integrity(&self) -> crate::error::Result<IntegrityConfigHandler> {
-        IntegrityConfigHandler::new(&self.app_integrity_config)
+        IntegrityConfigHandler::new_from_jsonb(&self.app_integrity_config)
     }
 }
 
@@ -249,10 +248,16 @@ pub struct CachedApplicationKeyView {
     pub sk_monthly_message_quota: Option<i32>,
     pub sk_message_retention_seconds: Option<i32>,
     pub sk_rate_limit_per_minute: Option<i32>,
+
+    pub platform_fingerprint: PlatformConfigFingerPrint,
 }
 
 impl From<ApplicationKeyView> for CachedApplicationKeyView {
     fn from(a: ApplicationKeyView) -> Self {
+        let platform_fingerprint = IntegrityConfigHandler::new_from_jsonb(&a.app_integrity_config)
+            .map(|handler| handler.platform_fingerprint)
+            .unwrap_or(PlatformConfigFingerPrint::new());
+
         CachedApplicationKeyView {
             app_id: a.app_id,
             app_user_id: a.app_user_id,
@@ -266,6 +271,8 @@ impl From<ApplicationKeyView> for CachedApplicationKeyView {
             sk_monthly_message_quota: a.sk_monthly_message_quota,
             sk_message_retention_seconds: a.sk_message_retention_seconds,
             sk_rate_limit_per_minute: a.sk_rate_limit_per_minute,
+
+            platform_fingerprint,
         }
     }
 }

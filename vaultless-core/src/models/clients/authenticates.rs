@@ -1,5 +1,11 @@
 use super::dto::*;
 use crate::cache_key;
+use crate::models::session::paseto_session::SessionVerifier;
+use crate::{
+    crypto,
+    error::{Result, VaultlessError},
+    models::session::paseto_session::{SessionKeyManager, verify_session_token},
+};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
@@ -8,12 +14,6 @@ use sqlx::PgPool;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
-
-use crate::{
-    crypto,
-    error::{Result, VaultlessError},
-    models::session::paseto_session::{SessionKeyManager, revoke_session, verify_session_token},
-};
 
 const CHALLENGE_EXPIRY_SECONDS: u64 = 300; // 5 minutes
 const DEFAULT_REVOCATION_TTL: u64 = 24 * 30 * 3600; // 30 days (fallback for force logout)
@@ -65,6 +65,7 @@ impl Client {
         exec: E,
         redis: Option<&Arc<RedisPool>>,
         key_manager: &SessionKeyManager,
+        session_verifier: Arc<SessionVerifier>,
         client_id: Uuid,
         session_token: Option<&str>,
     ) -> Result<()>

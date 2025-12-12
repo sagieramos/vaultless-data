@@ -16,7 +16,7 @@ pub mod iot;
 pub mod service;
 
 // Re-export commonly used items
-pub use types::{AttestationMetadata, AttestationRequest, AttestationResult, Platform};
+pub use types::{AttestationRequest, AttestationResult, Platform};
 
 pub use config::{
     AndroidConfig, IosConfig, IotConfig, PlatformConfig, extract_android_config,

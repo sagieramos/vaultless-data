@@ -1,4 +1,7 @@
-use crate::error::{Result, VaultlessError};
+use crate::{
+    cache_key,
+    error::{Result, VaultlessError},
+};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
@@ -142,7 +145,7 @@ pub async fn check_request_rate_limit(
     ip_address: &str,
     max_per_hour: u32,
 ) -> Result<()> {
-    let key = format!("{}:req:ip:{}:hour", RATE_LIMIT_PREFIX, ip_address);
+    let key = cache_key!(RATE_LIMIT_PREFIX, "req", "ip", ip_address, "hour");
 
     let mut conn = redis_pool
         .get()
@@ -205,7 +208,7 @@ pub async fn register_client_ip(
     ip_address: &str,
     client_id: uuid::Uuid,
 ) -> Result<()> {
-    let key = format!("{}:clients:ip:{}", RATE_LIMIT_PREFIX, ip_address);
+    let key = cache_key!(RATE_LIMIT_PREFIX, "clients", "ip", ip_address);
 
     let mut conn = redis_pool
         .get()
@@ -240,7 +243,7 @@ pub async fn bind_client_to_origin(
     user_agent: &str,
     ip_address: &str,
 ) -> Result<()> {
-    let key = format!("{}:{}", BINDING_PREFIX, client_id);
+    let key = cache_key!(BINDING_PREFIX, client_id);
 
     let binding = WebClientBinding {
         client_id,
@@ -274,7 +277,7 @@ pub async fn verify_client_origin(
     current_origin: &str,
     max_changes: u32,
 ) -> Result<()> {
-    let key = format!("{}:{}", BINDING_PREFIX, client_id);
+    let key = cache_key!(BINDING_PREFIX, client_id);
 
     let mut conn = redis_pool
         .get()
@@ -335,7 +338,7 @@ const USAGE_PREFIX: &str = "browser_usage";
 
 /// Track usage for spike detection
 pub async fn track_usage(redis_pool: &RedisPool, publishable_key: &str) -> Result<()> {
-    let key = format!("{}:pk:{}:hour", USAGE_PREFIX, publishable_key);
+    let key = cache_key!(USAGE_PREFIX, "pk", publishable_key, "hour");
 
     let mut conn = redis_pool
         .get()
@@ -364,8 +367,8 @@ pub async fn check_usage_spike(
     threshold: f64,
     baseline_hours: u64,
 ) -> Result<bool> {
-    let current_key = format!("{}:pk:{}:hour", USAGE_PREFIX, publishable_key);
-    let baseline_key = format!("{}:pk:{}:baseline", USAGE_PREFIX, publishable_key);
+    let current_key = cache_key!(USAGE_PREFIX, "pk", publishable_key, "hour");
+    let baseline_key = cache_key!(USAGE_PREFIX, "pk", publishable_key, "baseline");
 
     let mut conn = redis_pool
         .get()
@@ -417,19 +420,24 @@ pub async fn validate_browser_request(
     config: super::dto::BrowserIntegrityConfig,
 ) -> Result<()> {
     // 1. Origin validation
-    if config.require_origin_header {
+    if config.require_origin_header.unwrap_or(true) {
         let origin = extract_origin(headers)?;
         validate_origin(&origin, &config.authorized_origins)?;
 
         // 2. Referer validation
-        if config.require_referer_header {
+        if config.require_referer_header.unwrap_or(true) {
             let referer = extract_referer(headers);
             validate_referer(referer.as_deref(), &origin)?;
         }
     }
 
     // 3. Rate limiting
-    check_request_rate_limit(redis_pool, ip_address, config.max_requests_per_ip_per_hour).await?;
+    check_request_rate_limit(
+        redis_pool,
+        ip_address,
+        config.max_requests_per_ip_per_hour.unwrap_or(1000),
+    )
+    .await?;
 
     Ok(())
 }

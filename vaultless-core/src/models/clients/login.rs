@@ -1,18 +1,14 @@
+use super::client_integrity_handler::AttestationRecord;
 use super::dto::*;
+use crate::models::app_model::attestation::AttestationRequest;
+use crate::models::app_model::attestation::Platform;
+use crate::models::session::HybridSessionVerifier;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
     models::{
-        app_model::{
-            attestation::{
-                AttestationMetadata, AttestationService, check_attestation_rate_limit,
-                track_failed_attestation,
-            },
-            dto::ApplicationKeyView,
-        },
-        session::paseto_session::{
-            self, SessionData, SessionKeyManager, revoke_session, verify_session_token,
-        },
+        app_model::{attestation::AttestationService, dto::ApplicationKeyView},
+        session::paseto_session::{self, SessionData, SessionVerifier, verify_session_token},
     },
 };
 use chrono::{Duration, Utc};
@@ -23,279 +19,414 @@ use std::sync::Arc;
 
 const SESSION_DURATION_HOURS: u64 = 24 * 30; // 30 days
 
+enum AttestationResult {
+    NotRequired(u8),
+    Reattested { previous_score: u8, new_score: u8 },
+}
+
 impl Client {
     /// Authenticate client by hashed identifier with optional re-attestation
     pub async fn login<'c, E>(
         exec: E,
         redis: Arc<RedisPool>,
-        key_manager: Arc<SessionKeyManager>,
+        session_verifier: Arc<SessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
+        platform: Platform,
     ) -> Result<AuthenticateClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        let mut was_reattested = false;
-        let mut device_trusted = false;
-        let mut platform_string = "unknown".to_string();
+        // Step 1: Verify challenge
+        Self::verify_and_consume_challenge(&redis, &input.challenge).await?;
 
-        // --- 1. Atomically check and consume the challenge from Redis ---
-        let challenge_hash = crypto::hash_content(input.challenge.as_bytes());
+        // Step 2: Find and validate client
+        let mut client = Self::find_active_client(exec.clone(), &input).await?;
+
+        // Step 3: Verify challenge signature
+        Self::verify_challenge_signature(&client, &input)?;
+
+        // Step 4: Handle re-attestation if required
+        let attestation_result = Self::handle_reattestation(
+            exec.clone(),
+            &app_resolved,
+            attestation_service,
+            &mut client,
+            &input.platform,
+            platform,
+        )
+        .await?;
+
+        let (device_trust_score, was_reattested) = match attestation_result {
+            AttestationResult::NotRequired(score) => (score, false),
+            AttestationResult::Reattested { new_score, .. } => (new_score, true),
+        };
+
+        // Step 5: Create session and update client
+        // Now passing only session_verifier
+        let response = Self::create_session_and_update(
+            exec,
+            session_verifier,
+            app_resolved,
+            client,
+            platform,
+            device_trust_score,
+            was_reattested,
+        )
+        .await?;
+
+        tracing::info!(
+            client_id = %response.client_id,
+            platform = %platform.as_str(),
+            was_reattested = %was_reattested,
+            "Client authenticated successfully",
+        );
+
+        Ok(response)
+    }
+
+    /// Verify and consume the authentication challenge from Redis
+    async fn verify_and_consume_challenge(redis: &Arc<RedisPool>, challenge: &str) -> Result<()> {
+        let challenge_hash = crypto::hash_content(challenge.as_bytes());
         let cache_key = cache_auth_challenge_key(&challenge_hash);
+
         let mut conn = redis.get().await?;
+        let challenge_exists: Option<i32> = conn.get_del(&cache_key).await?;
 
-        let challenge_check: Option<i32> = conn.get_del(&cache_key).await?;
-
-        if challenge_check.is_none() {
+        if challenge_exists.is_none() {
             tracing::warn!(
-                "Authentication failed: invalid or expired challenge. Key: {}",
-                cache_key
+                cache_key = %cache_key,
+                "Authentication failed: invalid or expired challenge"
             );
             return Err(VaultlessError::Unauthorized(
                 "Invalid or expired challenge".into(),
             ));
         }
 
-        // --- 2. Ensure at least one identifier is provided ---
-        if input.client_identifier_hash.is_none()
-            && input.identifier.is_none()
-            && input.public_key.is_none()
-        {
-            return Err(VaultlessError::Validation(
-                "Provide at least one of client_identifier_hash, identifier, or public_key".into(),
-            ));
-        }
+        Ok(())
+    }
 
-        // --- 3. Attempt to find the client ---
-        let mut client = if let Some(ref hash) = input.client_identifier_hash {
+    /// Find an active client by one of the provided identifiers
+    async fn find_active_client<'c, E>(exec: E, input: &AuthenticateClientRequest) -> Result<Client>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let client = if let Some(ref hash) = input.client_identifier_hash {
             sqlx::query_as::<_, Client>(
-                r#"SELECT * FROM clients WHERE client_identifier_hash = $1 AND is_active = TRUE"#,
+                "SELECT * FROM clients WHERE client_identifier_hash = $1 AND is_active = TRUE",
             )
             .bind(hash)
-            .fetch_optional(exec.clone())
+            .fetch_optional(exec)
             .await?
         } else if let Some(ref idf) = input.identifier {
             sqlx::query_as::<_, Client>(
-                r#"SELECT * FROM clients WHERE identifier = $1 AND is_active = TRUE"#,
+                "SELECT * FROM clients WHERE identifier = $1 AND is_active = TRUE",
             )
             .bind(idf)
-            .fetch_optional(exec.clone())
+            .fetch_optional(exec)
             .await?
         } else if let Some(ref pk) = input.public_key {
             sqlx::query_as::<_, Client>(
-                r#"SELECT * FROM clients WHERE public_key = $1 AND is_active = TRUE"#,
+                "SELECT * FROM clients WHERE public_key = $1 AND is_active = TRUE",
             )
             .bind(pk)
-            .fetch_optional(exec.clone())
+            .fetch_optional(exec)
             .await?
         } else {
-            None
-        }
-        .ok_or_else(|| VaultlessError::NotFound("Client not found".to_string()))?;
+            return Err(VaultlessError::Validation(
+                "Provide at least one of client_identifier_hash, identifier, or public_key".into(),
+            ));
+        };
 
-        // --- 4. Check if client is active ---
+        let client =
+            client.ok_or_else(|| VaultlessError::NotFound("Client not found".to_string()))?;
+
         if !client.is_active {
             return Err(VaultlessError::Unauthorized(
                 "Client is deactivated".to_string(),
             ));
         }
 
-        // Load initial platform/trust state from existing metadata
-        if let Ok(Some(meta)) = AttestationMetadata::from_metadata(client.metadata.as_ref()) {
-            if let Some(p) = meta.platform {
-                platform_string = p.as_str().to_string();
-            }
-            device_trusted = meta.is_device_trusted();
+        Ok(client)
+    }
+
+    /// Handle re-attestation if required by platform policy
+    async fn handle_reattestation<'c, E>(
+        exec: E,
+        app_resolved: &Arc<ApplicationKeyView>,
+        attestation_service: Option<Arc<AttestationService>>,
+        client: &mut Client,
+        input: &Option<AttestationRequest>,
+        platform: Platform,
+    ) -> Result<AttestationResult>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let integrity_handler = app_resolved.integrity()?;
+        let (trust_score, max_age) = integrity_handler.get_trust_score_and_reattestation(platform);
+
+        let client_attestation = client.integrity()?;
+        let current_score = client_attestation
+            .get_platform_trust_score(platform)
+            .unwrap_or(0);
+
+        let requires_reattestation =
+            client_attestation.platform_requires_reattestation(platform, trust_score, max_age);
+
+        if !requires_reattestation {
+            return Ok(AttestationResult::NotRequired(current_score));
         }
 
-        // --- 5. Check if re-attestation is required ---
-        let requires_reattestation = client.needs_reattesation(30);
-
-        if requires_reattestation && input.attestation.is_none() {
+        let platform_data = input.as_ref().ok_or_else(|| {
             tracing::warn!(
                 client_id = %client.id,
-                "Re-attestation required but not provided"
+                "Re-attestation required but no platform data provided"
             );
+            VaultlessError::Unauthorized(
+                "Re-attestation required but no platform data provided".into(),
+            )
+        })?;
 
+        let attestation_svc = attestation_service
+            .ok_or_else(|| VaultlessError::Internal("Attestation service not configured".into()))?;
+
+        let (platform_attested, attestation_result) = attestation_svc
+            .verify_attestation(
+                platform_data,
+                &integrity_handler.config,
+                app_resolved.app_id,
+                client.id,
+            )
+            .await?;
+
+        if platform_attested != platform {
+            tracing::warn!(
+                client_id = %client.id,
+                expected_platform = ?platform,
+                actual_platform = ?platform_attested,
+                "Platform mismatch during attestation"
+            );
             return Err(VaultlessError::Unauthorized(
-                "Re-attestation required. Please provide attestation token.".into(),
+                "Platform mismatch during attestation".into(),
             ));
         }
 
-        // --- 6. If attestation provided, verify it ---
-        if let Some(attestation_request) = input.attestation {
-            was_reattested = true;
-            platform_string = attestation_request.platform.as_str().to_string();
+        let record: AttestationRecord = attestation_result.into();
+        let new_score = record.trust_score_percent;
 
-            tracing::info!(
-                client_id = %client.id,
-                platform = %attestation_request.platform,
-                device_id = %attestation_request.device_id,
-                "Verifying platform attestation during authentication"
-            );
-
-            // Get IntegrityConfigHandler once and reuse it
-            let integrity_handler = app_resolved.integrity()?;
-
-            // Rate limiting check
-            let rate_limit = integrity_handler.get_attestation_rate_limit();
-
-            if let Err(e) = check_attestation_rate_limit(
-                &redis,
-                &attestation_request.device_id,
-                attestation_request.platform,
-                rate_limit,
+        sqlx::query(
+            r#"
+            UPDATE clients
+            SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'),
+                $1,
+                $2,
+                true
             )
-            .await
-            {
-                tracing::warn!(
-                    client_id = %client.id,
-                    platform = %attestation_request.platform,
-                    device_id = %attestation_request.device_id,
-                    "Rate limit exceeded during authentication"
-                );
-                return Err(e);
-            }
+            WHERE id = $3
+            "#,
+        )
+        .bind(format!("{{{}}}", platform.as_str()))
+        .bind(serde_json::to_value(&record)?)
+        .bind(client.id)
+        .execute(exec)
+        .await?;
 
-            // Verify attestation using service
-            let attestation_svc = attestation_service.ok_or_else(|| {
-                VaultlessError::Internal("Attestation service not configured".into())
-            })?;
+        Ok(AttestationResult::Reattested {
+            previous_score: current_score,
+            new_score,
+        })
+    }
 
-            let attestation_result = attestation_svc
-                .verify_attestation(
-                    &attestation_request,
-                    &integrity_handler.config,
-                    app_resolved.app_id,
-                )
-                .await;
-
-            match attestation_result {
-                Ok(result) => {
-                    if !result.is_valid {
-                        // Track failed attempt
-                        let max_failures = integrity_handler
-                            .config
-                            .rate_limits
-                            .max_failed_attempts_before_lockout;
-                        let _ = track_failed_attestation(
-                            &redis,
-                            &attestation_request.device_id,
-                            max_failures,
-                        )
-                        .await;
-
-                        tracing::warn!(
-                            client_id = %client.id,
-                            platform = %attestation_request.platform,
-                            device_id = %attestation_request.device_id,
-                            verdict = ?result.verdict,
-                            error = ?result.error,
-                            "Platform attestation failed during authentication"
-                        );
-
-                        return Err(VaultlessError::IntegrityCheckFailed(
-                            result
-                                .error
-                                .unwrap_or_else(|| "Attestation verification failed".to_string()),
-                        ));
-                    }
-
-                    // Check if untrusted devices should be rejected
-                    if !result.device_trusted
-                        && integrity_handler
-                            .should_reject_untrusted_device(attestation_request.platform)
-                    {
-                        tracing::warn!(
-                            client_id = %client.id,
-                            platform = %attestation_request.platform,
-                            device_id = %attestation_request.device_id,
-                            "Untrusted device rejected during authentication"
-                        );
-
-                        return Err(VaultlessError::IntegrityCheckFailed(
-                            "Device did not pass integrity checks".to_string(),
-                        ));
-                    }
-
-                    // Update local trust state
-                    device_trusted = result.device_trusted;
-
-                    // Update client metadata with new attestation
-                    let mut attestation_meta =
-                        AttestationMetadata::from_metadata(client.metadata.as_ref())?
-                            .unwrap_or_default();
-
-                    attestation_meta.update_from_result(result);
-
-                    let updated_metadata =
-                        attestation_meta.merge_into_metadata(client.metadata.clone())?;
-
-                    // Persist metadata update
-                    sqlx::query(
-                        "UPDATE clients SET metadata = $1, is_platform_attested = TRUE WHERE id = $2",
-                    )
-                    .bind(&updated_metadata)
-                    .bind(client.id)
-                    .execute(exec.clone())
-                    .await?;
-
-                    // Update local client struct to reflect metadata change
-                    client.metadata = Some(updated_metadata);
-
-                    tracing::info!(
-                        client_id = %client.id,
-                        platform = %attestation_request.platform,
-                        device_id = %attestation_request.device_id,
-                        device_trusted = attestation_meta.is_device_trusted(),
-                        "Re-attestation successful during authentication"
-                    );
-                }
-                Err(e) => {
-                    // Track failed attempt
-                    let max_failures = integrity_handler
-                        .config
-                        .rate_limits
-                        .max_failed_attempts_before_lockout;
-                    let _ = track_failed_attestation(
-                        &redis,
-                        &attestation_request.device_id,
-                        max_failures,
-                    )
-                    .await;
-
-                    tracing::error!(
-                        client_id = %client.id,
-                        platform = %attestation_request.platform,
-                        device_id = %attestation_request.device_id,
-                        error = %e,
-                        "Attestation verification error during authentication"
-                    );
-
-                    return Err(VaultlessError::IntegrityCheckFailed(
-                        "Attestation verification failed".to_string(),
-                    ));
-                }
-            }
-        }
-
-        // --- 7. Verify the signed challenge ---
+    /// Verify the challenge signature
+    fn verify_challenge_signature(
+        client: &Client,
+        input: &AuthenticateClientRequest,
+    ) -> Result<()> {
         if !client.verify_signature(&input.challenge, &input.challenge_signature)? {
             return Err(VaultlessError::Unauthorized(
                 "Invalid challenge signature".into(),
             ));
         }
+        Ok(())
+    }
 
-        // --- 8. Generate PASETO Session Token ---
+    /// Create session token and update client record in a single transaction
+    async fn create_session_and_update<'c, E>(
+        exec: E,
+        session_verifier: Arc<SessionVerifier>,
+        app_resolved: Arc<ApplicationKeyView>,
+        client: Client,
+        platform: Platform,
+        device_trust_score: u8,
+        was_reattested: bool,
+    ) -> Result<AuthenticateClientResponse>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
         let ttl_seconds = SESSION_DURATION_HOURS * 3600;
+        let integrity_handler = app_resolved.integrity()?;
+
+        // Retrieve the key manager from the verifier
+        let key_manager = session_verifier.key_manager();
 
         let session_data = SessionData {
             client_id: client.id,
             application_id: client.application_id,
-            platform: platform_string,
-            device_trusted,
-            app_tier: None,
+            platform: platform.as_str().to_string(),
+            device_trust_score,
+            app_fingerprint: integrity_handler.platform_fingerprint.get(platform),
+            app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
+            application_secret_api_key_id: Some(app_resolved.sk_id),
+            pubkey: None,
+        };
+
+        // Use key_manager.current() for encryption
+        let session_token =
+            paseto_session::create_session_token(key_manager.current(), session_data, ttl_seconds)?;
+
+        // Use key_manager for immediate verification (to extract JTI)
+        let (_, new_jti) = verify_session_token(&key_manager, &session_token)?;
+        let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS as i64);
+
+        // Revoke old session using SessionVerifier
+        if let Some(old_jti) = &client.last_jti {
+            let verifier = session_verifier.clone();
+            let old_jti_clone = old_jti.clone();
+            let client_id = client.id;
+
+            tokio::spawn(async move {
+                match verifier.revoke_session(&old_jti_clone, ttl_seconds).await {
+                    Ok(_) => {
+                        tracing::debug!(
+                            client_id = %client_id,
+                            old_jti = %old_jti_clone,
+                            "Successfully revoked previous session"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            client_id = %client_id,
+                            old_jti = %old_jti_clone,
+                            error = ?e,
+                            "Failed to revoke previous session - manual cleanup may be required"
+                        );
+                    }
+                }
+            });
+        }
+
+        // Update client with new session info
+        sqlx::query(
+            r#"
+            UPDATE clients
+            SET last_jti = $1,
+                last_seen_at = $2
+            WHERE id = $3
+            "#,
+        )
+        .bind(&new_jti)
+        .bind(expires_at)
+        .bind(client.id)
+        .execute(exec)
+        .await?;
+
+        Ok(AuthenticateClientResponse {
+            client_id: client.id,
+            session_token,
+            expires_at,
+            is_new_session: true,
+            was_reattested,
+        })
+    }
+
+    pub async fn login_hybrid<'c, E>(
+        exec: E,
+        redis: Arc<RedisPool>,
+        hybrid_verifier: Arc<HybridSessionVerifier>,
+        app_resolved: Arc<ApplicationKeyView>,
+        attestation_service: Option<Arc<AttestationService>>,
+        input: AuthenticateClientRequest,
+        platform: Platform,
+    ) -> Result<AuthenticateClientResponse>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        // Step 1: Verify challenge
+        Self::verify_and_consume_challenge(&redis, &input.challenge).await?;
+
+        // Step 2: Find and validate client
+        let mut client = Self::find_active_client(exec.clone(), &input).await?;
+
+        // Step 3: Verify challenge signature
+        Self::verify_challenge_signature(&client, &input)?;
+
+        // Step 4: Handle re-attestation if required
+        let attestation_result = Self::handle_reattestation(
+            exec.clone(),
+            &app_resolved,
+            attestation_service,
+            &mut client,
+            &input.platform,
+            platform,
+        )
+        .await?;
+
+        let (device_trust_score, was_reattested) = match attestation_result {
+            AttestationResult::NotRequired(score) => (score, false),
+            AttestationResult::Reattested { new_score, .. } => (new_score, true),
+        };
+
+        // Step 5: Create session and update client (using hybrid verifier)
+        let response = Self::create_session_and_update_hybrid(
+            exec,
+            hybrid_verifier,
+            app_resolved,
+            client,
+            platform,
+            device_trust_score,
+            was_reattested,
+        )
+        .await?;
+
+        tracing::info!(
+            client_id = %response.client_id,
+            platform = %platform.as_str(),
+            was_reattested = %was_reattested,
+            "Client authenticated successfully (Hybrid)",
+        );
+
+        Ok(response)
+    }
+
+    /// Create session token and update client record in a single transaction (Hybrid Verifier)
+    async fn create_session_and_update_hybrid<'c, E>(
+        exec: E,
+        hybrid_verifier: Arc<HybridSessionVerifier>,
+        app_resolved: Arc<ApplicationKeyView>,
+        client: Client,
+        platform: Platform,
+        device_trust_score: u8,
+        was_reattested: bool,
+    ) -> Result<AuthenticateClientResponse>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let ttl_seconds = SESSION_DURATION_HOURS * 3600;
+        let integrity_handler = app_resolved.integrity()?;
+
+        // Use the getter on the hybrid verifier to access the key manager
+        let key_manager_arc = hybrid_verifier.key_manager();
+        let key_manager = key_manager_arc.as_ref(); // Get reference to SessionKeyManager
+
+        let session_data = SessionData {
+            client_id: client.id,
+            application_id: client.application_id,
+            platform: platform.as_str().to_string(),
+            device_trust_score,
+            app_fingerprint: integrity_handler.platform_fingerprint.get(platform),
+            app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,
         };
@@ -303,35 +434,52 @@ impl Client {
         let session_token =
             paseto_session::create_session_token(key_manager.current(), session_data, ttl_seconds)?;
 
-        let (_, new_jti) = verify_session_token(&key_manager, &session_token)?;
-
-        // --- 9. Handle Session Revocation & DB Update ---
-        if let Some(old_jti) = &client.last_jti {
-            let _ = revoke_session(&redis, old_jti, ttl_seconds).await;
-            tracing::debug!(client_id = %client.id, old_jti = %old_jti, "Revoked previous session JTI");
-        }
-
+        // Need the key_manager for JTI extraction
+        let (_, new_jti) = verify_session_token(key_manager, &session_token)?;
         let expires_at = Utc::now() + Duration::hours(SESSION_DURATION_HOURS as i64);
 
+        // Revoke old session using HybridVerifier
+        if let Some(old_jti) = &client.last_jti {
+            let verifier = hybrid_verifier.clone();
+            let old_jti_clone = old_jti.clone();
+            let client_id = client.id;
+
+            tokio::spawn(async move {
+                // Use the HybridVerifier's revoke method
+                match verifier.revoke_session(&old_jti_clone, ttl_seconds).await {
+                    Ok(_) => {
+                        tracing::debug!(
+                            client_id = %client_id,
+                            old_jti = %old_jti_clone,
+                            "Successfully revoked previous session (Hybrid)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            client_id = %client_id,
+                            old_jti = %old_jti_clone,
+                            error = ?e,
+                            "Failed to revoke previous session (Hybrid) - manual cleanup may be required"
+                        );
+                    }
+                }
+            });
+        }
+
+        // Update client with new session info - single DB roundtrip
         sqlx::query(
             r#"
             UPDATE clients
             SET last_jti = $1,
-                last_seen_at = NOW()
-            WHERE id = $2
+                last_seen_at = $2
+            WHERE id = $3
             "#,
         )
         .bind(&new_jti)
+        .bind(expires_at)
         .bind(client.id)
         .execute(exec)
         .await?;
-
-        tracing::info!(
-            client_id = %client.id,
-            was_reattested = %was_reattested,
-            jti = %new_jti,
-            "Client authenticated successfully via PASETO"
-        );
 
         Ok(AuthenticateClientResponse {
             client_id: client.id,

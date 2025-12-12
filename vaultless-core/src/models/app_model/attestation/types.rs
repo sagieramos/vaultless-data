@@ -54,8 +54,8 @@ pub struct IOSData {
     #[validate(length(min = 1, max = 255))]
     pub team_id: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
-    pub device_info: Option<jsonValue>,
+    #[validate(length(min = 1, max = 10))]
+    pub device_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -70,9 +70,6 @@ pub struct AndroidData {
     #[serde(skip_deserializing)]
     #[validate(length(min = 64, max = 64))]
     pub certificate_sha256: String,
-
-    #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
-    pub device_info: Option<jsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -82,9 +79,6 @@ pub struct BrowserData {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_fingerprint: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_info: Option<jsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -176,5 +170,6 @@ pub struct AttestationResult {
 
     pub verified_at: DateTime<Utc>,
 
-    pub platform: Platform,
+    #[serde(default, skip_serializing_if = "jsonValue::is_null")]
+    pub extra: jsonValue,
 }

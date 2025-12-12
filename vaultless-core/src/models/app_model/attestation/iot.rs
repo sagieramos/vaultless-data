@@ -38,7 +38,6 @@ pub struct IoTAttestationRequest {
 // =============================================================================
 // IoT CERTIFICATE VERIFICATION WITH CONFIDENCE SCORING
 // =============================================================================
-
 pub async fn verify_iot_certificate(
     device_id: Option<&str>,
     device_certificate: &str,
@@ -65,31 +64,28 @@ pub async fn verify_iot_certificate(
         hex::encode(h.finalize())
     };
 
-    // ---------------------------
-    // 2. Parse certificate
-    // ---------------------------
+    //  Parse certificate
+
     let (_, cert) = X509Certificate::from_der(&cert_der).map_err(|e| {
         VaultlessError::IntegrityCheckFailed(format!("Failed to parse certificate: {}", e))
     })?;
     confidence += 5;
 
-    // ---------------------------
-    // 3. Certificate Authority validation
-    // ---------------------------
-    if !config.allowed_certificate_authorities.is_empty() {
-        let issuer_cn = cert
-            .issuer()
-            .iter_common_name()
-            .next()
-            .and_then(|cn| cn.as_str().ok())
-            .ok_or_else(|| {
-                VaultlessError::IntegrityCheckFailed("Certificate missing issuer CN".into())
-            })?;
+    // Certificate Authority validation
 
-        if !config
-            .allowed_certificate_authorities
-            .contains(&issuer_cn.to_string())
-        {
+    let issuer_cn = cert
+        .issuer()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .map(|s| s.to_string());
+
+    if !config.allowed_certificate_authorities.is_empty() {
+        let issuer = issuer_cn.as_ref().ok_or_else(|| {
+            VaultlessError::IntegrityCheckFailed("Certificate missing issuer CN".into())
+        })?;
+
+        if !config.allowed_certificate_authorities.contains(issuer) {
             return Ok(attestation_failure(
                 "UNAUTHORIZED_CERTIFICATE_AUTHORITY",
                 "Certificate authority not allowed",
@@ -100,10 +96,9 @@ pub async fn verify_iot_certificate(
         confidence += 10;
     }
 
-    // ---------------------------
-    // 4. Certificate expiry validation
-    // ---------------------------
-    if config.require_valid_certificate_expiry {
+    // Certificate expiry validation
+
+    if config.require_valid_certificate_expiry.unwrap_or(true) {
         let now = Utc::now().timestamp();
         let validity = cert.validity();
 
@@ -133,7 +128,7 @@ pub async fn verify_iot_certificate(
     // ---------------------------
     // 5. Future certificate rejection
     // ---------------------------
-    if config.reject_future_certificates {
+    if config.reject_future_certificates.unwrap_or(true) {
         let now = Utc::now().timestamp();
         let not_before = cert.validity().not_before.timestamp();
 
@@ -184,8 +179,6 @@ pub async fn verify_iot_certificate(
                 }
                 confidence += 10;
             } else {
-                // If we found the OID, but the parsed variant is not SubjectAlternativeName,
-                // it usually means the parser treated it as "Unparsed" due to malformed data.
                 return Ok(attestation_failure(
                     "INVALID_SAN_EXTENSION",
                     "Failed to parse SAN extension content",
@@ -285,7 +278,7 @@ pub async fn verify_iot_certificate(
     // ---------------------------
     // 10. CN Match
     // ---------------------------
-    if config.require_cn_match {
+    if config.require_cn_match.unwrap_or(true) {
         if let Some(id_value) = device_id {
             if device_cn != id_value {
                 return Ok(attestation_failure(
@@ -428,7 +421,7 @@ pub async fn verify_iot_certificate(
     // ---------------------------
     // 17. Challenge signature verification
     // ---------------------------
-    if config.require_challenge_signature {
+    if config.require_challenge_signature.unwrap_or(true) {
         // Ensure both challenge and signature are provided
         let challenge_str = challenge.ok_or_else(|| {
             VaultlessError::IntegrityCheckFailed("Challenge required but not provided".into())
@@ -483,9 +476,29 @@ pub async fn verify_iot_certificate(
     .execute(&*postgres_pool)
     .await?;
 
-    // ---------------------------
-    // SUCCESS
-    // ---------------------------
+    // Calculate public key fingerprint
+
+    let public_key_fingerprint = {
+        let mut h = Sha256::new();
+        h.update(cert.tbs_certificate.subject_pki.raw);
+        hex::encode(h.finalize())
+    };
+
+    // SUCCESS - Build extra metadata
+
+    let extra = serde_json::json!({
+        "device_cn": device_cn,
+        "issuer_cn": issuer_cn,
+        "certificate_hash": cert_hash,
+        "public_key_fingerprint": public_key_fingerprint,
+        "manufacturer": device.manufacturer,
+        "model": device.model,
+        "hardware_revision": device.hardware_revision,
+        "firmware_version": device.firmware_version,
+        "secure_element_id": device.secure_element_id,
+        "last_attestation_at": Utc::now().to_rfc3339(),
+    });
+
     Ok(AttestationResult {
         is_valid: true,
         device_trusted: true,
@@ -498,7 +511,7 @@ pub async fn verify_iot_certificate(
             Some(warnings)
         },
         verified_at: Utc::now(),
-        platform: Platform::IoT,
+        extra,
     })
 }
 
@@ -524,6 +537,6 @@ fn attestation_failure(
             Some(warnings)
         },
         verified_at: Utc::now(),
-        platform: Platform::IoT,
+        extra: serde_json::Value::Null,
     }
 }

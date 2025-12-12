@@ -12,6 +12,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
+const DEFAULT_MAX_FAILED_ATTEMPTS: u32 = 5;
 // =============================================================================
 // ATTESTATION SERVICE
 // =============================================================================
@@ -37,11 +38,17 @@ impl AttestationService {
         config: &IntegrityConfig,
         application_id: Uuid,
         client_id: Uuid,
-    ) -> Result<AttestationResult> {
+    ) -> Result<(Platform, AttestationResult)> {
         // 1. Validate request format
         request.validate().map_err(|e| {
             VaultlessError::Validation(format!("Invalid attestation request: {}", e))
         })?;
+
+        let max_failed_attempts = config
+            .rate_limits
+            .as_ref()
+            .and_then(|limits| limits.max_failed_attempts_before_lockout)
+            .unwrap_or(DEFAULT_MAX_FAILED_ATTEMPTS);
 
         // 1.5 Pre-check: ensure client isn't already locked out due to repeated failures
         // (fast-fail before doing expensive attestation work)
@@ -49,7 +56,7 @@ impl AttestationService {
             &self.redis_pool,
             &application_id,
             &client_id,
-            config.rate_limits.max_failed_attempts_before_lockout,
+            max_failed_attempts,
         )
         .await?;
 
@@ -58,62 +65,148 @@ impl AttestationService {
             .await?;
 
         // 3. Platform-specific verification (match returns AttestationResult)
-        let attestation: AttestationResult = match &request.platform_data {
-            PlatformAttestationData::Android(android_data) => {
-                verify_android_attestation_offline(&android_data.attestation_token, &config.android)
-                    .await?
-            }
+        let (platform, attestation, trust_score): (Platform, AttestationResult, u8) =
+            match &request.platform_data {
+                PlatformAttestationData::Android(android_data) => {
+                    if !config
+                        .allowed_platforms
+                        .as_ref()
+                        .map_or(true, |platforms| platforms.ios.unwrap_or(true))
+                    {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "Android attestation is disabled".into(),
+                        ));
+                    }
+                    if let Some(android_cfg) = &config.android {
+                        let result = verify_android_attestation_offline(
+                            &android_data.attestation_token,
+                            android_cfg,
+                        )
+                        .await?;
 
-            PlatformAttestationData::IOS(ios_data) => {
-                verify_ios_attestation(
-                    &ios_data.attestation_token,
-                    &ios_data.ios_version,
-                    &config.ios,
-                )
-                .await?
-            }
+                        (
+                            Platform::Android,
+                            result,
+                            config
+                                .android
+                                .as_ref()
+                                .map_or(0, |c| c.calculate_trust_score()),
+                        )
+                    } else {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "Android config not present".into(),
+                        ));
+                    }
+                }
 
-            PlatformAttestationData::IoT(iot_data) => {
-                verify_iot_certificate(
-                    Some(&iot_data.device_cn),
-                    &iot_data.device_certificate,
-                    &iot_data.device_signature,
-                    &request.challenge,
-                    application_id,
-                    &config.iot,
-                    self.postgres_pool.clone(),
-                )
-                .await?
-            }
+                PlatformAttestationData::IOS(ios_data) => {
+                    if !config
+                        .allowed_platforms
+                        .as_ref()
+                        .map_or(true, |platforms| platforms.ios.unwrap_or(true))
+                    {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "iOS attestation is disabled".into(),
+                        ));
+                    }
 
-            PlatformAttestationData::Browser(_) => {
-                return Err(VaultlessError::Validation(
-                    "Browser platform does not support hardware attestation".into(),
-                ));
-            }
-        };
+                    if let Some(ios_cfg) = &config.ios {
+                        let result = verify_ios_attestation(
+                            &ios_data.attestation_token,
+                            &ios_data.ios_version,
+                            ios_data.device_model.as_deref(),
+                            ios_cfg,
+                        )
+                        .await?;
+
+                        (
+                            Platform::IOS,
+                            result,
+                            config.ios.as_ref().map_or(0, |c| c.calculate_trust_score()),
+                        )
+                    } else {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "iOS config not present".into(),
+                        ));
+                    }
+                }
+
+                PlatformAttestationData::IoT(iot_data) => {
+                    if !config
+                        .allowed_platforms
+                        .as_ref()
+                        .map_or(true, |platforms| platforms.iot.unwrap_or(true))
+                    {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "IoT attestation is disabled".into(),
+                        ));
+                    }
+
+                    if let Some(iot_cfg) = &config.iot {
+                        let result = verify_iot_certificate(
+                            Some(&iot_data.device_cn),
+                            &iot_data.device_certificate,
+                            Some(&iot_data.device_signature),
+                            Some(&request.challenge),
+                            application_id,
+                            iot_cfg,
+                            self.postgres_pool.clone(),
+                        )
+                        .await?;
+
+                        (
+                            Platform::IoT,
+                            result,
+                            config.iot.as_ref().map_or(0, |c| c.calculate_trust_score()),
+                        )
+                    } else {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "IoT config not present".into(),
+                        ));
+                    }
+                }
+
+                PlatformAttestationData::Browser(_) => {
+                    return Err(VaultlessError::Validation(
+                        "Browser platform does not support hardware attestation".into(),
+                    ));
+                }
+            };
 
         // Post-verification: track failures or enforce attestation rate limit
-        if !attestation.is_valid {
+        if !attestation.trust_score_percent >= trust_score || !attestation.device_trusted {
             track_failed_attestation(
                 &self.redis_pool,
                 &application_id,
                 &client_id,
-                config.rate_limits.max_failed_attempts_before_lockout,
+                max_failed_attempts,
             )
             .await?;
+
+            tracing::warn!(
+                client_id = %client_id,
+                "Attestation failed: trust score {} below required {} or device not trusted",
+                attestation.trust_score_percent,
+                trust_score
+            );
+
+            return Err(VaultlessError::Unauthorized(
+                "Attestation failed: device not trusted or insufficient trust score".into(),
+            ));
         } else {
             check_attestation_rate_limit(
                 &self.redis_pool,
                 &application_id,
                 &client_id,
-                attestation.platform.as_str(),
-                config.rate_limits.max_attestations_per_user_per_hour,
+                platform.as_str(),
+                config.rate_limits.as_ref().map_or(100, |rl| {
+                    rl.max_attestations_per_user_per_hour.unwrap_or(100)
+                }),
             )
             .await?;
         }
 
-        Ok(attestation)
+        Ok((platform, attestation))
     }
 
     // =========================================================================

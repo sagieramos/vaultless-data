@@ -18,7 +18,6 @@ use super::types::*;
 
 const APPLE_ROOT_CA_G3: &[u8] = include_bytes!("../../../../certs/AppleRootCA-G3.cer");
 const APPLE_APPATTEST_EXTENSION_OID: &str = "1.2.840.113635.100.8.2";
-const IOS_CHALLENGE_KEY: &str = "ios_challenge";
 
 // =============================================================================
 // APP ATTEST RESPONSE TYPES
@@ -158,6 +157,7 @@ pub fn verify_app_id_from_certificate(
 pub async fn verify_ios_attestation(
     token: &str,
     ios_version: &str,
+    device_model: Option<&str>,
     config: &IosIntegrityConfig,
 ) -> Result<AttestationResult> {
     let mut warnings = Vec::new();
@@ -166,7 +166,7 @@ pub async fn verify_ios_attestation(
     // ---------------------------
     // 1. Validate iOS version
     // ---------------------------
-    let _version_info = if let Some(min_version) = config.min_version_code {
+    let version_info = if let Some(min_version) = config.min_version_code {
         match validate_ios_version_from_client(ios_version, min_version) {
             Ok(info) => {
                 confidence += 20;
@@ -181,7 +181,7 @@ pub async fn verify_ios_attestation(
                     error: Some(e.to_string()),
                     warnings: Some(warnings),
                     verified_at: Utc::now(),
-                    platform: Platform::IOS,
+                    extra: serde_json::Value::Null,
                 });
             }
         }
@@ -251,7 +251,7 @@ pub async fn verify_ios_attestation(
                 error: Some("Unapproved certificate".into()),
                 warnings: Some(warnings),
                 verified_at: Utc::now(),
-                platform: Platform::IOS,
+                extra: serde_json::Value::Null,
             });
         }
         confidence += 10;
@@ -267,18 +267,18 @@ pub async fn verify_ios_attestation(
 
         let rp_id_hash = &auth_data[0..32];
 
-        let mut matched = false;
+        let mut matched_bundle_id = None;
         for bundle_id in &config.allowed_bundle_ids {
             let mut hasher = Sha256::new();
             hasher.update(bundle_id.as_bytes());
 
             if rp_id_hash == hasher.finalize().as_slice() {
-                matched = true;
+                matched_bundle_id = Some(bundle_id.clone());
                 break;
             }
         }
 
-        if !matched {
+        if matched_bundle_id.is_none() {
             return Ok(AttestationResult {
                 is_valid: false,
                 device_trusted: false,
@@ -287,12 +287,12 @@ pub async fn verify_ios_attestation(
                 error: Some("Bundle mismatch".into()),
                 warnings: Some(warnings),
                 verified_at: Utc::now(),
-                platform: Platform::IOS,
+                extra: serde_json::Value::Null,
             });
         }
 
         confidence += 10;
-        "matched".to_string()
+        matched_bundle_id.unwrap()
     } else {
         return Err(VaultlessError::IntegrityCheckFailed(
             "Missing authData".into(),
@@ -302,15 +302,31 @@ pub async fn verify_ios_attestation(
     // ---------------------------
     // 8. App ID verification
     // ---------------------------
-    if let Some(team_id) = &config.apple_team_id {
-        verify_app_id_from_certificate(&leaf_cert_der, team_id, &verified_bundle_id)?;
+    let verified_app_id = if let Some(team_id) = &config.apple_team_id {
+        let app_id = verify_app_id_from_certificate(&leaf_cert_der, team_id, &verified_bundle_id)?;
         confidence += 10;
-    }
+        Some(app_id)
+    } else {
+        None
+    };
 
-    let device_trusted = !config.reject_untrusted_device;
+    let device_trusted = !config.reject_untrusted_device.unwrap_or(true);
 
     // Cap confidence at 100
     let confidence = confidence.min(100);
+
+    // ---------------------------
+    // Build extra metadata
+    // ---------------------------
+    let extra = serde_json::json!({
+        "ios_version": ios_version,
+        "device_model": device_model,
+        "bundle_id": verified_bundle_id,
+        "team_id": config.apple_team_id,
+        "app_id": verified_app_id,
+        "certificate_hash": cert_hash,
+        "last_attestation_at": Utc::now().to_rfc3339(),
+    });
 
     Ok(AttestationResult {
         is_valid: true,
@@ -324,7 +340,7 @@ pub async fn verify_ios_attestation(
             Some(warnings)
         },
         verified_at: Utc::now(),
-        platform: Platform::IOS,
+        extra,
     })
 }
 
@@ -421,5 +437,5 @@ attestationManager.generateAttestation(challenge: challenge) { result in
         print("Attestation failed: \(error)")
     }
 }
-    ```
+```
 */
