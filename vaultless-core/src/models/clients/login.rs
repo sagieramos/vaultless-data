@@ -24,17 +24,24 @@ enum AttestationResult {
     Reattested { previous_score: u8, new_score: u8 },
 }
 
+/// Internal struct to hold the results of the common authentication steps
+struct CommonAuthResult {
+    client: Client,
+    device_trust_score: u8,
+    was_reattested: bool,
+    platform: Platform,
+}
+
 impl Client {
-    /// Authenticate client by hashed identifier with optional re-attestation
-    pub async fn login<'c, E>(
+    /// Shared authentication logic for both login methods
+    async fn authenticate_common<'c, E>(
         exec: E,
         redis: Arc<RedisPool>,
-        session_verifier: Arc<SessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
         attestation_service: Option<Arc<AttestationService>>,
         input: AuthenticateClientRequest,
         platform: Platform,
-    ) -> Result<AuthenticateClientResponse>
+    ) -> Result<CommonAuthResult>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
@@ -49,7 +56,7 @@ impl Client {
 
         // Step 4: Handle re-attestation if required
         let attestation_result = Self::handle_reattestation(
-            exec.clone(),
+            exec,
             &app_resolved,
             attestation_service,
             &mut client,
@@ -63,23 +70,52 @@ impl Client {
             AttestationResult::Reattested { new_score, .. } => (new_score, true),
         };
 
-        // Step 5: Create session and update client
-        // Now passing only session_verifier
+        Ok(CommonAuthResult {
+            client,
+            device_trust_score,
+            was_reattested,
+            platform,
+        })
+    }
+
+    /// Authenticate client by hashed identifier with optional re-attestation
+    pub async fn login<'c, E>(
+        exec: E,
+        redis: Arc<RedisPool>,
+        session_verifier: Arc<SessionVerifier>,
+        app_resolved: Arc<ApplicationKeyView>,
+        attestation_service: Option<Arc<AttestationService>>,
+        input: AuthenticateClientRequest,
+        platform: Platform,
+    ) -> Result<AuthenticateClientResponse>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        let auth_result = Self::authenticate_common(
+            exec.clone(),
+            redis,
+            app_resolved.clone(),
+            attestation_service,
+            input,
+            platform,
+        ).await?;
+
+        // Create session and update client
         let response = Self::create_session_and_update(
             exec,
             session_verifier,
             app_resolved,
-            client,
-            platform,
-            device_trust_score,
-            was_reattested,
+            auth_result.client,
+            auth_result.platform,
+            auth_result.device_trust_score,
+            auth_result.was_reattested,
         )
         .await?;
 
         tracing::info!(
             client_id = %response.client_id,
-            platform = %platform.as_str(),
-            was_reattested = %was_reattested,
+            platform = %auth_result.platform.as_str(),
+            was_reattested = %auth_result.was_reattested,
             "Client authenticated successfully",
         );
 
@@ -353,47 +389,31 @@ impl Client {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // Step 1: Verify challenge
-        Self::verify_and_consume_challenge(&redis, &input.challenge).await?;
-
-        // Step 2: Find and validate client
-        let mut client = Self::find_active_client(exec.clone(), &input).await?;
-
-        // Step 3: Verify challenge signature
-        Self::verify_challenge_signature(&client, &input)?;
-
-        // Step 4: Handle re-attestation if required
-        let attestation_result = Self::handle_reattestation(
+        let auth_result = Self::authenticate_common(
             exec.clone(),
-            &app_resolved,
+            redis,
+            app_resolved.clone(),
             attestation_service,
-            &mut client,
-            &input.platform,
+            input,
             platform,
-        )
-        .await?;
+        ).await?;
 
-        let (device_trust_score, was_reattested) = match attestation_result {
-            AttestationResult::NotRequired(score) => (score, false),
-            AttestationResult::Reattested { new_score, .. } => (new_score, true),
-        };
-
-        // Step 5: Create session and update client (using hybrid verifier)
+        // Create session and update client (using hybrid verifier)
         let response = Self::create_session_and_update_hybrid(
             exec,
             hybrid_verifier,
             app_resolved,
-            client,
-            platform,
-            device_trust_score,
-            was_reattested,
+            auth_result.client,
+            auth_result.platform,
+            auth_result.device_trust_score,
+            auth_result.was_reattested,
         )
         .await?;
 
         tracing::info!(
             client_id = %response.client_id,
-            platform = %platform.as_str(),
-            was_reattested = %was_reattested,
+            platform = %auth_result.platform.as_str(),
+            was_reattested = %auth_result.was_reattested,
             "Client authenticated successfully (Hybrid)",
         );
 
