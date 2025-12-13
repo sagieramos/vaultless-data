@@ -1,4 +1,4 @@
-use super::attestation::dto::*;
+use super::integrity::dto::*;
 use super::dto::*;
 use crate::error::{Result, VaultlessError};
 use deadpool_redis::Pool as RedisPool;

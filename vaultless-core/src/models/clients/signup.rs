@@ -14,7 +14,7 @@ use crate::{
     error::{Result, VaultlessError},
     models::{
         app_model::{
-            attestation::{
+            integrity::{
                 IntegrityService, Platform,
                 captcha::{CaptchaProvider, verify_captcha},
                 types::PlatformAttestationData,
@@ -168,6 +168,7 @@ impl Client {
                 let (attested_platform, attestation_result) = integrity_svc
                     .verify_integrity(
                         attestation,
+                        None, // No challenge during registration
                         &integrity_handler.config,
                         auth_config.app_id,
                         None, // No client_id at registration time
@@ -470,6 +471,7 @@ impl Client {
                 let (attested_platform, attestation_result) = integrity_svc
                     .verify_integrity(
                         attestation,
+                        None, // No challenge during registration
                         &integrity_handler.config,
                         auth_config.app_id,
                         None, // No client_id at registration time
@@ -766,6 +768,7 @@ impl Client {
                 let (attested_platform, attestation_result) = integrity_svc
                     .verify_integrity(
                         attestation,
+                        None, // No challenge during registration
                         &integrity_handler.config,
                         auth_config.app_id,
                         None, // No client_id at registration time

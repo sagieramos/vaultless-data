@@ -1,13 +1,13 @@
 use super::client_integrity_handler::AttestationRecord;
 use super::dto::*;
-use crate::models::app_model::attestation::AttestationRequest;
-use crate::models::app_model::attestation::Platform;
+use crate::models::app_model::integrity::AttestationRequest;
+use crate::models::app_model::integrity::Platform;
 use crate::models::session::HybridSessionVerifier;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
     models::{
-        app_model::{attestation::IntegrityService, dto::ApplicationKeyView},
+        app_model::{integrity::IntegrityService, dto::ApplicationKeyView},
         session::paseto_session::{self, SessionData, SessionVerifier, verify_session_token},
     },
 };
@@ -61,6 +61,7 @@ impl Client {
             integrity_service,
             &mut client,
             &input.platform,
+            &input.challenge,
             platform,
         )
         .await?;
@@ -195,6 +196,7 @@ impl Client {
         integrity_service: Option<Arc<IntegrityService>>,
         client: &mut Client,
         input: &Option<AttestationRequest>,
+        challenge: &str,
         platform: Platform,
     ) -> Result<AttestationResult>
     where
@@ -231,6 +233,7 @@ impl Client {
         let (platform_attested, attestation_result) = integrity_svc
             .verify_integrity(
                 platform_data,
+                Some(challenge), // Use the authentication challenge
                 &integrity_handler.config,
                 app_resolved.app_id,
                 Some(client.id), // Use the existing client id

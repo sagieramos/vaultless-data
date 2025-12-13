@@ -315,7 +315,7 @@ pub fn extract_client_data_from_authdata(
 // =============================================================================
 
 use super::types::*;
-use crate::models::app_model::attestation::dto::IosIntegrityConfig;
+use crate::models::app_model::integrity::dto::IosIntegrityConfig;
 use chrono::Utc;
 
 

@@ -453,24 +453,28 @@ pub async fn validate_browser_request(
 /// Validate browser integrity and produce a standardized integrity result
 pub async fn validate_browser_integrity(
     redis_pool: &RedisPool,
-    headers: &HashMap<String, String>,
+    browser_data: &super::types::BrowserData,
     identity_key: &str,
     client_id: Option<uuid::Uuid>,
+    ip_address: std::net::IpAddr,
     config: &super::dto::BrowserIntegrityConfig,
 ) -> Result<super::types::AttestationResult> {
     use chrono::Utc;
     use serde_json::Value as jsonValue;
-    use super::types::Platform;
 
     // 1. Origin validation
     if config.require_origin_header.unwrap_or(true) {
-        let origin = extract_origin(headers)?;
-        validate_origin(&origin, &config.authorized_origins)?;
+        validate_origin(&browser_data.origin, &config.authorized_origins)?;
 
         // 2. Referer validation
         if config.require_referer_header.unwrap_or(true) {
-            let referer = extract_referer(headers);
-            validate_referer(referer.as_deref(), &origin)?;
+            if let Some(ref referer) = browser_data.referer {
+                validate_referer(Some(referer), &browser_data.origin)?;
+            } else {
+                return Err(VaultlessError::IntegrityCheckFailed(
+                    "Missing Referer header".into(),
+                ));
+            }
         }
 
         // 3. Client-origin binding (only for registered clients)
@@ -478,13 +482,30 @@ pub async fn validate_browser_integrity(
             verify_client_origin(
                 redis_pool,
                 client_id,
-                &extract_origin(headers)?, // current origin
+                &browser_data.origin, // current origin
                 config.max_origin_changes_per_client.unwrap_or(3),
             ).await?;
+
+            // 4. Bind client to origin/user-agent if required
+            if config.bind_client_to_origin.unwrap_or(false) {
+                if let Some(user_agent) = &browser_data.user_agent {
+                    bind_client_to_origin(
+                        redis_pool,
+                        client_id.unwrap(),
+                        &browser_data.origin,
+                        user_agent,
+                        &ip_address,
+                    ).await?;
+                } else {
+                    return Err(VaultlessError::IntegrityCheckFailed(
+                        "Missing User-Agent header for client binding".into(),
+                    ));
+                }
+            }
         }
     }
 
-    // 4. Rate limiting
+    // 5. Rate limiting
     check_request_rate_limit(
         redis_pool,
         identity_key,
@@ -492,7 +513,7 @@ pub async fn validate_browser_integrity(
     )
     .await?;
 
-    // 5. Create attestation result with trust score
+    // 6. Create attestation result with trust score
     let trust_score = config.calculate_trust_score();
 
     Ok(super::types::AttestationResult {

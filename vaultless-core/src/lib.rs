@@ -21,7 +21,7 @@ pub use models::{
     User,
     UserSession,
     VerifyProofRequest,
-    app_model::attestation::AttestationService,
+    app_model::integrity::AttestationService,
     app_model::{
         dto::{
             Application, ApplicationKeyView, CreateApplication,

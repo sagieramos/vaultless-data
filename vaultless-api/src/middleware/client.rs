@@ -1,15 +1,14 @@
 use super::helper::*;
 use axum::{extract::FromRequestParts, http::request::Parts};
-use vaultless_core::models::session::HybridSessionVerifier;
 
 use crate::{middleware::error::ApiError, state::AppState};
-use vaultless_core::{Client, SessionData as SessionDataClient};
-use std::sync::Arc;
 use axum::{
     extract::{Request, State},
     middleware::Next,
     response::Response,
 };
+use std::sync::Arc;
+use vaultless_core::{Client, SessionData as SessionDataClient};
 
 #[derive(Debug, Clone)]
 pub struct ClientExt(pub Arc<Client>);
@@ -24,13 +23,15 @@ pub async fn client_auth(
 ) -> Result<Response, ApiError> {
     let token = extract_bearer_token(req.headers())?;
 
-    let session_data = HybridSessionVerifier::verify_fast(&state.session_verifier, token)
+    let session_data = state
+        .session_verifier_hybrid
+        .verify_fast(token)
         .await
         .map_err(ApiError::from)?;
 
     tracing::debug!(
         client_id = %session_data.client_id,
-        device_trusted = session_data.device_trusted,
+        device_trust_score = %session_data.device_trust_score,
         "Session validated successfully"
     );
 

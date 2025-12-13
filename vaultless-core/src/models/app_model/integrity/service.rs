@@ -1,6 +1,6 @@
 use super::android_offline::verify_android_attestation_offline;
 use super::browser::validate_browser_integrity;
-use super::dto::{IntegrityConfig, AllowedPlatforms};
+use super::dto::{AllowedPlatforms, IntegrityConfig};
 use super::ios::verify_ios_attestation;
 use super::iot::verify_iot_certificate;
 use super::types::*;
@@ -21,7 +21,10 @@ const DEFAULT_MAX_FAILED_ATTEMPTS: u32 = 5;
 // =============================================================================
 
 /// Check if a platform is allowed based on the allowed_platforms configuration
-pub fn is_platform_allowed(platform: Platform, allowed_platforms: Option<&AllowedPlatforms>) -> bool {
+pub fn is_platform_allowed(
+    platform: Platform,
+    allowed_platforms: Option<&AllowedPlatforms>,
+) -> bool {
     match (platform, allowed_platforms) {
         (Platform::Android, Some(platforms)) => platforms.android.unwrap_or(true),
         (Platform::IOS, Some(platforms)) => platforms.ios.unwrap_or(true),
@@ -54,6 +57,7 @@ impl IntegrityService {
     pub async fn verify_integrity(
         &self,
         request: &AttestationRequest,
+        challenge: Option<&str>,
         config: &IntegrityConfig,
         application_id: Uuid,
         client_id: Option<Uuid>,
@@ -61,13 +65,15 @@ impl IntegrityService {
     ) -> Result<(Platform, AttestationResult)> {
         // 0. Validate that at least one identity parameter is provided
         if client_id.is_none() && ip_address.is_none() {
-            return Err(VaultlessError::Validation("Either client_id or ip_address must be provided".to_string()));
+            return Err(VaultlessError::Validation(
+                "Either client_id or ip_address must be provided".to_string(),
+            ));
         }
 
         // 1. Validate request format
-        request.validate().map_err(|e| {
-            VaultlessError::Validation(format!("Invalid integrity request: {}", e))
-        })?;
+        request
+            .validate()
+            .map_err(|e| VaultlessError::Validation(format!("Invalid integrity request: {}", e)))?;
 
         // Identity key selection: Use client_id if present, otherwise use IP address
         // Both validated to exist at least one (see validation at start of function)
@@ -77,7 +83,7 @@ impl IntegrityService {
             _ => {
                 // This should never happen due to early validation check
                 return Err(VaultlessError::Internal(
-                    "Invalid identity state: both client_id and ip_address are None".into()
+                    "Invalid identity state: both client_id and ip_address are None".into(),
                 ));
             }
         };
@@ -97,10 +103,6 @@ impl IntegrityService {
             max_failed_attempts,
         )
         .await?;
-
-        // 2. Verify challenge exists and is valid (common for all platforms)
-        self.verify_and_consume_challenge(&request.challenge)
-            .await?;
 
         // 3. Determine the platform from the request
         let platform = match &request.platform_data {
@@ -172,11 +174,7 @@ impl IntegrityService {
                         )
                         .await?;
 
-                        (
-                            Platform::IOS,
-                            result,
-                            ios_cfg.calculate_trust_score(),
-                        )
+                        (Platform::IOS, result, ios_cfg.calculate_trust_score())
                     }
 
                     PlatformAttestationData::IoT(iot_data) => {
@@ -185,31 +183,25 @@ impl IntegrityService {
                             Some(&iot_data.device_cn),
                             &iot_data.device_certificate,
                             Some(&iot_data.device_signature),
-                            Some(&request.challenge),
+                            challenge,
                             application_id,
                             &iot_cfg,
                             self.postgres_pool.clone(),
                         )
                         .await?;
 
-                        (
-                            Platform::IoT,
-                            result,
-                            iot_cfg.calculate_trust_score(),
-                        )
+                        (Platform::IoT, result, iot_cfg.calculate_trust_score())
                     }
 
                     PlatformAttestationData::Browser(browser_data) => {
                         // Browser doesn't support hardware attestation, but we can still perform
-                        // other validations like checking origin headers, CAPTCHA, etc.
+                        // other validations using the browser_data fields
                         let browser_cfg = config.browser.clone().unwrap_or_default();
 
-                        // Create a minimal headers map from browser data
-                        let mut headers = std::collections::HashMap::new();
-                        headers.insert("origin".to_string(), browser_data.origin.clone());
-                        if let Some(fingerprint) = &browser_data.client_fingerprint {
-                            headers.insert("user-agent".to_string(), fingerprint.clone());
-                        }
+                        // Extract IP address from identity_key (this needs to be passed differently)
+                        let ip_address = identity_key.parse::<std::net::IpAddr>().unwrap_or_else(|_| {
+                            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+                        });
 
                         // Perform browser integrity validation with full checks including:
                         // - Origin validation
@@ -218,11 +210,13 @@ impl IntegrityService {
                         // - Client-origin binding (if client_id is present)
                         let result = validate_browser_integrity(
                             &self.redis_pool,
-                            &headers,
+                            browser_data,
                             &identity_key,
                             client_id, // Pass the client_id for conditional binding checks
+                            ip_address,
                             &browser_cfg,
-                        ).await?;
+                        )
+                        .await?;
 
                         (
                             Platform::Browser,
@@ -250,7 +244,8 @@ impl IntegrityService {
                 );
 
                 return Err(VaultlessError::Unauthorized(
-                    "Integrity verification failed: device not trusted or insufficient trust score".into(),
+                    "Integrity verification failed: device not trusted or insufficient trust score"
+                        .into(),
                 ));
             } else {
                 check_integrity_rate_limit(
@@ -269,37 +264,6 @@ impl IntegrityService {
 
             Ok((platform, attestation))
         }
-    }
-
-    // =========================================================================
-    // CHALLENGE MANAGEMENT
-    // =========================================================================
-
-    /// Verify challenge exists and consume it (one-time use)
-    ///
-    /// Uses `DEL` and checks the deleted count so the operation is effectively
-    /// atomic from the perspective of "consume-if-present".
-    async fn verify_and_consume_challenge(&self, challenge: &str) -> Result<()> {
-        let key = cache_key!("integrity_challenge", challenge);
-        let mut conn = self
-            .redis_pool
-            .get()
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
-
-        // Attempt to delete the key. `del` returns the number of deleted keys.
-        let deleted: i64 = conn
-            .del(&key)
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis DEL failed: {}", e)))?;
-
-        if deleted == 0 {
-            return Err(VaultlessError::IntegrityCheckFailed(
-                "Challenge expired, invalid, or already used".into(),
-            ));
-        }
-
-        Ok(())
     }
 
     /// Generate universal integrity challenge (used by all platforms)
@@ -385,7 +349,11 @@ pub async fn track_failed_integrity(
     identity_key: &str,
     max_failures: u32,
 ) -> Result<()> {
-    let key = cache_key!("failed_integrity_verifications", application_id, identity_key);
+    let key = cache_key!(
+        "failed_integrity_verifications",
+        application_id,
+        identity_key
+    );
 
     let mut conn = redis_pool
         .get()
@@ -421,7 +389,11 @@ pub async fn check_client_lockout(
     identity_key: &str,
     max_failures: u32,
 ) -> Result<()> {
-    let key = cache_key!("failed_integrity_verifications", application_id, identity_key);
+    let key = cache_key!(
+        "failed_integrity_verifications",
+        application_id,
+        identity_key
+    );
 
     let mut conn = redis_pool
         .get()

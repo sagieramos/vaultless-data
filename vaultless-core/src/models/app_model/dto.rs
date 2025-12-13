@@ -1,6 +1,6 @@
-use super::attestation::dto::IntegrityConfig;
-use super::attestation::dto::PlatformConfigVersion;
-use super::attestation::integrity_handler::IntegrityConfigHandler;
+use super::integrity::dto::IntegrityConfig;
+use super::integrity::dto::PlatformConfigVersion;
+use super::integrity::integrity_handler::IntegrityConfigHandler;
 use crate::cache_key;
 use crate::types::SubscriptionTier;
 use bigdecimal::BigDecimal as Decimal;

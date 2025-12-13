@@ -1,6 +1,6 @@
 use super::ios_version::*;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::attestation::dto::IosIntegrityConfig;
+use crate::models::app_model::integrity::dto::IosIntegrityConfig;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde::Deserialize;

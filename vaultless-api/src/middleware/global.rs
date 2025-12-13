@@ -1,5 +1,6 @@
 use crate::middleware::error::ApiError;
 use axum::{body::Body, http::Request, middleware::Next, response::Response};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use tracing::warn;
 
@@ -28,9 +29,7 @@ pub async fn reject_all_query(req: Request<Body>, next: Next) -> Result<Response
 ///
 /// This helps prevent SQL injection, malformed queries,
 /// and unauthorized attempts.
-/// 
-use once_cell::sync::Lazy;
-use regex::Regex;
+///
 
 static SUSPICIOUS_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     vec![
@@ -44,10 +43,7 @@ static SUSPICIOUS_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     ]
 });
 
-pub async fn reject_suspicious_query(
-    req: Request<Body>,
-    next: Next
-) -> Result<Response, ApiError> {
+pub async fn reject_suspicious_query(req: Request<Body>, next: Next) -> Result<Response, ApiError> {
     if let Some(query) = req.uri().query() {
         for pattern in SUSPICIOUS_PATTERNS.iter() {
             if pattern.is_match(query) {

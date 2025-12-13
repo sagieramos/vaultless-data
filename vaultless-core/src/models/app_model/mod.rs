@@ -1,5 +1,5 @@
 pub mod application;
-pub mod attestation;
+pub mod integrity;
 pub mod chart;
 pub mod dto;
 pub mod material_view_helper;

@@ -13,13 +13,14 @@ use axum::{
 use chrono::Utc;
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use vaultless_core::models::session::extract_token_expiration;
+use vaultless_core::models::session::paseto_session::verify_session_token;
 use vaultless_core::{
     AuthenticateClientRequest, AuthenticateClientResponse, Client, RegisterClientRequest,
     RegisterClientResponse,
 };
-use std::sync::Arc;
-use vaultless_core::models::session::paseto_session::verify_session_token;
+use vaultless_core::models::app_model::integrity::{Platform, types::PlatformAttestationData};
 
 // =============================================================================
 // Request/Response Types
@@ -62,7 +63,12 @@ pub async fn register_client(
     Json(input): Json<RegisterClientRequest>,
 ) -> Result<Json<RegisterClientResponse>, ApiError> {
     tracing::info!(
-        platform = ?input.attestation.as_ref().map(|a| &a.platform),
+        platform = ?input.attestation.as_ref().map(|a| match &a.platform_data {
+            PlatformAttestationData::Android(_) => "android",
+            PlatformAttestationData::IOS(_) => "ios",
+            PlatformAttestationData::IoT(_) => "iot",
+            PlatformAttestationData::Browser(_) => "browser",
+        }),
         has_attestation = input.attestation.is_some(),
         "Client registration attempt"
     );
@@ -105,7 +111,7 @@ pub async fn login(
 
     // 1 Try verifying existing session token (FAST PATH with caching)
     if let Ok(token) = crate::middleware::helper::extract_bearer_token(&headers)
-        && let Ok(session_data) = state.session_verifier.verify_fast(token).await
+        && let Ok(session_data) = state.session_verifier_hybrid.verify_fast(token).await
     {
         tracing::info!(
             client_id = %session_data.client_id,
@@ -132,6 +138,16 @@ pub async fn login(
     // 2 Challenge-based authentication
     tracing::info!("Authenticating with challenge-based flow");
 
+    // Determine platform for re-attestation
+    let platform = input.platform.as_ref().map(|attestation_req| {
+        match &attestation_req.platform_data {
+            PlatformAttestationData::Android(_) => Platform::Android,
+            PlatformAttestationData::IOS(_) => Platform::IOS,
+            PlatformAttestationData::IoT(_) => Platform::IoT,
+            PlatformAttestationData::Browser(_) => Platform::Browser,
+        }
+    }).unwrap_or(Platform::Browser); // Default to Browser if no platform data provided
+
     let response = Client::login(
         state.db.as_ref(),
         state.redis_pool.clone(),
@@ -139,6 +155,7 @@ pub async fn login(
         auth_config,
         state.attestation_service.clone(),
         input,
+        platform,
     )
     .await
     .map_err(ApiError::from)?;

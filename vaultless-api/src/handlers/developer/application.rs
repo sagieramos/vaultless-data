@@ -12,7 +12,7 @@ use uuid::Uuid;
 use vaultless_core::Decimal;
 use vaultless_core::{
     models::{
-        Application, ApplicationWithTier, CreateApplication, UpdateApplication,
+        Application, CreateApplication, UpdateApplication,
         app_model::{chart::*, dto::*},
         usage::MetricCounters,
         user::User,
@@ -129,7 +129,6 @@ pub async fn create_application(
     SessionDataUserExt(session): SessionDataUserExt,
     Json(req): Json<CreateApplicationRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-
     // Create application input
     let input = CreateApplication {
         user_id: session.user_id,

@@ -1,4 +1,4 @@
-use super::attestation::integrity_handler::IntegrityConfigHandler;
+use super::integrity::integrity_handler::IntegrityConfigHandler;
 use super::dto::*;
 use crate::SubscriptionTier;
 use crate::crypto;

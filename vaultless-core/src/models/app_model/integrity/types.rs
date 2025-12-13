@@ -78,6 +78,14 @@ pub struct BrowserData {
     pub origin: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(min = 1, max = 512))]
+    pub referer: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(min = 1, max = 512))]
+    pub user_agent: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_fingerprint: Option<String>,
 }
 
@@ -140,12 +148,6 @@ impl Validate for PlatformAttestationData {
 pub struct AttestationRequest {
     #[validate(nested)]
     pub platform_data: PlatformAttestationData,
-
-    #[validate(length(min = 8, max = 128))]
-    pub challenge: String,
-
-    #[validate(length(min = 8, max = 1024))]
-    pub challenge_signature: Option<String>,
 }
 
 // =============================================================================
