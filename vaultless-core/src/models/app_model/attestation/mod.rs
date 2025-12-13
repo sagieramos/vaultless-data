@@ -23,7 +23,7 @@ pub use config::{
     extract_ios_config, extract_iot_config,
 };
 
-pub use service::{AttestationService, check_attestation_rate_limit, track_failed_attestation};
+pub use service::{IntegrityService, check_integrity_rate_limit, track_failed_integrity};
 
 // Platform-specific exports
 pub use browser::{
@@ -33,3 +33,6 @@ pub use browser::{
 pub use captcha::{CaptchaProvider, verify_captcha as verify_captcha_token};
 pub use ios::verify_ios_attestation;
 pub use iot::{IoTAttestationRequest, verify_iot_certificate};
+
+// Backward compatibility alias - AttestationService is now IntegrityService
+pub type AttestationService = IntegrityService;

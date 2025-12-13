@@ -7,7 +7,7 @@ use crate::{
     crypto,
     error::{Result, VaultlessError},
     models::{
-        app_model::{attestation::AttestationService, dto::ApplicationKeyView},
+        app_model::{attestation::IntegrityService, dto::ApplicationKeyView},
         session::paseto_session::{self, SessionData, SessionVerifier, verify_session_token},
     },
 };
@@ -38,7 +38,7 @@ impl Client {
         exec: E,
         redis: Arc<RedisPool>,
         app_resolved: Arc<ApplicationKeyView>,
-        attestation_service: Option<Arc<AttestationService>>,
+        integrity_service: Option<Arc<IntegrityService>>,
         input: AuthenticateClientRequest,
         platform: Platform,
     ) -> Result<CommonAuthResult>
@@ -58,7 +58,7 @@ impl Client {
         let attestation_result = Self::handle_reattestation(
             exec,
             &app_resolved,
-            attestation_service,
+            integrity_service,
             &mut client,
             &input.platform,
             platform,
@@ -84,7 +84,7 @@ impl Client {
         redis: Arc<RedisPool>,
         session_verifier: Arc<SessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
-        attestation_service: Option<Arc<AttestationService>>,
+        integrity_service: Option<Arc<IntegrityService>>,
         input: AuthenticateClientRequest,
         platform: Platform,
     ) -> Result<AuthenticateClientResponse>
@@ -95,10 +95,11 @@ impl Client {
             exec.clone(),
             redis,
             app_resolved.clone(),
-            attestation_service,
+            integrity_service,
             input,
             platform,
-        ).await?;
+        )
+        .await?;
 
         // Create session and update client
         let response = Self::create_session_and_update(
@@ -191,7 +192,7 @@ impl Client {
     async fn handle_reattestation<'c, E>(
         exec: E,
         app_resolved: &Arc<ApplicationKeyView>,
-        attestation_service: Option<Arc<AttestationService>>,
+        integrity_service: Option<Arc<IntegrityService>>,
         client: &mut Client,
         input: &Option<AttestationRequest>,
         platform: Platform,
@@ -224,15 +225,16 @@ impl Client {
             )
         })?;
 
-        let attestation_svc = attestation_service
-            .ok_or_else(|| VaultlessError::Internal("Attestation service not configured".into()))?;
+        let integrity_svc = integrity_service
+            .ok_or_else(|| VaultlessError::Internal("Integrity service not configured".into()))?;
 
-        let (platform_attested, attestation_result) = attestation_svc
-            .verify_attestation(
+        let (platform_attested, attestation_result) = integrity_svc
+            .verify_integrity(
                 platform_data,
                 &integrity_handler.config,
                 app_resolved.app_id,
-                client.id,
+                Some(client.id), // Use the existing client id
+                None, // No IP address provided in login
             )
             .await?;
 
@@ -312,7 +314,7 @@ impl Client {
             application_id: client.application_id,
             platform: platform.as_str().to_string(),
             device_trust_score,
-            app_fingerprint: integrity_handler.platform_fingerprint.get(platform),
+            platform_config_version: integrity_handler.platform_config_version.get(platform),
             app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,
@@ -382,7 +384,7 @@ impl Client {
         redis: Arc<RedisPool>,
         hybrid_verifier: Arc<HybridSessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
-        attestation_service: Option<Arc<AttestationService>>,
+        integrity_service: Option<Arc<IntegrityService>>,
         input: AuthenticateClientRequest,
         platform: Platform,
     ) -> Result<AuthenticateClientResponse>
@@ -393,10 +395,11 @@ impl Client {
             exec.clone(),
             redis,
             app_resolved.clone(),
-            attestation_service,
+            integrity_service,
             input,
             platform,
-        ).await?;
+        )
+        .await?;
 
         // Create session and update client (using hybrid verifier)
         let response = Self::create_session_and_update_hybrid(
@@ -445,7 +448,7 @@ impl Client {
             application_id: client.application_id,
             platform: platform.as_str().to_string(),
             device_trust_score,
-            app_fingerprint: integrity_handler.platform_fingerprint.get(platform),
+            platform_config_version: integrity_handler.platform_config_version.get(platform),
             app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,

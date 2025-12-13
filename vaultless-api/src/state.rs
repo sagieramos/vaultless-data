@@ -50,7 +50,7 @@ impl AppState {
             redis_url.clone(),
         ));
 
-        let session_verifier = Arc::new(SessionVerifier::with_defaults(
+        let _session_verifier = Arc::new(SessionVerifier::with_defaults(
             session_key_manager,
             arc_redis_pool.clone(),
         ));

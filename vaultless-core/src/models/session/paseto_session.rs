@@ -109,7 +109,7 @@ pub struct SessionData {
     pub client_id: Uuid,
     pub application_id: Uuid,
     pub platform: String,
-    pub app_fingerprint: Uuid,
+    pub platform_config_version: Uuid,
     pub device_trust_score: u8,
     pub app_tier: Option<String>,
     pub application_secret_api_key_id: Option<Uuid>,
@@ -139,7 +139,7 @@ pub fn create_session_token(
     claims.add_additional(ck::DEVICE_TRUSTED, session_data.device_trust_score)?;
     claims.add_additional(
         ck::APP_FINGERPRINT,
-        session_data.app_fingerprint.to_string(),
+        session_data.platform_config_version.to_string(),
     )?;
 
     if let Some(tier) = session_data.app_tier {
@@ -205,7 +205,7 @@ pub fn verify_session_token(
         .map(|n| n as u8)
         .unwrap_or(0);
 
-    let app_fingerprint = claims
+    let platform_config_version = claims
         .get_claim(ck::APP_FINGERPRINT)
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -232,7 +232,7 @@ pub fn verify_session_token(
             application_id,
             platform,
             device_trust_score,
-            app_fingerprint,
+            platform_config_version,
             app_tier,
             application_secret_api_key_id,
             pubkey,
@@ -453,7 +453,7 @@ mod tests {
             application_id: Uuid::new_v4(),
             platform: "ios".to_string(),
             device_trust_score: 85,
-            app_fingerprint: Uuid::new_v4(),
+            platform_config_version: Uuid::new_v4(),
             app_tier: Some("premium".to_string()),
             application_secret_api_key_id: None,
             pubkey: None,
@@ -478,7 +478,7 @@ mod tests {
             application_id: Uuid::new_v4(),
             platform: "android".to_string(),
             device_trust_score: 90,
-            app_fingerprint: Uuid::new_v4(),
+            platform_config_version: Uuid::new_v4(),
             app_tier: None,
             application_secret_api_key_id: None,
             pubkey: None,

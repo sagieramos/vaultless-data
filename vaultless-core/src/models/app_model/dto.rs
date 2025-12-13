@@ -1,5 +1,5 @@
 use super::attestation::dto::IntegrityConfig;
-use super::attestation::dto::PlatformConfigFingerPrint;
+use super::attestation::dto::PlatformConfigVersion;
 use super::attestation::integrity_handler::IntegrityConfigHandler;
 use crate::cache_key;
 use crate::types::SubscriptionTier;
@@ -249,14 +249,14 @@ pub struct CachedApplicationKeyView {
     pub sk_message_retention_seconds: Option<i32>,
     pub sk_rate_limit_per_minute: Option<i32>,
 
-    pub platform_fingerprint: PlatformConfigFingerPrint,
+    pub platform_fingerprint: PlatformConfigVersion,
 }
 
 impl From<ApplicationKeyView> for CachedApplicationKeyView {
     fn from(a: ApplicationKeyView) -> Self {
         let platform_fingerprint = IntegrityConfigHandler::new_from_jsonb(&a.app_integrity_config)
-            .map(|handler| handler.platform_fingerprint)
-            .unwrap_or(PlatformConfigFingerPrint::new());
+            .map(|handler| handler.platform_config_version)
+            .unwrap_or(PlatformConfigVersion::new());
 
         CachedApplicationKeyView {
             app_id: a.app_id,

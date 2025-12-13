@@ -1,5 +1,6 @@
 use super::dto::*;
 use crate::cache_key;
+use crate::models::session::HybridSessionVerifier;
 use crate::models::session::paseto_session::SessionVerifier;
 use crate::{
     crypto,
@@ -61,10 +62,9 @@ impl Client {
         Ok(client)
     }
 
-    pub async fn revoke_client_session<'c, E>(
+    /// Revoke client session using SessionVerifier
+    pub async fn revoke_client_session_with_verifier<'c, E>(
         exec: E,
-        redis: Option<&Arc<RedisPool>>,
-        key_manager: &SessionKeyManager,
         session_verifier: Arc<SessionVerifier>,
         client_id: Uuid,
         session_token: Option<&str>,
@@ -72,18 +72,15 @@ impl Client {
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let redis_pool = if let Some(pool) = redis {
-            pool
-        } else {
-            return Err(VaultlessError::Config(
-                "Internal; session logout not possible".into(),
-            ));
-        };
+        // Get key manager from the session verifier
+        let key_manager = session_verifier.key_manager();
 
         if let Some(token) = session_token {
-            if let Ok((_data, jti)) = verify_session_token(key_manager, token) {
-                revoke_session(redis_pool, &jti, DEFAULT_REVOCATION_TTL).await?;
-                tracing::info!(client_id = %client_id, jti = %jti, "Explicit session revoked");
+            if let Ok((_data, jti)) = verify_session_token(&key_manager, token) {
+                session_verifier
+                    .revoke_session(&jti, DEFAULT_REVOCATION_TTL)
+                    .await?;
+                tracing::info!(client_id = %client_id, jti = %jti, "Explicit session revoked (SessionVerifier)");
 
                 sqlx::query("UPDATE clients SET last_jti = NULL WHERE id = $1 AND last_jti = $2")
                     .bind(client_id)
@@ -101,18 +98,70 @@ impl Client {
             .flatten();
 
             if let Some(jti) = killed_jti {
-                revoke_session(redis_pool, &jti, DEFAULT_REVOCATION_TTL).await?;
-                tracing::info!(client_id = %client_id, jti = %jti, "Last active session revoked via DB lookup");
+                // Use the session verifier's revoke method
+                session_verifier
+                    .revoke_session(&jti, DEFAULT_REVOCATION_TTL)
+                    .await?;
+                tracing::info!(client_id = %client_id, jti = %jti, "Last active session revoked via DB lookup (SessionVerifier)");
             }
         }
 
         Ok(())
     }
 
-    /// Deactivate client (manual or cleanup trigger)
-    pub async fn deactivate<'c, E>(
+    /// Revoke client session using HybridSessionVerifier
+    pub async fn revoke_client_session_with_hybrid_verifier<'c, E>(
+        exec: E,
+        hybrid_verifier: Arc<HybridSessionVerifier>,
+        client_id: Uuid,
+        session_token: Option<&str>,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres>,
+    {
+        // Get key manager from the hybrid verifier
+        let key_manager_arc = hybrid_verifier.key_manager();
+        let key_manager = key_manager_arc.as_ref();
+
+        if let Some(token) = session_token {
+            if let Ok((_data, jti)) = verify_session_token(key_manager, token) {
+                hybrid_verifier
+                    .revoke_session(&jti, DEFAULT_REVOCATION_TTL)
+                    .await?;
+                tracing::info!(client_id = %client_id, jti = %jti, "Explicit session revoked (HybridSessionVerifier)");
+
+                sqlx::query("UPDATE clients SET last_jti = NULL WHERE id = $1 AND last_jti = $2")
+                    .bind(client_id)
+                    .bind(jti)
+                    .execute(exec)
+                    .await?;
+            }
+        } else {
+            let killed_jti: Option<String> = sqlx::query_scalar(
+                "UPDATE clients SET last_jti = NULL WHERE id = $1 RETURNING last_jti",
+            )
+            .bind(client_id)
+            .fetch_optional(exec)
+            .await?
+            .flatten();
+
+            if let Some(jti) = killed_jti {
+                // Use the hybrid verifier's revoke method
+                hybrid_verifier
+                    .revoke_session(&jti, DEFAULT_REVOCATION_TTL)
+                    .await?;
+                tracing::info!(client_id = %client_id, jti = %jti, "Last active session revoked via DB lookup (HybridSessionVerifier)");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Deactivate client using SessionVerifier for session revocation
+    pub async fn deactivate_with_verifier<'c, E>(
         exec: E,
         redis: Option<&Arc<RedisPool>>,
+        session_verifier: Arc<SessionVerifier>,
         client_id: Uuid,
     ) -> Result<()>
     where
@@ -135,10 +184,12 @@ impl Client {
         if let Some(redis_pool) = redis
             && let Ok(mut conn) = redis_pool.get().await
         {
-            // Revoke active session if exists
+            // Revoke active session if exists using SessionVerifier
             if let Some(jti) = &client.last_jti {
-                let _ = revoke_session(redis_pool, jti, DEFAULT_REVOCATION_TTL).await;
-                tracing::info!(client_id = %client.id, jti = %jti, "Session revoked due to deactivation");
+                let _ = session_verifier
+                    .revoke_session(jti, DEFAULT_REVOCATION_TTL)
+                    .await;
+                tracing::info!(client_id = %client.id, jti = %jti, "Session revoked due to deactivation (SessionVerifier)");
             }
 
             let mut keys_to_delete = Vec::new();
@@ -169,7 +220,75 @@ impl Client {
             }
         }
 
-        tracing::info!(client_id = %client_id, "Client deactivated successfully");
+        tracing::info!(client_id = %client_id, "Client deactivated successfully (SessionVerifier)");
+
+        Ok(())
+    }
+
+    /// Deactivate client using HybridSessionVerifier for session revocation
+    pub async fn deactivate_with_hybrid_verifier<'c, E>(
+        exec: E,
+        redis: Option<&Arc<RedisPool>>,
+        hybrid_verifier: Arc<HybridSessionVerifier>,
+        client_id: Uuid,
+    ) -> Result<()>
+    where
+        E: Executor<'c, Database = Postgres> + Clone,
+    {
+        // --- 1. Fetch client data before deactivation ---
+        let client = sqlx::query_as::<_, Client>("SELECT * FROM clients WHERE id = $1")
+            .bind(client_id)
+            .fetch_optional(exec.clone())
+            .await?
+            .ok_or_else(|| VaultlessError::NotFound("Client not found".into()))?;
+
+        // --- 2. Deactivate in database ---
+        sqlx::query("UPDATE clients SET is_active = FALSE WHERE id = $1")
+            .bind(client_id)
+            .execute(exec)
+            .await?;
+
+        // --- 3. Invalidate Redis caches & Revoke Session ---
+        if let Some(redis_pool) = redis
+            && let Ok(mut conn) = redis_pool.get().await
+        {
+            // Revoke active session if exists using HybridSessionVerifier
+            if let Some(jti) = &client.last_jti {
+                let _ = hybrid_verifier
+                    .revoke_session(jti, DEFAULT_REVOCATION_TTL)
+                    .await;
+                tracing::info!(client_id = %client.id, jti = %jti, "Session revoked due to deactivation (HybridSessionVerifier)");
+            }
+
+            let mut keys_to_delete = Vec::new();
+
+            // Canonical client data key
+            keys_to_delete.push(cache_key!("client", "id", client.id));
+
+            // Alias keys (if they exist)
+            if let Some(ref pk) = client.public_key {
+                keys_to_delete.push(cache_key!("client", "alias", "public_key", pk));
+            }
+            if let Some(ref idf) = client.identifier {
+                keys_to_delete.push(cache_key!("client", "alias", "identifier", idf));
+            }
+            if let Some(ref cid_hash) = client.client_identifier_hash {
+                keys_to_delete.push(cache_key!(
+                    "client",
+                    "alias",
+                    "client_identifier_hash",
+                    cid_hash
+                ));
+            }
+
+            // Delete all keys
+            for key in keys_to_delete {
+                let _ = conn.del::<_, ()>(&key).await;
+                tracing::debug!("Invalidated cache key: {}", key);
+            }
+        }
+
+        tracing::info!(client_id = %client_id, "Client deactivated successfully (HybridSessionVerifier)");
 
         Ok(())
     }

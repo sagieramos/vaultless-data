@@ -39,14 +39,14 @@ pub struct AllowedPlatforms {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlatformConfigFingerPrint {
+pub struct PlatformConfigVersion {
     pub browser: Uuid,
     pub ios: Uuid,
     pub android: Uuid,
     pub iot: Uuid,
 }
 
-impl Default for PlatformConfigFingerPrint {
+impl Default for PlatformConfigVersion {
     fn default() -> Self {
         Self {
             browser: Uuid::new_v4(),
@@ -57,7 +57,7 @@ impl Default for PlatformConfigFingerPrint {
     }
 }
 
-impl PlatformConfigFingerPrint {
+impl PlatformConfigVersion {
     pub const BROWSER_KEY: &'static str = "browser";
     pub const IOS_KEY: &'static str = "ios";
     pub const ANDROID_KEY: &'static str = "android";
@@ -119,7 +119,7 @@ impl PlatformConfigFingerPrint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppMetaData {
-    pub platform_fingerprint: PlatformConfigFingerPrint,
+    pub platform_fingerprint: PlatformConfigVersion,
     pub integrity_config: IntegrityConfig,
 }
 impl AppMetaData {
@@ -128,7 +128,7 @@ impl AppMetaData {
             .get("PlatformFingerPrint")
             .ok_or_else(|| VaultlessError::Serialization("Missing PlatformFingerPrint".into()))?;
 
-        let platform_fingerprint = PlatformConfigFingerPrint::from_json(pf_json);
+        let platform_fingerprint = PlatformConfigVersion::from_json(pf_json);
 
         let ic_json = json
             .get("IntegrityConfig")

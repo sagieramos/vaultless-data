@@ -4,7 +4,7 @@ use crate::error::{Result, VaultlessError};
 
 pub struct IntegrityConfigHandler {
     pub config: IntegrityConfig,
-    pub platform_fingerprint: PlatformConfigFingerPrint,
+    pub platform_config_version: PlatformConfigVersion,
 }
 
 impl IntegrityConfigHandler {
@@ -12,7 +12,7 @@ impl IntegrityConfigHandler {
         let pf_json = json
             .get("PlatformFingerPrint")
             .ok_or_else(|| VaultlessError::Serialization("Missing PlatformFingerPrint".into()))?;
-        let platform_fingerprint = PlatformConfigFingerPrint::from_json(pf_json);
+        let platform_config_version = PlatformConfigVersion::from_json(pf_json);
 
         let ic_json = json
             .get("IntegrityConfig")
@@ -23,7 +23,7 @@ impl IntegrityConfigHandler {
 
         Ok(Self {
             config,
-            platform_fingerprint,
+            platform_config_version,
         })
     }
 

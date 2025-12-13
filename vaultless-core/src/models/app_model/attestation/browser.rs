@@ -7,16 +7,17 @@ use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 // =============================================================================
-// WEB ATTESTATION TYPES
+// BROWSER INTEGRITY TYPES
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebAttestationRequest {
+pub struct BrowserIntegrityRequest {
     pub origin: String,
     pub user_agent: String,
-    pub ip_address: String,
+    pub ip_address: IpAddr,
     pub captcha_token: Option<String>,
 }
 
@@ -25,7 +26,7 @@ pub struct WebClientBinding {
     pub client_id: uuid::Uuid,
     pub registered_origin: String,
     pub registered_user_agent: String,
-    pub registered_ip: String,
+    pub registered_ip: IpAddr,
     pub origin_changes: u32,
     pub last_origin_change: Option<chrono::DateTime<Utc>>,
 }
@@ -103,13 +104,13 @@ pub fn extract_referer(headers: &HashMap<String, String>) -> Option<String> {
 
 const RATE_LIMIT_PREFIX: &str = "browser_rate_limit";
 
-/// Check IP-based rate limits for registrations
+/// Check rate limits for registrations (using identity key)
 pub async fn check_registration_rate_limit(
     redis_pool: &RedisPool,
-    ip_address: &str,
+    identity_key: &str,
     max_per_hour: u32,
 ) -> Result<()> {
-    let key = format!("{}:reg:ip:{}:hour", RATE_LIMIT_PREFIX, ip_address);
+    let key = format!("{}:reg:{identity_key}:hour", RATE_LIMIT_PREFIX);
 
     let mut conn = redis_pool
         .get()
@@ -131,21 +132,21 @@ pub async fn check_registration_rate_limit(
 
     if count > max_per_hour {
         return Err(VaultlessError::RateLimitExceeded(format!(
-            "Too many registrations from IP {}. Limit: {} per hour",
-            ip_address, max_per_hour
+            "Too many registrations from identity {}. Limit: {} per hour",
+            identity_key, max_per_hour
         )));
     }
 
     Ok(())
 }
 
-/// Check IP-based rate limits for requests
+/// Check rate limits for requests (using identity key)
 pub async fn check_request_rate_limit(
     redis_pool: &RedisPool,
-    ip_address: &str,
+    identity_key: &str,
     max_per_hour: u32,
 ) -> Result<()> {
-    let key = cache_key!(RATE_LIMIT_PREFIX, "req", "ip", ip_address, "hour");
+    let key = cache_key!(RATE_LIMIT_PREFIX, "req", identity_key, "hour");
 
     let mut conn = redis_pool
         .get()
@@ -166,21 +167,21 @@ pub async fn check_request_rate_limit(
 
     if count > max_per_hour {
         return Err(VaultlessError::RateLimitExceeded(format!(
-            "Too many requests from IP {}. Limit: {} per hour",
-            ip_address, max_per_hour
+            "Too many requests from identity {}. Limit: {} per hour",
+            identity_key, max_per_hour
         )));
     }
 
     Ok(())
 }
 
-/// Check clients per IP limit
-pub async fn check_clients_per_ip(
+/// Check clients per identity limit
+pub async fn check_clients_per_identity(
     redis_pool: &RedisPool,
-    ip_address: &str,
+    identity_key: &str,
     max_clients: u32,
 ) -> Result<()> {
-    let key = format!("{}:clients:ip:{}", RATE_LIMIT_PREFIX, ip_address);
+    let key = format!("{}:clients:{}", RATE_LIMIT_PREFIX, identity_key);
 
     let mut conn = redis_pool
         .get()
@@ -194,21 +195,21 @@ pub async fn check_clients_per_ip(
 
     if count >= max_clients {
         return Err(VaultlessError::RateLimitExceeded(format!(
-            "Too many clients from IP {}. Limit: {}",
-            ip_address, max_clients
+            "Too many clients from identity {}. Limit: {}",
+            identity_key, max_clients
         )));
     }
 
     Ok(())
 }
 
-/// Register client IP address
-pub async fn register_client_ip(
+/// Register client identity
+pub async fn register_client_identity(
     redis_pool: &RedisPool,
-    ip_address: &str,
+    identity_key: &str,
     client_id: uuid::Uuid,
 ) -> Result<()> {
-    let key = cache_key!(RATE_LIMIT_PREFIX, "clients", "ip", ip_address);
+    let key = cache_key!(RATE_LIMIT_PREFIX, "clients", identity_key);
 
     let mut conn = redis_pool
         .get()
@@ -241,7 +242,7 @@ pub async fn bind_client_to_origin(
     client_id: uuid::Uuid,
     origin: &str,
     user_agent: &str,
-    ip_address: &str,
+    ip_address: &IpAddr,
 ) -> Result<()> {
     let key = cache_key!(BINDING_PREFIX, client_id);
 
@@ -249,7 +250,7 @@ pub async fn bind_client_to_origin(
         client_id,
         registered_origin: origin.to_string(),
         registered_user_agent: user_agent.to_string(),
-        registered_ip: ip_address.to_string(),
+        registered_ip: *ip_address,
         origin_changes: 0,
         last_origin_change: None,
     };
@@ -271,61 +272,68 @@ pub async fn bind_client_to_origin(
 }
 
 /// Verify client origin consistency
+///
+/// This function enforces binding rules only when client_id is present.
+/// For guest users (IP-only), the origin verification is skipped.
 pub async fn verify_client_origin(
     redis_pool: &RedisPool,
-    client_id: uuid::Uuid,
+    client_id: Option<uuid::Uuid>,
     current_origin: &str,
     max_changes: u32,
 ) -> Result<()> {
-    let key = cache_key!(BINDING_PREFIX, client_id);
+    // Only enforce binding for registered clients, skip for guests
+    if let Some(id) = client_id {
+        let key = cache_key!(BINDING_PREFIX, id);
 
-    let mut conn = redis_pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
+        let mut conn = redis_pool
+            .get()
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Redis connection failed: {}", e)))?;
 
-    let binding_json: Option<String> = conn
-        .get(&key)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Redis GET failed: {}", e)))?;
+        let binding_json: Option<String> = conn
+            .get(&key)
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Redis GET failed: {}", e)))?;
 
-    let Some(binding_json) = binding_json else {
-        // No binding found - first time or expired
-        return Ok(());
-    };
+        let Some(binding_json) = binding_json else {
+            // No binding found - first time or expired
+            return Ok(());
+        };
 
-    let mut binding: WebClientBinding = serde_json::from_str(&binding_json)
-        .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
-
-    // Check if origin matches
-    if binding.registered_origin != current_origin {
-        binding.origin_changes += 1;
-        binding.last_origin_change = Some(Utc::now());
-
-        tracing::warn!(
-            client_id = %client_id,
-            original_origin = %binding.registered_origin,
-            current_origin = %current_origin,
-            changes = binding.origin_changes,
-            "Client origin changed"
-        );
-
-        if binding.origin_changes > max_changes {
-            return Err(VaultlessError::IntegrityCheckFailed(format!(
-                "Client exceeded max origin changes ({}). Possible stolen key.",
-                max_changes
-            )));
-        }
-
-        // Update binding
-        let value = serde_json::to_string(&binding)
+        let mut binding: WebClientBinding = serde_json::from_str(&binding_json)
             .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
-        let _: () = conn
-            .set_ex(&key, value, 86400 * 30)
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Redis SET failed: {}", e)))?;
+        // Check if origin matches
+        if binding.registered_origin != current_origin {
+            binding.origin_changes += 1;
+            binding.last_origin_change = Some(Utc::now());
+
+            tracing::warn!(
+                client_id = %id,
+                original_origin = %binding.registered_origin,
+                current_origin = %current_origin,
+                changes = binding.origin_changes,
+                "Client origin changed"
+            );
+
+            if binding.origin_changes > max_changes {
+                return Err(VaultlessError::IntegrityCheckFailed(format!(
+                    "Client exceeded max origin changes ({}). Possible stolen key.",
+                    max_changes
+                )));
+            }
+
+            // Update binding
+            let value = serde_json::to_string(&binding)
+                .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
+
+            let _: () = conn
+                .set_ex(&key, value, 86400 * 30)
+                .await
+                .map_err(|e| VaultlessError::Internal(format!("Redis SET failed: {}", e)))?;
+        }
     }
+    // For guest users (client_id is None), we skip binding checks
 
     Ok(())
 }
@@ -416,7 +424,7 @@ pub async fn check_usage_spike(
 pub async fn validate_browser_request(
     redis_pool: &RedisPool,
     headers: &HashMap<String, String>,
-    ip_address: &str,
+    identity_key: &str,
     config: super::dto::BrowserIntegrityConfig,
 ) -> Result<()> {
     // 1. Origin validation
@@ -434,12 +442,69 @@ pub async fn validate_browser_request(
     // 3. Rate limiting
     check_request_rate_limit(
         redis_pool,
-        ip_address,
+        identity_key,
         config.max_requests_per_ip_per_hour.unwrap_or(1000),
     )
     .await?;
 
     Ok(())
+}
+
+/// Validate browser integrity and produce a standardized integrity result
+pub async fn validate_browser_integrity(
+    redis_pool: &RedisPool,
+    headers: &HashMap<String, String>,
+    identity_key: &str,
+    client_id: Option<uuid::Uuid>,
+    config: &super::dto::BrowserIntegrityConfig,
+) -> Result<super::types::AttestationResult> {
+    use chrono::Utc;
+    use serde_json::Value as jsonValue;
+    use super::types::Platform;
+
+    // 1. Origin validation
+    if config.require_origin_header.unwrap_or(true) {
+        let origin = extract_origin(headers)?;
+        validate_origin(&origin, &config.authorized_origins)?;
+
+        // 2. Referer validation
+        if config.require_referer_header.unwrap_or(true) {
+            let referer = extract_referer(headers);
+            validate_referer(referer.as_deref(), &origin)?;
+        }
+
+        // 3. Client-origin binding (only for registered clients)
+        if client_id.is_some() {
+            verify_client_origin(
+                redis_pool,
+                client_id,
+                &extract_origin(headers)?, // current origin
+                config.max_origin_changes_per_client.unwrap_or(3),
+            ).await?;
+        }
+    }
+
+    // 4. Rate limiting
+    check_request_rate_limit(
+        redis_pool,
+        identity_key,
+        config.max_requests_per_ip_per_hour.unwrap_or(1000),
+    )
+    .await?;
+
+    // 5. Create attestation result with trust score
+    let trust_score = config.calculate_trust_score();
+
+    Ok(super::types::AttestationResult {
+        is_valid: true,
+        device_trusted: true, // Browsers don't have hardware attestation
+        trust_score_percent: trust_score,
+        verdict: Some("Browser integrity validation passed".to_string()),
+        error: None,
+        warnings: None,
+        verified_at: Utc::now(),
+        extra: jsonValue::Null,
+    })
 }
 
 #[cfg(test)]
