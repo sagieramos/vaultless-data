@@ -1,8 +1,5 @@
 use super::dto::*;
-use crate::cache_key;
 use crate::models::app_model::integrity::AttestationRequest;
-use crate::models::app_model::integrity::Platform;
-use crate::models::app_model::integrity::types::PlatformAttestationData;
 use crate::models::session::HybridSessionVerifier;
 use crate::{
     crypto,
@@ -14,11 +11,9 @@ use crate::{
 };
 use chrono::{Duration, Utc};
 use deadpool_redis::Pool as RedisPool;
-use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
-use validator::Validate;
 
 const SESSION_DURATION_HOURS: u64 = 24 * 30; // 30 days
 

@@ -115,32 +115,32 @@ pub struct IoTData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "platform", rename_all = "lowercase")]
-pub enum PlatformAttestationData {
+pub enum PlatformIntegrityData {
     IOS(IOSData),
     Android(AndroidData),
     Browser(BrowserData),
     IoT(IoTData),
 }
 
-impl PlatformAttestationData {
+impl PlatformIntegrityData {
     pub fn platform(&self) -> Platform {
         match self {
-            PlatformAttestationData::IOS(_) => Platform::IOS,
-            PlatformAttestationData::Android(_) => Platform::Android,
-            PlatformAttestationData::Browser(_) => Platform::Browser,
-            PlatformAttestationData::IoT(_) => Platform::IoT,
+            PlatformIntegrityData::IOS(_) => Platform::IOS,
+            PlatformIntegrityData::Android(_) => Platform::Android,
+            PlatformIntegrityData::Browser(_) => Platform::Browser,
+            PlatformIntegrityData::IoT(_) => Platform::IoT,
         }
     }
 }
 
 /// Manual validation for enum variants
-impl Validate for PlatformAttestationData {
+impl Validate for PlatformIntegrityData {
     fn validate(&self) -> std::result::Result<(), ValidationErrors> {
         match self {
-            PlatformAttestationData::IOS(d) => d.validate(),
-            PlatformAttestationData::Android(d) => d.validate(),
-            PlatformAttestationData::Browser(d) => d.validate(),
-            PlatformAttestationData::IoT(d) => d.validate(),
+            PlatformIntegrityData::IOS(d) => d.validate(),
+            PlatformIntegrityData::Android(d) => d.validate(),
+            PlatformIntegrityData::Browser(d) => d.validate(),
+            PlatformIntegrityData::IoT(d) => d.validate(),
         }
     }
 }
@@ -152,7 +152,7 @@ impl Validate for PlatformAttestationData {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct AttestationRequest {
     #[validate(nested)]
-    pub platform_data: PlatformAttestationData,
+    pub platform_data: PlatformIntegrityData,
 }
 
 // =============================================================================

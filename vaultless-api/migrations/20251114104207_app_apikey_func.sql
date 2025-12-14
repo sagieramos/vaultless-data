@@ -11,7 +11,7 @@ RETURNS TABLE (
     app_is_active boolean,
     app_max_ttl_seconds integer,
     app_is_key_rotation_forced boolean,
-    app_integrity_config jsonb,
+    app_app_meta jsonb,
 
     -- Secret Key Fields (SK)
     sk_id uuid,
@@ -35,7 +35,7 @@ AS $$
     -- Step 2: Join Application (A) and its active Secret Key (SK) using the found Application ID.
     SELECT
         a.id, a.user_id, a.name, a.description, a.is_active,
-        a.max_ttl_seconds, a.is_key_rotation_forced, a.integrity_config,
+        a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
         sk.id, sk.key_prefix, sk.tier, sk.monthly_message_quota, sk.message_retention_seconds,
         sk.rate_limit_per_minute
     FROM applications a
@@ -58,7 +58,7 @@ RETURNS TABLE (
     app_is_active boolean,
     app_max_ttl_seconds integer,
     app_is_key_rotation_forced boolean,
-    app_integrity_config jsonb,
+    app_app_meta jsonb,
 
     -- Secret Key Fields (SK)
     sk_id uuid,
@@ -73,7 +73,7 @@ AS $$
     -- Directly join the Secret Key (SK) with its Application (A) using the unique hash.
     SELECT
         a.id, a.user_id, a.name, a.description, a.is_active,
-        a.max_ttl_seconds, a.is_key_rotation_forced, a.integrity_config,
+        a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
         sk.id, sk.key_prefix, sk.tier, sk.monthly_message_quota, sk.message_retention_seconds,
         sk.rate_limit_per_minute
     FROM api_keys sk

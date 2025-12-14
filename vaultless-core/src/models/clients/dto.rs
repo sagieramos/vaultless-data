@@ -1,7 +1,6 @@
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::integrity::types::PlatformAttestationData as PlatformIntegrityData;
-use crate::models::app_model::integrity::{AttestationRequest, Platform};
+use crate::models::app_model::integrity::types::PlatformIntegrityData;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};

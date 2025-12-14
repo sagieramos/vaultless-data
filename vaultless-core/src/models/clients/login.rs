@@ -2,7 +2,7 @@ use super::client_integrity_handler::AttestationRecord;
 use super::dto::*;
 use crate::models::app_model::integrity::AttestationRequest;
 use crate::models::app_model::integrity::Platform;
-use crate::models::app_model::integrity::types::PlatformAttestationData;
+use crate::models::app_model::integrity::types::PlatformIntegrityData;
 use crate::models::session::HybridSessionVerifier;
 use crate::{
     crypto,
@@ -200,7 +200,7 @@ impl Client {
         app_resolved: &Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
         client: &mut Client,
-        input: &PlatformAttestationData,
+        input: &PlatformIntegrityData,
         challenge: &str,
     ) -> Result<AttestationResult>
     where

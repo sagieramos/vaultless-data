@@ -9,10 +9,18 @@ ALTER TABLE public.applications
     ADD COLUMN internal_notes text,
 
     -- dd the new, flexible JSONB column for all platform-specific security configuration
-    ADD COLUMN integrity_config jsonb NOT NULL DEFAULT '{
-      "allow_unauthenticated": false,
+    ADD COLUMN app_meta jsonb NOT NULL DEFAULT '{
+        "PlatformFingerPrint": {
+            "browser": "00000000-0000-0000-0000-000000000000",
+            "ios": "00000000-0000-0000-0000-000000000000",
+            "android": "00000000-0000-0000-0000-000000000000",
+            "iot": "00000000-0000-0000-0000-000000000000"
+        },
 
-        "browser": {
+        "IntegrityConfig": {
+            "allow_unauthenticated": false,
+
+            "browser": {
             "authorized_origins": ["https://app.example.com"],
             "require_origin_header": true,
             "require_referer_header": true,
@@ -30,39 +38,38 @@ ALTER TABLE public.applications
             "alert_on_usage_spike": true,
             "usage_spike_threshold": 2.0,
             "usage_baseline_hours": 24
-        },
+            },
 
-        "ios": {
+            "ios": {
             "apple_team_id": "ABCD123456",
             "allowed_bundle_ids": ["com.example.app"],
             "allowed_certificate_hashes": [],
-            "min_version_code": "1.0.0",
-            "reject_untrusted_device": true,
-            "challenge_ttl_seconds": 60
-        },
+            "min_version_code": 100,
+            "reject_untrusted_device": true
+            },
 
-        "android": {
-            "allowed_certificate_sha256": "",
-            "allowed_bundle_ids": ["com.example.app"],
-            "min_version_code": "100",
+            "android": {
+            "allowed_certificate_sha256": [],
+            "allowed_package_names": ["com.example.app"],
+            "min_version_code": 100,
             "reject_untrusted_device": true,
             "reject_unrecognized_version": true,
             "google_cloud_project": "project-123",
-            "google_api_key": "",
+            "google_api_key": null,
             "max_token_age_seconds": 60
-        },
+            },
 
-        "iot": {
-            "require_device_certificate": true,
-            "allowed_certificate_authorities": ["base64_ca_cert_1"],
-            "challenge_ttl_seconds": 30,
-            "max_devices_per_hour": 100,
+            "iot": {
+            "allowed_certificate_authorities": ["Example Root CA"],
+            "require_valid_certificate_expiry": true,
+            "reject_future_certificates": true,
             "require_cn_match": true
-        },
+            },
 
-        "rate_limits": {
+            "rate_limits": {
             "max_attestations_per_user_per_hour": 100,
             "max_failed_attempts_before_lockout": 5
+            }
         }
     }'::jsonb;
 
@@ -79,8 +86,8 @@ CREATE INDEX IF NOT EXISTS idx_applications_deletion_requested
     WHERE deletion_requested_at IS NOT NULL;
 
 -- Create GIN index for efficient querying within the JSONB column
-CREATE INDEX IF NOT EXISTS idx_applications_integrity_config_gin
-    ON public.applications USING GIN (integrity_config);
+CREATE INDEX IF NOT EXISTS idx_applications_app_meta_gin
+    ON public.applications USING GIN (app_meta);
 
 ALTER TABLE public.clients
 ADD COLUMN IF NOT EXISTS is_platform_attested boolean NOT NULL DEFAULT false;

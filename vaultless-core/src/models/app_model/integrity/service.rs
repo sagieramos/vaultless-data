@@ -106,10 +106,10 @@ impl IntegrityService {
 
         // 3. Determine the platform from the request
         let platform = match &request.platform_data {
-            PlatformAttestationData::Android(_) => Platform::Android,
-            PlatformAttestationData::IOS(_) => Platform::IOS,
-            PlatformAttestationData::IoT(_) => Platform::IoT,
-            PlatformAttestationData::Browser(_) => Platform::Browser,
+            PlatformIntegrityData::Android(_) => Platform::Android,
+            PlatformIntegrityData::IOS(_) => Platform::IOS,
+            PlatformIntegrityData::IoT(_) => Platform::IoT,
+            PlatformIntegrityData::Browser(_) => Platform::Browser,
         };
 
         // 4. Check if the platform is allowed (early rejection before expensive operations)
@@ -149,7 +149,7 @@ impl IntegrityService {
             // When allow_unauthenticated is false (normal mode), perform full verification
             let (platform, attestation, trust_score): (Platform, AttestationResult, u8) =
                 match &request.platform_data {
-                    PlatformAttestationData::Android(android_data) => {
+                    PlatformIntegrityData::Android(android_data) => {
                         let android_cfg = config.android.clone().unwrap_or_default();
                         let result = verify_android_attestation_offline(
                             &android_data.attestation_token,
@@ -164,7 +164,7 @@ impl IntegrityService {
                         )
                     }
 
-                    PlatformAttestationData::IOS(ios_data) => {
+                    PlatformIntegrityData::IOS(ios_data) => {
                         let ios_cfg = config.ios.clone().unwrap_or_default();
                         let result = verify_ios_attestation(
                             &ios_data.attestation_token,
@@ -177,7 +177,7 @@ impl IntegrityService {
                         (Platform::IOS, result, ios_cfg.calculate_trust_score())
                     }
 
-                    PlatformAttestationData::IoT(iot_data) => {
+                    PlatformIntegrityData::IoT(iot_data) => {
                         let iot_cfg = config.iot.clone().unwrap_or_default();
                         let result = verify_iot_certificate(
                             Some(&iot_data.device_cn),
@@ -193,7 +193,7 @@ impl IntegrityService {
                         (Platform::IoT, result, iot_cfg.calculate_trust_score())
                     }
 
-                    PlatformAttestationData::Browser(browser_data) => {
+                    PlatformIntegrityData::Browser(browser_data) => {
                         // Browser doesn't support hardware attestation, but we can still perform
                         // other validations using the browser_data fields
                         let browser_cfg = config.browser.clone().unwrap_or_default();

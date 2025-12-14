@@ -1,14 +1,14 @@
+pub mod circuit_breaker;
 pub mod crypto;
 pub mod error;
 pub mod models;
 pub mod types;
 pub mod utils;
-pub mod circuit_breaker;
 
 // Re-export commonly used types
 pub use error::{Result, VaultlessError};
-pub use types::SubscriptionTier;
 pub use futures_util;
+pub use types::SubscriptionTier;
 
 // Re-export models
 pub use models::{
@@ -24,8 +24,8 @@ pub use models::{
     app_model::integrity::AttestationService,
     app_model::{
         dto::{
-            Application, ApplicationKeyView, CreateApplication,
-            CreateApplicationResponse, PaginatedApplicationsWithKeys, UpdateApplication,
+            Application, ApplicationKeyView, CreateApplication, CreateApplicationResponse,
+            PaginatedApplicationsWithKeys, UpdateApplication,
         },
         material_view_helper::get_global_mv_etag,
     },
@@ -34,8 +34,8 @@ pub use models::{
     billing::*,
     client_token::*,
     clients::dto::{
-        AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
-        RegisterClientRequest, RegisterClientResponse,
+        AuthenticationChallenge, Client, LoginClientRequest, LoginClientResponse,
+        SignupClientRequest, SignupClientResponse,
     },
 
     dashboard::get_live_usage,
