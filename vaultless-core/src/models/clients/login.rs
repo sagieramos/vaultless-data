@@ -2,12 +2,13 @@ use super::client_integrity_handler::AttestationRecord;
 use super::dto::*;
 use crate::models::app_model::integrity::AttestationRequest;
 use crate::models::app_model::integrity::Platform;
+use crate::models::app_model::integrity::types::PlatformAttestationData;
 use crate::models::session::HybridSessionVerifier;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
     models::{
-        app_model::{integrity::IntegrityService, dto::ApplicationKeyView},
+        app_model::{dto::ApplicationKeyView, integrity::IntegrityService},
         session::paseto_session::{self, SessionData, SessionVerifier, verify_session_token},
     },
 };
@@ -39,7 +40,7 @@ impl Client {
         redis: Arc<RedisPool>,
         app_resolved: Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
-        input: AuthenticateClientRequest,
+        input: LoginClientRequest,
         platform: Platform,
     ) -> Result<CommonAuthResult>
     where
@@ -60,9 +61,8 @@ impl Client {
             &app_resolved,
             integrity_service,
             &mut client,
-            &input.platform,
+            &input.platform_data,
             &input.challenge,
-            platform,
         )
         .await?;
 
@@ -86,19 +86,21 @@ impl Client {
         session_verifier: Arc<SessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
-        input: AuthenticateClientRequest,
-        platform: Platform,
-    ) -> Result<AuthenticateClientResponse>
+        input: LoginClientRequest,
+    ) -> Result<LoginClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
+        // Auto-detect platform from the platform data
+        let detected_platform = input.platform_data.platform();
+
         let auth_result = Self::authenticate_common(
             exec.clone(),
             redis,
             app_resolved.clone(),
             integrity_service,
             input,
-            platform,
+            detected_platform,
         )
         .await?;
 
@@ -125,7 +127,10 @@ impl Client {
     }
 
     /// Verify and consume the authentication challenge from Redis
-    async fn verify_and_consume_challenge(redis: &Arc<RedisPool>, challenge: &str) -> Result<()> {
+    pub async fn verify_and_consume_challenge(
+        redis: &Arc<RedisPool>,
+        challenge: &str,
+    ) -> Result<()> {
         let challenge_hash = crypto::hash_content(challenge.as_bytes());
         let cache_key = cache_auth_challenge_key(&challenge_hash);
 
@@ -146,7 +151,7 @@ impl Client {
     }
 
     /// Find an active client by one of the provided identifiers
-    async fn find_active_client<'c, E>(exec: E, input: &AuthenticateClientRequest) -> Result<Client>
+    async fn find_active_client<'c, E>(exec: E, input: &LoginClientRequest) -> Result<Client>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
@@ -195,13 +200,15 @@ impl Client {
         app_resolved: &Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
         client: &mut Client,
-        input: &Option<AttestationRequest>,
+        input: &PlatformAttestationData,
         challenge: &str,
-        platform: Platform,
     ) -> Result<AttestationResult>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
+        // Auto-detect platform from the data
+        let platform = input.platform();
+
         let integrity_handler = app_resolved.integrity()?;
         let (trust_score, max_age) = integrity_handler.get_trust_score_and_reattestation(platform);
 
@@ -217,27 +224,19 @@ impl Client {
             return Ok(AttestationResult::NotRequired(current_score));
         }
 
-        let platform_data = input.as_ref().ok_or_else(|| {
-            tracing::warn!(
-                client_id = %client.id,
-                "Re-attestation required but no platform data provided"
-            );
-            VaultlessError::Unauthorized(
-                "Re-attestation required but no platform data provided".into(),
-            )
-        })?;
-
         let integrity_svc = integrity_service
             .ok_or_else(|| VaultlessError::Internal("Integrity service not configured".into()))?;
 
         let (platform_attested, attestation_result) = integrity_svc
             .verify_integrity(
-                platform_data,
+                &AttestationRequest {
+                    platform_data: input.clone(),
+                },
                 Some(challenge), // Use the authentication challenge
                 &integrity_handler.config,
                 app_resolved.app_id,
                 Some(client.id), // Use the existing client id
-                None, // No IP address provided in login
+                None,            // No IP address provided in login
             )
             .await?;
 
@@ -281,10 +280,7 @@ impl Client {
     }
 
     /// Verify the challenge signature
-    fn verify_challenge_signature(
-        client: &Client,
-        input: &AuthenticateClientRequest,
-    ) -> Result<()> {
+    fn verify_challenge_signature(client: &Client, input: &LoginClientRequest) -> Result<()> {
         if !client.verify_signature(&input.challenge, &input.challenge_signature)? {
             return Err(VaultlessError::Unauthorized(
                 "Invalid challenge signature".into(),
@@ -302,7 +298,7 @@ impl Client {
         platform: Platform,
         device_trust_score: u8,
         was_reattested: bool,
-    ) -> Result<AuthenticateClientResponse>
+    ) -> Result<LoginClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
@@ -373,7 +369,7 @@ impl Client {
         .execute(exec)
         .await?;
 
-        Ok(AuthenticateClientResponse {
+        Ok(LoginClientResponse {
             client_id: client.id,
             session_token,
             expires_at,
@@ -388,19 +384,21 @@ impl Client {
         hybrid_verifier: Arc<HybridSessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
-        input: AuthenticateClientRequest,
-        platform: Platform,
-    ) -> Result<AuthenticateClientResponse>
+        input: LoginClientRequest,
+    ) -> Result<LoginClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
+        // Auto-detect platform from the platform data
+        let detected_platform = input.platform_data.platform();
+
         let auth_result = Self::authenticate_common(
             exec.clone(),
             redis,
             app_resolved.clone(),
             integrity_service,
             input,
-            platform,
+            detected_platform,
         )
         .await?;
 
@@ -435,7 +433,7 @@ impl Client {
         platform: Platform,
         device_trust_score: u8,
         was_reattested: bool,
-    ) -> Result<AuthenticateClientResponse>
+    ) -> Result<LoginClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
@@ -507,7 +505,7 @@ impl Client {
         .execute(exec)
         .await?;
 
-        Ok(AuthenticateClientResponse {
+        Ok(LoginClientResponse {
             client_id: client.id,
             session_token,
             expires_at,

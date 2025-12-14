@@ -75,15 +75,20 @@ pub struct AndroidData {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct BrowserData {
     #[validate(url)]
-    pub origin: String,
+    #[serde(skip_deserializing)]
+    pub origin: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     #[validate(length(min = 1, max = 512))]
     pub referer: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     #[validate(length(min = 1, max = 512))]
     pub user_agent: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(length(min = 32, max = 2048))]
+    pub captcha_token: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_fingerprint: Option<String>,

@@ -1,12 +1,11 @@
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::integrity::AttestationResult;
+use crate::models::app_model::integrity::types::PlatformAttestationData as PlatformIntegrityData;
 use crate::models::app_model::integrity::{AttestationRequest, Platform};
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -89,45 +88,26 @@ pub struct Client {
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
-pub struct RegisterClientRequest {
-    /// Public key or device fingerprint (client-side hash input)
+pub struct SignupClientRequest {
+    #[validate(length(min = 32, max = 1024))]
     pub client_identifier: Option<String>,
 
-    /// Optional: public key for signature verification (E2EE)
     #[validate(length(min = 32, max = 1024))]
     pub public_key: String,
 
-    /// Optional: short shareable identifier (if user wants a vanity name)
     #[validate(length(min = 3, max = 64))]
     pub identifier: Option<String>,
 
-    /// Optional: signature proving ownership of the provided public_key
-    #[validate(length(min = 16, max = 2048))]
-    pub signature: String,
+    #[validate(length(min = 32, max = 64))]
+    pub challenge: String,
 
-    /// Optional: arbitrary payload that was signed
-    pub signed_payload: Option<String>,
+    pub challenge_signed: String,
 
-    /// Optional: nonce for replay protection
-    #[validate(length(min = 8, max = 128))]
-    pub nonce: Option<String>,
-
-    /// Platform attestation request (iOS/Android/IoT)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attestation: Option<AttestationRequest>,
-
-    /// Platform indicator (used when attestation not provided but platform needs checking)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attestation_platform: Option<Platform>,
-
-    /// CAPTCHA token for web registration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[validate(length(min = 20, max = 2048))]
-    pub captcha_token: Option<String>,
+    pub platform_data: PlatformIntegrityData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterClientResponse {
+pub struct SignupClientResponse {
     #[serde(skip_serializing)]
     pub client_id: Uuid,
     pub session_token: String,
@@ -139,7 +119,7 @@ pub struct RegisterClientResponse {
 // =============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
-pub struct AuthenticateClientRequest {
+pub struct LoginClientRequest {
     /// One of these three identifiers must be provided
     pub client_identifier_hash: Option<String>,
     pub identifier: Option<String>,
@@ -153,13 +133,12 @@ pub struct AuthenticateClientRequest {
     #[validate(length(min = 32))]
     pub challenge_signature: String,
 
-    /// Optional: Platform attestation for re-attestation during auth
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<AttestationRequest>,
+    /// Platform attestation data for re-attestation during auth (required)
+    pub platform_data: PlatformIntegrityData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthenticateClientResponse {
+pub struct LoginClientResponse {
     #[serde(skip_serializing)]
     pub client_id: Uuid,
     pub session_token: String,

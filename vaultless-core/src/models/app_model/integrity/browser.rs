@@ -1,6 +1,7 @@
 use crate::{
     cache_key,
     error::{Result, VaultlessError},
+    models::app_model::integrity::captcha::{CaptchaProvider, verify_captcha},
 };
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
@@ -462,37 +463,87 @@ pub async fn validate_browser_integrity(
     use chrono::Utc;
     use serde_json::Value as jsonValue;
 
-    // 1. Origin validation
+    // 1. Origin validation - origin, referer, user_agent should be populated by middleware/handler
     if config.require_origin_header.unwrap_or(true) {
-        validate_origin(&browser_data.origin, &config.authorized_origins)?;
+        // Check if required fields from headers are present
+        if let Some(ref origin) = browser_data.origin {
+            validate_origin(origin, &config.authorized_origins)?;
 
-        // 2. Referer validation
-        if config.require_referer_header.unwrap_or(true) {
-            if let Some(ref referer) = browser_data.referer {
-                validate_referer(Some(referer), &browser_data.origin)?;
-            } else {
+            // 2. Referer validation
+            if config.require_referer_header.unwrap_or(true) {
+                validate_referer(browser_data.referer.as_deref(), origin)?;
+            }
+        } else {
+            return Err(VaultlessError::IntegrityCheckFailed(
+                "Missing Origin header".into(),
+            ));
+        }
+    }
+
+    // 3. CAPTCHA validation (if required)
+    if config.require_captcha_on_registration.unwrap_or(false) {
+        if let Some(ref captcha_token) = browser_data.captcha_token {
+            // Determine CAPTCHA provider and verify token
+            let captcha_provider = config.captcha_provider
+                .as_deref()
+                .unwrap_or("turnstile");
+
+            let captcha_secret = config
+                .captcha_secret_key
+                .as_deref()
+                .ok_or_else(|| {
+                    VaultlessError::IntegrityCheckFailed(
+                        "CAPTCHA secret key not configured".into()
+                    )
+                })?;
+
+            let verified = verify_captcha(
+                match captcha_provider {
+                    "turnstile" => CaptchaProvider::Turnstile,
+                    "hcaptcha" => CaptchaProvider::HCaptcha,
+                    "recaptcha" => CaptchaProvider::ReCaptcha,
+                    _ => {
+                        return Err(VaultlessError::IntegrityCheckFailed(
+                            "Invalid CAPTCHA provider".into(),
+                        ));
+                    }
+                },
+                captcha_token,
+                captcha_secret,
+                config.captcha_site_key.as_deref(),
+                Some(ip_address.to_string().as_str()), // IP address for additional validation
+            )
+            .await?;
+
+            if !verified {
                 return Err(VaultlessError::IntegrityCheckFailed(
-                    "Missing Referer header".into(),
+                    "CAPTCHA verification failed".into(),
                 ));
             }
+        } else {
+            return Err(VaultlessError::IntegrityCheckFailed(
+                "CAPTCHA token required but not provided".into(),
+            ));
         }
+    }
 
-        // 3. Client-origin binding (only for registered clients)
-        if client_id.is_some() {
+    // 4. Client-origin binding (only for registered clients)
+    if let Some(client_id_val) = client_id {
+        if let Some(ref origin) = browser_data.origin {
             verify_client_origin(
                 redis_pool,
-                client_id,
-                &browser_data.origin, // current origin
+                Some(client_id_val),
+                origin, // current origin
                 config.max_origin_changes_per_client.unwrap_or(3),
             ).await?;
 
-            // 4. Bind client to origin/user-agent if required
+            // 5. Bind client to origin/user-agent if required
             if config.bind_client_to_origin.unwrap_or(false) {
                 if let Some(user_agent) = &browser_data.user_agent {
                     bind_client_to_origin(
                         redis_pool,
-                        client_id.unwrap(),
-                        &browser_data.origin,
+                        client_id_val,
+                        origin,
                         user_agent,
                         &ip_address,
                     ).await?;
@@ -502,10 +553,14 @@ pub async fn validate_browser_integrity(
                     ));
                 }
             }
+        } else {
+            return Err(VaultlessError::IntegrityCheckFailed(
+                "Missing Origin header for client binding".into(),
+            ));
         }
     }
 
-    // 5. Rate limiting
+    // 6. Rate limiting checks
     check_request_rate_limit(
         redis_pool,
         identity_key,
@@ -513,7 +568,45 @@ pub async fn validate_browser_integrity(
     )
     .await?;
 
-    // 6. Create attestation result with trust score
+    // 7. Check max registrations per IP if applicable
+    if let Some(max_registrations) = config.max_registrations_per_ip_per_hour {
+        check_registration_rate_limit(
+            redis_pool,
+            identity_key,
+            max_registrations,
+        ).await?;
+    }
+
+    // 8. Check max clients per IP
+    if let Some(max_clients) = config.max_clients_per_ip {
+        check_clients_per_identity(
+            redis_pool,
+            identity_key,
+            max_clients,
+        ).await?;
+    }
+
+    // 9. Usage spike detection
+    if config.alert_on_usage_spike.unwrap_or(false) {
+        let spike_detected = check_usage_spike(
+            redis_pool,
+            identity_key,
+            config.usage_spike_threshold.unwrap_or(3.0),
+            config.usage_baseline_hours.unwrap_or(24),
+        ).await?;
+
+        if spike_detected {
+            tracing::warn!(
+                identity_key = %identity_key,
+                "Usage spike detected for IP: {}", ip_address
+            );
+        }
+    }
+
+    // 10. Track usage for potential future analysis
+    track_usage(redis_pool, identity_key).await?;
+
+    // 11. Create attestation result with trust score
     let trust_score = config.calculate_trust_score();
 
     Ok(super::types::AttestationResult {
