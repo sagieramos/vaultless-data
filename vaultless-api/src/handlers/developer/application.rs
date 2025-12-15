@@ -175,7 +175,7 @@ pub async fn list_applications(
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(20).clamp(1, 200);
 
-    let paged = Application::list_user_applications(&*state.db, user.user_id, page, page_size)
+    let paged = Application::list_user_applications(state.db.as_ref(), user.user_id, page, page_size)
         .await
         .map_err(ApiError::from)?;
 
@@ -189,7 +189,7 @@ pub async fn get_application(
     SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
 ) -> Result<Json<ApplicationWithUsageResponse>, ApiError> {
-    let app = Application::find_owned_by_user(&*state.db, app_id, user.user_id)
+    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -225,7 +225,7 @@ pub async fn deactivate_application(
     Path(app_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     // Verify ownership
-    let app = Application::find_by_id(&*state.db, app_id)
+    let app = Application::find_by_id(state.db.as_ref(), app_id)
         .await
         .map_err(ApiError::from)?;
 
@@ -331,7 +331,7 @@ pub async fn get_chart_data(
     }
 
     let chart_data = Application::get_chart_data(
-        &*state.db,
+        state.db.as_ref(),
         app_id,
         user.user_id,
         granularity,

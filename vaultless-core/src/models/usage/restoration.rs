@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// - config.metric_restore_lookback_hours: how many hours back to restore if Redis is empty
 pub async fn restore_recent_or_missing_periods_from_pg(
     redis_pool: &Arc<RedisPoolType>,
-    pg: &Arc<PgPool>,
+    pg: Arc<PgPool>,
 ) -> Result<()> {
     let mut conn = redis_pool
         .get()
@@ -49,7 +49,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             "#,
         )
         .bind(LOOKBACK_HOUR)
-        .fetch_all(&**pg)
+        .fetch_all(pg.as_ref())
         .await
         .map_err(VaultlessError::from)?;
 
@@ -140,7 +140,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
         )
         .bind(api_key_id)
         .bind(last_period)
-        .fetch_all(&**pg)
+        .fetch_all(pg.as_ref())
         .await
         .map_err(VaultlessError::from)?;
 

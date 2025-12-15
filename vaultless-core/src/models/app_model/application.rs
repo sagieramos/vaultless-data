@@ -15,7 +15,7 @@ const PROJECTION: &str = "id, user_id, name,
     description, is_active, created_at, 
     updated_at, max_ttl_seconds, is_key_rotation_forced, 
     deletion_requested_at, 
-    internal_notes, integrity_config";
+    internal_notes, app_meta";
 
 impl Application {
     /// Create a new application with secret and publishable keys
@@ -42,7 +42,7 @@ impl Application {
             description, 
             max_ttl_seconds, 
             is_key_rotation_forced, 
-            integrity_config
+            app_meta
         )
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *
@@ -55,7 +55,7 @@ impl Application {
         .bind(input.is_key_rotation_forced.unwrap_or(false))
         .bind(
             input
-                .integrity_config
+                .app_meta
                 .unwrap_or_else(|| serde_json::json!({})),
         )
         .fetch_one(&mut *tx)
@@ -235,7 +235,7 @@ impl Application {
         )
         .bind(app_id)
         .bind(user_id)
-        .fetch_optional(&*exec)
+        .fetch_optional(exec.as_ref())
         .await?;
 
         let Some(_) = row else {
@@ -249,7 +249,7 @@ impl Application {
             "UPDATE api_keys SET is_active = false, updated_at = NOW() WHERE application_id = $1",
         )
         .bind(app_id)
-        .execute(&*exec)
+        .execute(exec.as_ref())
         .await?;
 
         // 4. Handle cache invalidation
@@ -292,7 +292,7 @@ impl Application {
             app_id,
             user_id
         )
-        .fetch_optional(&*exec)
+        .fetch_optional(exec.as_ref())
         .await?;
 
         let Some(app_row) = row else {
@@ -333,7 +333,7 @@ impl Application {
         let result = sqlx::query("DELETE FROM applications WHERE id = $1 AND user_id = $2")
             .bind(app_id)
             .bind(user_id)
-            .execute(&*exec)
+            .execute(exec.as_ref())
             .await?;
 
         if result.rows_affected() == 0 {
@@ -391,6 +391,6 @@ impl Application {
     }
 
     pub fn integrity(&self) -> Result<IntegrityConfigHandler> {
-        IntegrityConfigHandler::new_from_jsonb(&self.integrity_config)
+        IntegrityConfigHandler::new_from_jsonb(&self.app_meta)
     }
 }

@@ -19,13 +19,14 @@ const SESSION_DURATION_HOURS: u64 = 24 * 30; // 30 days
 
 impl Client {
     /// Register new client with platform attestation
-    pub async fn signup<'c, E>(
+    pub async fn sign_up<'c, E>(
         exec: E,
         redis: Arc<RedisPool>,
         session_verifier: Arc<SessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
         input: SignupClientRequest,
+        ip_address: std::net::IpAddr,
     ) -> Result<SignupClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
@@ -55,7 +56,7 @@ impl Client {
                     &integrity_handler.config,
                     app_resolved.app_id,
                     None, // No client_id available during registration
-                    None, // No IP address provided in signup
+                    Some(ip_address),
                 )
                 .await?;
 
@@ -159,13 +160,14 @@ impl Client {
     }
 
     /// Register new client with platform attestation using HybridSessionVerifier
-    pub async fn signup_hybrid<'c, E>(
+    pub async fn sign_up_hybrid<'c, E>(
         exec: E,
         redis: Arc<RedisPool>,
         hybrid_verifier: Arc<HybridSessionVerifier>,
         app_resolved: Arc<ApplicationKeyView>,
         integrity_service: Option<Arc<IntegrityService>>,
         input: SignupClientRequest,
+        ip_address: std::net::IpAddr,
     ) -> Result<SignupClientResponse>
     where
         E: Executor<'c, Database = Postgres> + Clone,
@@ -182,20 +184,20 @@ impl Client {
         )?;
 
         // Step 3: Platform attestation
+        let detected_platform = input.platform_data.platform();
         let attestation_result = if let Some(integrity_svc) = integrity_service {
-            let detected_platform = input.platform_data.platform();
 
             let integrity_handler = app_resolved.integrity()?;
             let (attested_platform, attestation_result) = integrity_svc
                 .verify_integrity(
                     &AttestationRequest {
-                        platform_data: input.platform_data.clone(), // Clone to avoid moving
+                        platform_data: input.platform_data,
                     },
-                    Some(&input.challenge), // Use the signup challenge
+                    Some(&input.challenge),
                     &integrity_handler.config,
                     app_resolved.app_id,
                     None, // No client_id available during registration
-                    None, // No IP address provided in signup
+                    Some(ip_address),
                 )
                 .await?;
 
@@ -254,11 +256,11 @@ impl Client {
         let session_data = SessionData {
             client_id: client.id,
             application_id: client.application_id,
-            platform: input.platform_data.platform().as_str().to_string(),
+            platform: detected_platform.to_string(),
             device_trust_score,
             platform_config_version: integrity_handler
                 .platform_config_version
-                .get(input.platform_data.platform()),
+                .get(detected_platform),
             app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: Some(input.public_key.clone()),
@@ -285,7 +287,7 @@ impl Client {
         tracing::info!(
             client_id = %client.id,
             application_id = %client.application_id,
-            platform = %input.platform_data.platform().as_str(),
+            platform = %detected_platform.as_str(),
             is_platform_attested = %is_platform_attested,
             device_trust_score = %device_trust_score,
             "Client registered successfully (HybridSessionVerifier)"

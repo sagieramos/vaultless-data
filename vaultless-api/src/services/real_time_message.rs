@@ -173,7 +173,7 @@ impl WsManager {
     }
 
     async fn run_pubsub_listener(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = redis::Client::open(&*self.redis_url)?;
+        let client = redis::Client::open(self.redis_url.as_ref())?;
 
         loop {
             match self.try_pubsub_loop(&client).await {

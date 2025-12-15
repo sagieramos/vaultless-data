@@ -82,7 +82,7 @@ impl InstantMessage {
              WHERE msg_id = $1 AND processed_at IS NULL",
         )
         .bind(msg_id)
-        .fetch_optional(&*self.db_pool)
+        .fetch_optional(self.db_pool.as_ref())
         .await?;
 
         let Some((reason, retry_count, _original_data)) = entry else {
@@ -102,7 +102,7 @@ impl InstantMessage {
         // Mark as processed
         sqlx::query("UPDATE message_dlq SET processed_at = NOW() WHERE msg_id = $1")
             .bind(msg_id)
-            .execute(&*self.db_pool)
+            .execute(self.db_pool.as_ref())
             .await?;
 
         Ok(())

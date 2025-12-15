@@ -29,7 +29,7 @@ impl InstantMessage {
                 .bind(entry.retry_count as i32)
                 .bind(original_data) // <-- still the same value
                 .bind(entry.timestamp)
-                .execute(&*db_pool)
+                .execute(db_pool.as_ref())
                 .await
                 {
                     Ok(_) => {
@@ -196,7 +196,7 @@ impl InstantMessage {
                     "#,
                 )
                 .bind(RETENTION_AFTER_DELIVERY_HOURS)
-                .fetch_all(&*db_pool)
+                .fetch_all(db_pool.as_ref())
                 .await
                 else {
                     continue;
@@ -223,7 +223,7 @@ impl InstantMessage {
                 }
                 if let Err(e) = sqlx::query("DELETE FROM messages WHERE id = ANY($1::uuid[])")
                     .bind(&ids)
-                    .execute(&*db_pool)
+                    .execute(db_pool.as_ref())
                     .await
                 {
                     error!(error = %e, "Purge DB delete failed");

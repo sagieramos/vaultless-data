@@ -229,7 +229,7 @@ pub async fn verify_iot_certificate(
         application_id,
         device_cn
     )
-    .fetch_optional(&*postgres_pool)
+    .fetch_optional(postgres_pool.as_ref())
     .await?;
 
     if device_record.is_none() {
@@ -262,7 +262,7 @@ pub async fn verify_iot_certificate(
     )
     .bind(application_id)
     .bind(&cert_hash)
-    .fetch_optional(&*postgres_pool)
+    .fetch_optional(postgres_pool.as_ref())
     .await?;
 
     if revoked.is_some() {
@@ -473,7 +473,7 @@ pub async fn verify_iot_certificate(
         r#"UPDATE iot_devices SET last_seen = NOW() WHERE id = $1"#,
         device.id
     )
-    .execute(&*postgres_pool)
+    .execute(postgres_pool.as_ref())
     .await?;
 
     // Calculate public key fingerprint

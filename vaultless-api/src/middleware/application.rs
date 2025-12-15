@@ -22,7 +22,7 @@ pub async fn app_auth(
     let api_key = extract_api_key(req.headers())?;
 
     let auth_config =
-        ApplicationKeyView::resolve_and_validate(&*state.db, state.redis_pool, api_key)
+        ApplicationKeyView::resolve_and_validate(state.db.as_ref(), state.redis_pool, api_key)
             .await
             .map_err(ApiError::from)?;
 

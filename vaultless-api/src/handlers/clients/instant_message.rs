@@ -121,7 +121,7 @@ pub async fn send_message(
 
     // --- 4. Resolve recipient ---
     let recipient = Client::resolve_client(
-        &*state.db,
+        state.db.as_ref(),
         Some(state.redis_pool.clone()),
         input.recipient_pubkey.as_deref(),
         input.recipient_identifier.as_deref(),

@@ -34,6 +34,6 @@ pub fn build_routes(state: AppState) -> Router {
                 .nest("/messages", message_routes(state.clone())),
         )
         .layer(middleware::from_fn(reject_suspicious_query))
-        .layer(DefaultBodyLimit::max(limits.MAX_REQUEST_SIZE))
+        .layer(DefaultBodyLimit::max(limits::MAX_REQUEST_SIZE))
         .with_state(state)
 }

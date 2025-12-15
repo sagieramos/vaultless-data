@@ -207,7 +207,7 @@ impl Application {
         )
         .bind(&config_patch)
         .bind(self.id)
-        .fetch_one(&*db)
+        .fetch_one(db.as_ref())
         .await?;
 
         if let Some(redis_pool) = redis {

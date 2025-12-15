@@ -51,7 +51,7 @@ impl InstantMessage {
             .bind(recipient_client_id)
             .bind(PAGE_SIZE)
             .bind(offset)
-            .fetch_all(&*self.db_pool)
+            .fetch_all(self.db_pool.as_ref())
             .await
             .map_err(|e| {
                 error!(
@@ -276,7 +276,7 @@ impl InstantMessage {
         )
         .bind(recipient_client_id)
         .bind(MAX_QUEUE_LEN as i32)
-        .fetch_all(&*self.db_pool)
+        .fetch_all(self.db_pool.as_ref())
         .await
         .map_err(|e| {
             error!(
@@ -529,7 +529,7 @@ impl InstantMessage {
                             "DELETE FROM messages WHERE id = $1 AND is_group_message = false",
                         )
                         .bind(msg_id_clone)
-                        .execute(&*db_pool)
+                        .execute(db_pool.as_ref())
                         .await
                         {
                             error!(

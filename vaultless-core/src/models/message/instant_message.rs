@@ -238,7 +238,7 @@ impl InstantMessage {
         // Try DB first
         let exists: Option<(Uuid,)> = sqlx::query_as("SELECT 1 FROM messages WHERE id = $1")
             .bind(msg_id)
-            .fetch_optional(&*self.db_pool)
+            .fetch_optional(self.db_pool.as_ref())
             .await
             .map_err(|e| {
                 error!(
@@ -262,14 +262,14 @@ impl InstantMessage {
             .bind(msg_id)
             .bind(reader_client_id)
             .bind(Utc::now())
-            .execute(&*self.db_pool)
+            .execute(self.db_pool.as_ref())
             .await?;
             let _ = sqlx::query(
                 "UPDATE messages SET delivered_at = $1 WHERE id = $2 AND delivered_at IS NULL",
             )
             .bind(Utc::now())
             .bind(msg_id)
-            .execute(&*self.db_pool)
+            .execute(self.db_pool.as_ref())
             .await?;
         } else {
             // Redis-only: queue pending read
@@ -304,7 +304,7 @@ impl InstantMessage {
             "SELECT id, message_id, client_id, read_at FROM p2p_read_receipts WHERE message_id = $1",
         )
         .bind(msg_id)
-        .fetch_all(&*self.db_pool)
+        .fetch_all(self.db_pool.as_ref())
         .await?;
         Ok(receipts)
     }

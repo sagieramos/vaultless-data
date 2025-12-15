@@ -41,7 +41,7 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.integrity_config
+        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta
         {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
@@ -72,7 +72,7 @@ impl Application {
 
             if let Some(patch) = &integrity_patch_opt {
                 separated
-                    .push("integrity_config = jsonb_merge_patch(integrity_config, ")
+                    .push("app_meta = jsonb_merge_patch(app_meta, ")
                     .push_bind(patch)
                     .push(")");
             }
@@ -85,7 +85,7 @@ impl Application {
                 .eq_ignore_ascii_case("UPDATE applications SET")
         {
             tracing::info!(application_id = %application_id, "No fields to update");
-            return Self::find_by_id_and_user_id(&*exec, application_id, user_id).await;
+            return Self::find_by_id_and_user_id(exec.as_ref(), application_id, user_id).await;
         }
 
         qb.push(" , updated_at = NOW() WHERE id = ")
@@ -94,10 +94,10 @@ impl Application {
             .push_bind(user_id)
             .push(" RETURNING *");
 
-        let updated_app = qb.build_query_as::<Application>().fetch_one(&*exec).await?;
+        let updated_app = qb.build_query_as::<Application>().fetch_one(exec.as_ref()).await?;
 
         if integrity_patch_opt.is_some() {
-            Self::validate_integrity_config(&updated_app.integrity_config)?;
+            Self::validate_app_meta(&updated_app.app_meta)?;
         }
 
         if let Some(pool) = redis {
@@ -121,7 +121,7 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.integrity_config
+        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta
         {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
@@ -151,7 +151,7 @@ impl Application {
 
             if let Some(patch) = &integrity_patch_opt {
                 separated
-                    .push("integrity_config = jsonb_merge_patch(integrity_config, ")
+                    .push("app_meta = jsonb_merge_patch(app_meta, ")
                     .push_bind(patch)
                     .push(")");
             }
@@ -185,13 +185,13 @@ impl Application {
             .await?;
 
         if integrity_patch_opt.is_some() {
-            Self::validate_integrity_config(&updated_app.integrity_config)?;
+            Self::validate_app_meta(&updated_app.app_meta)?;
         }
 
         Ok(updated_app)
     }
 
-    fn validate_integrity_config(config_json: &serde_json::Value) -> Result<()> {
+    fn validate_app_meta(config_json: &serde_json::Value) -> Result<()> {
         let config: IntegrityConfig = serde_json::from_value(config_json.clone())
             .map_err(|e| VaultlessError::Validation(format!("Invalid config: {}", e)))?;
 

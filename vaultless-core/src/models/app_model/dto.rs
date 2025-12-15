@@ -1,3 +1,4 @@
+use super::integrity::dto::AppMetaData;
 use super::integrity::dto::IntegrityConfig;
 use super::integrity::dto::PlatformConfigVersion;
 use super::integrity::integrity_handler::IntegrityConfigHandler;
@@ -27,7 +28,7 @@ pub struct Application {
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
     pub internal_notes: Option<String>,
-    pub integrity_config: serde_json::Value,
+    pub app_meta: AppMetaData,
 }
 
 #[derive(Debug, Clone, Validate, Deserialize)]
@@ -44,8 +45,6 @@ pub struct CreateApplication {
     pub max_ttl_seconds: Option<i32>,
 
     pub is_key_rotation_forced: Option<bool>,
-
-    pub integrity_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -93,7 +92,7 @@ pub struct ApplicationKeyView {
     pub app_is_active: bool,
     pub app_max_ttl_seconds: i32,
     pub app_is_key_rotation_forced: bool,
-    pub app_integrity_config: serde_json::Value,
+    pub app_app_meta: serde_json::Value,
 
     pub sk_id: Uuid,
     pub sk_key_prefix: String,
@@ -105,13 +104,13 @@ pub struct ApplicationKeyView {
 
 impl ApplicationKeyView {
     pub fn integrity(&self) -> crate::error::Result<IntegrityConfigHandler> {
-        IntegrityConfigHandler::new_from_jsonb(&self.app_integrity_config)
+        IntegrityConfigHandler::new_from_jsonb(&self.app_app_meta)
     }
 }
 
 // Usage:
 /* auth_config.integrity().requires_attestation(Platform::IOS);
-application.integrity().get_integrity_config()?; */
+application.integrity().get_app_meta()?; */
 
 #[derive(Debug, Clone, FromRow)]
 pub struct ApplicationWithKeysFromView {
@@ -125,7 +124,7 @@ pub struct ApplicationWithKeysFromView {
     pub max_ttl_seconds: i32,
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub integrity_config: serde_json::Value,
+    pub app_meta: serde_json::Value,
     pub publishable_keys: serde_json::Value,
     pub publishable_key_count: i64,
     pub webhooks: serde_json::Value,
@@ -165,7 +164,7 @@ pub struct ApplicationWithKeysResponse {
     pub deletion_requested_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub internal_notes: Option<String>,
-    pub integrity_config: serde_json::Value,
+    pub app_meta: serde_json::Value,
     pub publishable_keys: serde_json::Value,
     pub webhooks: serde_json::Value,
 }
@@ -181,7 +180,7 @@ pub struct ApplicationWithUsageResponse {
     pub max_ttl_seconds: i32,
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub integrity_config: serde_json::Value,
+    pub app_meta: serde_json::Value,
 
     // Secret key tier info
     pub tier: Option<String>,
@@ -254,7 +253,7 @@ pub struct CachedApplicationKeyView {
 
 impl From<ApplicationKeyView> for CachedApplicationKeyView {
     fn from(a: ApplicationKeyView) -> Self {
-        let platform_fingerprint = IntegrityConfigHandler::new_from_jsonb(&a.app_integrity_config)
+        let platform_fingerprint = IntegrityConfigHandler::new_from_jsonb(&a.app_app_meta)
             .map(|handler| handler.platform_config_version)
             .unwrap_or(PlatformConfigVersion::new());
 
@@ -318,7 +317,7 @@ pub struct ApplicationWithKeys {
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
     pub internal_notes: Option<String>,
-    pub integrity_config: Option<serde_json::Value>,
+    pub app_meta: Option<serde_json::Value>,
     pub secret_key_id: Option<Uuid>,
 
     pub publishable_keys: serde_json::Value,
