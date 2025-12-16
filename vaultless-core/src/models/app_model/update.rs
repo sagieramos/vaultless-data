@@ -1,5 +1,5 @@
-use super::integrity::dto::*;
 use super::dto::*;
+use super::integrity::dto::*;
 use crate::error::{Result, VaultlessError};
 use deadpool_redis::Pool as RedisPool;
 use serde_json::Value as JsonValue;
@@ -41,8 +41,7 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta
-        {
+        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
             })?;
@@ -94,7 +93,10 @@ impl Application {
             .push_bind(user_id)
             .push(" RETURNING *");
 
-        let updated_app = qb.build_query_as::<Application>().fetch_one(exec.as_ref()).await?;
+        let updated_app = qb
+            .build_query_as::<Application>()
+            .fetch_one(exec.as_ref())
+            .await?;
 
         if integrity_patch_opt.is_some() {
             Self::validate_app_meta(&updated_app.app_meta)?;
@@ -121,8 +123,7 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta
-        {
+        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
             })?;
@@ -191,8 +192,11 @@ impl Application {
         Ok(updated_app)
     }
 
-    fn validate_app_meta(config_json: &serde_json::Value) -> Result<()> {
-        let config: IntegrityConfig = serde_json::from_value(config_json.clone())
+    fn validate_app_meta<T: serde::Serialize>(config: &T) -> Result<()> {
+        let config_json = serde_json::to_value(config)
+            .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
+
+        let config: IntegrityConfig = serde_json::from_value(config_json)
             .map_err(|e| VaultlessError::Validation(format!("Invalid config: {}", e)))?;
 
         validate_config!(

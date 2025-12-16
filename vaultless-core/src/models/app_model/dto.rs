@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
+use sqlx::types::Json;
 use std::clone::Clone;
 use std::fmt::Debug;
 use uuid::Uuid;
@@ -28,7 +29,7 @@ pub struct Application {
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
     pub internal_notes: Option<String>,
-    pub app_meta: AppMetaData,
+    pub app_meta: Json<AppMetaData>,
 }
 
 #[derive(Debug, Clone, Validate, Deserialize)]
@@ -64,7 +65,7 @@ pub struct UpdateApplication {
     #[validate(length(max = 1000))]
     pub internal_notes: Option<String>,
 
-    pub integrity_config: Option<IntegrityConfig>,
+    pub app_meta: Option<IntegrityConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,7 +181,7 @@ pub struct ApplicationWithUsageResponse {
     pub max_ttl_seconds: i32,
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub app_meta: serde_json::Value,
+    pub app_meta: Json<AppMetaData>,
 
     // Secret key tier info
     pub tier: Option<String>,
@@ -318,6 +319,8 @@ pub struct ApplicationWithKeys {
     pub deletion_requested_at: Option<DateTime<Utc>>,
     pub internal_notes: Option<String>,
     pub app_meta: Option<serde_json::Value>,
+    
+    #[serde(skip_serializing)]
     pub secret_key_id: Option<Uuid>,
 
     pub publishable_keys: serde_json::Value,

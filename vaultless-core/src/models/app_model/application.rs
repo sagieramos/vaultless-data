@@ -1,5 +1,5 @@
-use super::integrity::integrity_handler::IntegrityConfigHandler;
 use super::dto::*;
+use super::integrity::integrity_handler::IntegrityConfigHandler;
 use crate::SubscriptionTier;
 use crate::crypto;
 use crate::error::{Result, VaultlessError};
@@ -36,36 +36,24 @@ impl Application {
         // ============================================================
         let app = sqlx::query_as::<_, Application>(
             r#"
-        INSERT INTO applications (
-            user_id, 
-            name, 
-            description, 
-            max_ttl_seconds, 
-            is_key_rotation_forced, 
-            app_meta
-        )
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *
-        "#,
+            INSERT INTO applications (
+                user_id,
+                name,
+                description,
+                max_ttl_seconds,
+                is_key_rotation_forced
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+            "#,
         )
         .bind(input.user_id)
         .bind(&input.name)
         .bind(&input.description)
         .bind(input.max_ttl_seconds.unwrap_or(604800))
         .bind(input.is_key_rotation_forced.unwrap_or(false))
-        .bind(
-            input
-                .app_meta
-                .unwrap_or_else(|| serde_json::json!({})),
-        )
         .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| match e {
-            sqlx::Error::Database(db_err) if db_err.is_unique_violation() => {
-                VaultlessError::Duplicate("Application with this name already exists".into())
-            }
-            _ => VaultlessError::Database(e),
-        })?;
+        .await?;
 
         // ============================================================
         // 2. CREATE SECRET KEY
@@ -84,7 +72,7 @@ impl Application {
                 description: Some(format!("Secret key for {}", input.name)),
                 scopes: None,
                 expires_at: None,
-                application_id: Some(app.id), // ← FIXED
+                application_id: Some(app.id),
                 key_type: crate::types::KeyType::Secret,
                 publishable_key_plaintext: None,
             },
@@ -107,7 +95,7 @@ impl Application {
                 description: Some(format!("Publishable key for {}", input.name)),
                 scopes: None,
                 expires_at: None,
-                application_id: Some(app.id), // ← FIXED
+                application_id: Some(app.id),
                 key_type: crate::types::KeyType::Publishable,
                 publishable_key_plaintext: Some(publishable_key.clone()),
             },
@@ -391,6 +379,6 @@ impl Application {
     }
 
     pub fn integrity(&self) -> Result<IntegrityConfigHandler> {
-        IntegrityConfigHandler::new_from_jsonb(&self.app_meta)
+        IntegrityConfigHandler::new_from_jsonb(&serde_json::to_value(&self.app_meta.0)?)
     }
 }

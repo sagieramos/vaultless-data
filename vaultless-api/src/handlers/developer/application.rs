@@ -6,16 +6,14 @@ use axum::{
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
-use vaultless_core::Decimal;
+use vaultless_core::{Decimal, models::app_model::integrity::dto::AppMetaData};
 use vaultless_core::{
     models::{
         Application, CreateApplication, UpdateApplication,
         app_model::{chart::*, dto::*},
         usage::MetricCounters,
-        user::User,
     },
     types::SubscriptionTier,
 };
@@ -55,16 +53,11 @@ pub struct UpdateTierRequest {
     pub tier: SubscriptionTier,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ApplicationListResponse {
-    pub applications: Vec<ApplicationWithTier>,
-    pub total: usize,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApplicationResponse {
     pub id: Uuid,
     pub name: String,
+    
     pub description: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -73,7 +66,7 @@ pub struct ApplicationResponse {
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
     pub internal_notes: Option<String>,
-    pub integrity_config: Value,
+    pub integrity_config: AppMetaData,
 }
 
 impl From<Application> for ApplicationResponse {
@@ -89,7 +82,7 @@ impl From<Application> for ApplicationResponse {
             is_key_rotation_forced: app.is_key_rotation_forced,
             deletion_requested_at: app.deletion_requested_at,
             internal_notes: app.internal_notes,
-            integrity_config: app.integrity_config,
+            integrity_config: app.app_meta.0,
         }
     }
 }
@@ -136,7 +129,6 @@ pub async fn create_application(
         description: req.description,
         max_ttl_seconds: None,
         is_key_rotation_forced: Some(false),
-        integrity_config: None,
     };
 
     // Create application
@@ -386,7 +378,7 @@ pub async fn get_quota_warnings(
     Ok(Json(warnings))
 }
 
-/// Get application by ID including secret key ID, publishable keys, and webhooks.
+/// Get application by ID including, publishable keys, and webhooks.
 ///
 /// Route: GET /api/applications/:id/with_keys
 pub async fn get_application_with_keys_handler(
@@ -402,3 +394,4 @@ pub async fn get_application_with_keys_handler(
 
     Ok(Json(app_with_keys))
 }
+
