@@ -11,63 +11,104 @@ use vaultless_core::{Application, models::app_model::integrity::dto::AppMetaData
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use vaultless_core::models::app_model::dto::ApplicationWithUsageResponse;
 use vaultless_core::models::app_model::dto::{PublishableKey, Webhook};
 
-#[derive(Debug, Clone, Serialize)]
+// FIX: Added `ToSchema` here
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ApplicationResponse {
+    /// Application unique identifier
+    #[schema(value_type = String)]
     pub id: Uuid,
+    /// Application name
     pub name: String,
+    /// Application description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desc: Option<String>,
+    /// Whether the application is active
     pub active: bool,
+    /// Creation timestamp
+    #[schema(value_type = String)]
     pub created: DateTime<Utc>,
+    /// Last update timestamp
+    #[schema(value_type = String)]
     pub updated: DateTime<Utc>,
+    /// Maximum time-to-live in seconds
     pub max_ttl: i32,
+    /// Whether key rotation is forced
     pub rotation_forced: bool,
+    /// Deletion requested timestamp (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Application metadata
+    #[schema(value_type = Object)]
     pub meta: AppMetaData,
 
     // Secret key tier info
+    /// Subscription tier
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+    /// Monthly message quota
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monthly_quota: Option<i64>,
+    /// Rate limit per minute
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<i32>,
+    /// Message retention in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention_seconds: Option<i32>,
 
+    /// List of publishable keys
+    #[schema(value_type = Vec<Object>)]
     pub keys: Vec<PublishableKey>,
+    /// List of webhooks
+    #[schema(value_type = Vec<Object>)]
     pub webhooks: Vec<Webhook>,
 
-    // Publishable keys
+    /// Quota usage percentage
     pub quota_usage_pct: f64,
 
+    /// Current month usage statistics
     pub current_month: Usage,
+    /// Lifetime usage statistics
     pub lifetime: Usage,
+    /// Last 7 days trend
     pub last_7d: Trend,
+    /// Last 30 days trend
     pub last_30d: Trend,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Usage {
+    /// Messages sent
     pub msg_sent: i64,
+    /// Messages received
     pub msg_received: i64,
+    /// Messages with proof verification
     pub msg_proof: i64,
+    /// Bytes stored
     pub msg_stored: i64,
+    /// Bytes sent
     pub bytes_sent: i64,
+    /// Bytes received
     pub bytes_received: i64,
+    /// Rate limit hits
     pub rate_hits: i64,
+    /// Cost in cents
     pub cost: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Trend {
+    /// Messages sent
     pub msg_sent: i64,
+    /// Bytes sent
     pub bytes_sent: i64,
+    /// Bytes received
     pub bytes_received: i64,
+    /// Cost in cents
     pub cost: i64,
 }
 
@@ -129,6 +170,24 @@ impl From<ApplicationWithUsageResponse> for ApplicationResponse {
 
 /// GET /api/v1/applications/:application_id/analytics
 /// Full analytics endpoint for dashboards or heavy reporting
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{application_id}/analytics",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID")
+    ),
+    responses(
+        (status = 200, description = "Application details with usage data", body = ApplicationResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "developer"
+)]
 pub async fn get_application_with_keys_handler(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
