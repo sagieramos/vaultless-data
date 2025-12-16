@@ -11,10 +11,10 @@ use vaultless_core::{Application, models::app_model::integrity::dto::AppMetaData
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use vaultless_core::models::app_model::dto::ApplicationWithUsageResponse;
+use vaultless_core::models::app_model::dto::{PublishableKey, Webhook};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ApplicationResponse {
     pub id: Uuid,
     pub name: String,
@@ -39,11 +39,10 @@ pub struct ApplicationResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention_seconds: Option<i32>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keys: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub webhooks: Option<Value>,
+    pub keys: Vec<PublishableKey>,
+    pub webhooks: Vec<Webhook>,
 
+    // Publishable keys
     pub quota_usage_pct: f64,
 
     pub current_month: Usage,
@@ -89,8 +88,8 @@ impl From<ApplicationWithUsageResponse> for ApplicationResponse {
             monthly_quota: app.monthly_message_quota,
             rate_limit: app.rate_limit_per_minute,
             retention_seconds: app.message_retention_seconds,
-            keys: Some(app.publishable_keys),
-            webhooks: Some(app.webhooks),
+            keys: app.publishable_keys.0,
+            webhooks: app.webhooks.0,
             quota_usage_pct: app.quota_usage_percentage,
             current_month: Usage {
                 msg_sent: app.current_month_messages_sent,

@@ -1,6 +1,7 @@
 use super::dto::*;
 use crate::error::{Result, VaultlessError};
 use bigdecimal::BigDecimal as Decimal;
+use chrono::{DateTime, Utc};
 use sqlx::{Executor, Postgres};
 use uuid::Uuid;
 
@@ -13,6 +14,22 @@ struct QuotaWarningWithCount {
     pub monthly_message_quota: Option<i64>,
     pub remaining_quota: Option<i64>,
     pub total_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ApplicationSummaryFromView {
+    pub application_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub tier: Option<String>,
+    pub monthly_message_quota: Option<i64>,
+    pub publishable_key_count: i64,
+    pub webhook_count: i64,
+    pub quota_usage_percentage: f64,
+    pub total_count: i64,
 }
 
 impl Application {
@@ -28,49 +45,54 @@ impl Application {
         let app = sqlx::query_as::<_, ApplicationWithUsageResponse>(
             r#"
             SELECT
-                application_id,
-                name,
-                description,
-                is_active,
-                created_at,
-                updated_at,
-                max_ttl_seconds,
-                is_key_rotation_forced,
-                deletion_requested_at,
-                app_meta,
-                tier::text as "tier",
-                monthly_message_quota,
-                rate_limit_per_minute,
-                message_retention_seconds,
-                publishable_keys,
-                webhooks,
-                current_month_messages_sent,
-                current_month_messages_received,
-                current_month_proofs_verified,
-                current_month_bytes_stored,
-                current_month_bytes_sent,
-                current_month_bytes_received,
-                current_month_rate_limit_hits,
-                current_month_cost_cents,
-                CAST(quota_usage_percentage AS DOUBLE PRECISION) as "quota_usage_percentage",
-                lifetime_messages_sent,
-                lifetime_messages_received,
-                lifetime_proofs_verified,
-                lifetime_bytes_stored,
-                lifetime_bytes_sent,
-                lifetime_bytes_received,
-                lifetime_rate_limit_hits,
-                lifetime_cost_cents,
-                last_7d_messages_sent,
-                last_7d_bytes_sent,
-                last_7d_bytes_received,
-                last_7d_cost_cents,
-                last_30d_messages_sent,
-                last_30d_bytes_sent,
-                last_30d_bytes_received,
-                last_30d_cost_cents
-            FROM mv_applications_with_usage
-            WHERE application_id = $1 AND user_id = $2
+                a.application_id,
+                a.user_id,
+                a.name,
+                a.description,
+                a.is_active,
+                a.created_at,
+                a.updated_at,
+                a.max_ttl_seconds,
+                a.is_key_rotation_forced,
+                a.deletion_requested_at,
+                a.internal_notes,
+                a.app_meta,
+                a.secret_key_id,
+                a.tier::text AS "tier",
+                a.monthly_message_quota,
+                a.rate_limit_per_minute,
+                a.message_retention_seconds,
+                a.publishable_key_count,
+                a.publishable_keys,
+                a.webhook_count,
+                a.webhooks,
+                a.current_month_messages_sent,
+                a.current_month_messages_received,
+                a.current_month_proofs_verified,
+                a.current_month_bytes_stored,
+                a.current_month_bytes_sent,
+                a.current_month_bytes_received,
+                a.current_month_rate_limit_hits,
+                a.current_month_cost_cents,
+                CAST(a.quota_usage_percentage AS DOUBLE PRECISION) AS "quota_usage_percentage",
+                a.lifetime_messages_sent,
+                a.lifetime_messages_received,
+                a.lifetime_proofs_verified,
+                a.lifetime_bytes_stored,
+                a.lifetime_bytes_sent,
+                a.lifetime_bytes_received,
+                a.lifetime_rate_limit_hits,
+                a.lifetime_cost_cents,
+                a.last_7d_messages_sent,
+                a.last_7d_bytes_sent,
+                a.last_7d_bytes_received,
+                a.last_7d_cost_cents,
+                a.last_30d_messages_sent,
+                a.last_30d_bytes_sent,
+                a.last_30d_bytes_received,
+                a.last_30d_cost_cents
+            FROM mv_applications_with_usage a
+            WHERE a.application_id = $1 AND a.user_id = $2
             "#,
         )
         .bind(application_id)
@@ -84,36 +106,32 @@ impl Application {
         Ok(app)
     }
 
-    /// List applications (simpler, without usage details)
+    /// List applications with summary data for pagination (optimized)
     pub async fn list_user_applications<'c, E>(
         exec: E,
         user_id: Uuid,
         page: i64,
         page_size: i64,
-    ) -> Result<PaginatedApplicationsWithKeys>
+    ) -> Result<PaginatedApplicationsSummary>
     where
         E: Executor<'c, Database = Postgres>,
     {
         let offset = (page - 1).max(0) * page_size;
 
-        let rows = sqlx::query_as::<_, ApplicationWithKeysFromView>(
+        let rows = sqlx::query_as::<_, ApplicationSummaryFromView>(
             r#"
-            SELECT 
+            SELECT
                 application_id,
-                user_id,
                 name,
                 description,
                 is_active,
                 created_at,
                 updated_at,
-                max_ttl_seconds,
-                is_key_rotation_forced,
-                deletion_requested_at,
-                app_meta,
-                publishable_keys,
+                tier::text AS "tier",
+                monthly_message_quota,
                 publishable_key_count,
-                webhooks,
                 webhook_count,
+                COALESCE(quota_usage_percentage, 0.0) AS "quota_usage_percentage!",
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
             WHERE user_id = $1
@@ -128,7 +146,7 @@ impl Application {
         .await?;
 
         if rows.is_empty() {
-            return Ok(PaginatedApplicationsWithKeys {
+            return Ok(PaginatedApplicationsSummary {
                 data: vec![],
                 total_count: 0,
                 page,
@@ -142,24 +160,22 @@ impl Application {
 
         let data = rows
             .into_iter()
-            .map(|r| ApplicationWithKeysResponse {
-                id: r.application_id,
+            .map(|r| ApplicationSummary {
+                application_id: r.application_id,
                 name: r.name,
                 description: r.description,
                 is_active: r.is_active,
                 created_at: r.created_at,
                 updated_at: r.updated_at,
-                max_ttl_seconds: r.max_ttl_seconds,
-                is_key_rotation_forced: r.is_key_rotation_forced,
-                deletion_requested_at: r.deletion_requested_at,
-                internal_notes: None,
-                app_meta: r.app_meta,
-                publishable_keys: r.publishable_keys,
-                webhooks: r.webhooks,
+                tier: r.tier,
+                monthly_message_quota: r.monthly_message_quota,
+                publishable_key_count: r.publishable_key_count,
+                webhook_count: r.webhook_count,
+                quota_usage_percentage: r.quota_usage_percentage,
             })
             .collect();
 
-        Ok(PaginatedApplicationsWithKeys {
+        Ok(PaginatedApplicationsSummary {
             data,
             total_count,
             page,
@@ -174,7 +190,7 @@ impl Application {
         threshold: Option<Decimal>,
         page: i64,
         page_size: i64,
-    ) -> sqlx::Result<PaginatedQuotaWarnings> {
+    ) -> Result<PaginatedQuotaWarnings> {
         let threshold = threshold.unwrap_or(Decimal::from(80));
         let offset = (page - 1).max(0) * page_size;
 
@@ -184,7 +200,7 @@ impl Application {
             r#"
             SELECT *
             FROM (
-                SELECT 
+                SELECT
                     application_id,
                     application_name,
                     quota_usage_percentage,
@@ -232,10 +248,10 @@ impl Application {
     pub async fn get_user_usage_summary(
         db: &sqlx::PgPool,
         user_id: Uuid,
-    ) -> sqlx::Result<UserUsageSummary> {
-        sqlx::query_as!(
+    ) -> Result<UserUsageSummary> {
+        let app = sqlx::query_as!(
             UserUsageSummary,
-            r#"
+        r#"
         SELECT
             total_applications,
             active_applications,
@@ -251,38 +267,44 @@ impl Application {
             user_id
         )
         .fetch_one(db)
-        .await
+        .await?;
+
+        Ok(app)
     }
 
     pub async fn get_application_with_keys(
         db: &sqlx::PgPool,
         application_id: Uuid,
         user_id: Uuid,
-    ) -> sqlx::Result<ApplicationWithKeys> {
-        sqlx::query_as::<_, ApplicationWithKeys>(
+    ) -> crate::error::Result<ApplicationWithKeys> {
+        let app = sqlx::query_as::<_, ApplicationWithKeys>(
             r#"
-            SELECT
-                application_id,
-                user_id,
-                name,
-                description,
-                is_active,
-                created_at,
-                updated_at,
-                max_ttl_seconds,
-                is_key_rotation_forced,
-                deletion_requested_at,
-                app_meta,
-                publishable_keys,
-                webhooks,
-                secret_key_id
-            FROM mv_applications_with_usage
-            WHERE application_id = $1 AND user_id = $2
-            "#,
+        SELECT
+            application_id,
+            user_id,
+            name,
+            description,
+            is_active,
+            created_at,
+            updated_at,
+            max_ttl_seconds,
+            is_key_rotation_forced,
+            deletion_requested_at,
+            app_meta,
+            a.publishable_key_count,
+            a.publishable_keys,
+            a.webhook_count,
+            a.webhooks,
+            secret_key_id
+        FROM mv_applications_with_usage
+        WHERE application_id = $1 AND user_id = $2
+        "#,
         )
         .bind(application_id)
         .bind(user_id)
         .fetch_one(db)
-        .await
+        .await?; 
+
+        Ok(app)
     }
 }

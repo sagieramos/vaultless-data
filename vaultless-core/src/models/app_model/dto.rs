@@ -125,31 +125,17 @@ pub struct ApplicationWithKeysFromView {
     pub max_ttl_seconds: i32,
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub app_meta: serde_json::Value,
-    pub publishable_keys: serde_json::Value,
+    pub app_meta: Json<AppMetaData>,
+
+    // Publishable keys
     pub publishable_key_count: i64,
-    pub webhooks: serde_json::Value,
+    pub publishable_keys: Json<Vec<PublishableKey>>,
+
+    // Webhooks
     pub webhook_count: i64,
+    pub webhooks: Json<Vec<Webhook>>,
+
     pub total_count: i64,
-}
-
-#[derive(Debug, Clone, FromRow)]
-pub struct ApplicationKeysInfo {
-    pub secret_key_id: Uuid,
-    pub publishable_keys: serde_json::Value,
-}
-
-fn is_json_value_empty(value: &Value) -> bool {
-    // Check if it's an Object and the map is empty
-    if let Some(map) = value.as_object() {
-        return map.is_empty();
-    }
-    // Check if it's an Array and the vec is empty
-    if let Some(array) = value.as_array() {
-        return array.is_empty();
-    }
-    // All other values (string, number, bool, null) are considered non-empty
-    false
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -166,13 +152,43 @@ pub struct ApplicationWithKeysResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub internal_notes: Option<String>,
     pub app_meta: serde_json::Value,
-    pub publishable_keys: serde_json::Value,
-    pub webhooks: serde_json::Value,
+
+    // Publishable keys
+    pub publishable_key_count: i64,
+    pub publishable_keys: Json<Vec<PublishableKey>>,
+
+    // Webhooks
+    pub webhook_count: i64,
+    pub webhooks: Json<Vec<Webhook>>,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishableKey {
+    pub id: Uuid,
+    pub key_prefix: String,
+    pub publishable_key_plaintext: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Webhook {
+    pub id: Uuid,
+    pub url: String,
+    pub event_type: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ApplicationWithUsageResponse {
+    // Application metadata
     pub application_id: Uuid,
+    pub user_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub is_active: bool,
@@ -181,16 +197,23 @@ pub struct ApplicationWithUsageResponse {
     pub max_ttl_seconds: i32,
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
+    pub internal_notes: Option<String>,
     pub app_meta: Json<AppMetaData>,
 
-    // Secret key tier info
+    // Secret key info
+    pub secret_key_id: Option<Uuid>,
     pub tier: Option<String>,
     pub monthly_message_quota: Option<i64>,
     pub rate_limit_per_minute: Option<i32>,
     pub message_retention_seconds: Option<i32>,
 
-    pub publishable_keys: serde_json::Value,
-    pub webhooks: serde_json::Value,
+    // Publishable keys
+    pub publishable_key_count: i64,
+    pub publishable_keys: Json<Vec<PublishableKey>>,
+
+    // Webhooks
+    pub webhook_count: i64,
+    pub webhooks: Json<Vec<Webhook>>,
 
     // Current month usage
     pub current_month_messages_sent: i64,
@@ -213,12 +236,13 @@ pub struct ApplicationWithUsageResponse {
     pub lifetime_rate_limit_hits: i64,
     pub lifetime_cost_cents: i64,
 
-    // Trend usage
+    // Trend usage (7d)
     pub last_7d_messages_sent: i64,
     pub last_7d_bytes_sent: i64,
     pub last_7d_bytes_received: i64,
     pub last_7d_cost_cents: i64,
 
+    // Trend usage (30d)
     pub last_30d_messages_sent: i64,
     pub last_30d_bytes_sent: i64,
     pub last_30d_bytes_received: i64,
@@ -318,13 +342,42 @@ pub struct ApplicationWithKeys {
     pub is_key_rotation_forced: bool,
     pub deletion_requested_at: Option<DateTime<Utc>>,
     pub internal_notes: Option<String>,
-    pub app_meta: Option<serde_json::Value>,
-    
+    pub app_meta: Json<AppMetaData>,
+
     #[serde(skip_serializing)]
     pub secret_key_id: Option<Uuid>,
 
-    pub publishable_keys: serde_json::Value,
-    pub webhooks: serde_json::Value,
+    // Publishable keys
+    pub publishable_key_count: i64,
+    pub publishable_keys: Json<Vec<PublishableKey>>,
+
+    // Webhooks
+    pub webhook_count: i64,
+    pub webhooks: Json<Vec<Webhook>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaginatedApplicationsSummary {
+    pub data: Vec<ApplicationSummary>,
+    pub total_count: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_pages: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+pub struct ApplicationSummary {
+    pub application_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub tier: Option<String>,
+    pub monthly_message_quota: Option<i64>,
+    pub publishable_key_count: i64,
+    pub webhook_count: i64,
+    pub quota_usage_percentage: f64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
