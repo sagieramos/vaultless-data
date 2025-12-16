@@ -12,7 +12,7 @@ use vaultless_core::{Application, models::app_model::integrity::dto::AppMetaData
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-use vaultless_core::models::app_model::dto::ApplicationWithUsageResponse;
+use vaultless_core::models::app_model::dto::ApplicationWithUsage;
 use vaultless_core::models::app_model::dto::{PublishableKey, Webhook};
 
 // FIX: Added `ToSchema` here
@@ -43,7 +43,6 @@ pub struct ApplicationResponse {
     #[schema(value_type = Option<String>)]
     pub deleted_at: Option<DateTime<Utc>>,
     /// Application metadata
-    #[schema(value_type = Object)]
     pub meta: AppMetaData,
 
     // Secret key tier info
@@ -112,8 +111,8 @@ pub struct Trend {
     pub cost: i64,
 }
 
-impl From<ApplicationWithUsageResponse> for ApplicationResponse {
-    fn from(app: ApplicationWithUsageResponse) -> Self {
+impl From<ApplicationWithUsage> for ApplicationResponse {
+    fn from(app: ApplicationWithUsage) -> Self {
         Self {
             id: app.application_id,
             name: app.name,

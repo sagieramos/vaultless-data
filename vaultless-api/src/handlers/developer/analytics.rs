@@ -282,7 +282,7 @@ pub async fn get_application_trends(
 // HELPER FUNCTIONS (UNMODIFIED)
 // ============================================================================
 
-fn generate_usage_csv(app: &ApplicationWithUsageResponse) -> Result<String, ApiError> {
+fn generate_usage_csv(app: &ApplicationWithUsage) -> Result<String, ApiError> {
     let mut csv = String::from("metric,current_month,last_7d,last_30d,lifetime\n");
 
     csv.push_str(&format!(

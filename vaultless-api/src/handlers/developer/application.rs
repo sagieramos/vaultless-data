@@ -4,9 +4,12 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
+use std::str::FromStr;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use vaultless_core::{Decimal, models::app_model::integrity::dto::AppMetaData};
 use vaultless_core::{
@@ -23,11 +26,15 @@ use crate::{
     state::AppState,
 };
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ChartQueryParams {
+    #[schema(example = "daily")]
     granularity: String,
+    #[schema(example = "messages")]
     metric: String,
+    #[schema(example = "2023-01-01")]
     start: String,
+    #[schema(example = "2023-01-31")]
     end: String,
 }
 
@@ -35,37 +42,63 @@ pub struct ChartQueryParams {
 // Request/Response DTOs
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApplicationRequest {
     pub name: String,
     pub description: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct RealTimeUsageResponse {
+    #[schema(example = "2023-01-01T00:00:00Z")]
     pub current_period_start_utc: String,
     #[serde(flatten)]
     pub counters: MetricCounters,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateTierRequest {
     pub tier: SubscriptionTier,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct ApplicationResponse {
+    /// Application unique identifier
+    #[schema(value_type = String)]
     pub id: Uuid,
+
+    /// Application name
     pub name: String,
-    
+
+    /// Application description
     pub description: Option<String>,
+
+    /// Whether the application is active
     pub is_active: bool,
+
+    /// Creation timestamp
+    #[schema(value_type = String)]
     pub created_at: DateTime<Utc>,
+
+    /// Last update timestamp
+    #[schema(value_type = String)]
     pub updated_at: DateTime<Utc>,
+
+    /// Maximum time-to-live in seconds
     pub max_ttl_seconds: i32,
+
+    /// Whether key rotation is forced
     pub is_key_rotation_forced: bool,
+
+    /// Deletion requested timestamp (if any)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub deletion_requested_at: Option<DateTime<Utc>>,
+
+    /// Internal notes about the application
     pub internal_notes: Option<String>,
+
+    /// Integrity configuration metadata
     pub integrity_config: AppMetaData,
 }
 
@@ -87,20 +120,27 @@ impl From<Application> for ApplicationResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct QuotaWarningsQuery {
-    #[serde(default = "default_threshold")]
-    pub threshold: Option<Decimal>,
 
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct QuotaWarningsQuery {
+    /// Percentage threshold (default: 80.0)
+    #[serde(default = "default_threshold_f64")]
+    #[schema(example = 80.0)]
+    pub threshold: Option<f64>,
+
+    /// Page number (default: 1)
     #[serde(default = "default_page")]
+    #[schema(example = 1)]
     pub page: i64,
 
+    /// Items per page (default: 20)
     #[serde(default = "default_page_size")]
+    #[schema(example = 20)]
     pub page_size: i64,
 }
 
-fn default_threshold() -> Option<Decimal> {
-    Some(Decimal::from(80))
+fn default_threshold_f64() -> Option<f64> {
+    Some(80.0)
 }
 
 fn default_page() -> i64 {
@@ -116,7 +156,22 @@ fn default_page_size() -> i64 {
 // =============================================================================
 
 /// Create a new application
-/// POST /api/applications
+#[utoipa::path(
+    post,
+    path = "/api/applications",
+    request_body = CreateApplicationRequest,
+    responses(
+        (status = 201, description = "Application created successfully", body = Value),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 409, description = "Conflict - application already exists"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn create_application(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
@@ -151,14 +206,35 @@ pub async fn create_application(
     })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct PaginationParams {
+    /// Page number (default: 1)
+    #[schema(example = 1)]
     page: Option<i64>,
+
+    /// Page size (default: 20)
+    #[schema(example = 20)]
     page_size: Option<i64>,
 }
 
 /// List user's applications with tier information
-/// GET /api/applications
+#[utoipa::path(
+    get,
+    path = "/api/applications",
+    params(
+        ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
+        ("page_size" = Option<i64>, Query, description = "Page size (default: 20)")
+    ),
+    responses(
+        (status = 200, description = "List of applications retrieved successfully", body = Value),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn list_applications(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -167,29 +243,35 @@ pub async fn list_applications(
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(20).clamp(1, 200);
 
-    let paged = Application::list_user_applications(state.db.as_ref(), user.user_id, page, page_size)
-        .await
-        .map_err(ApiError::from)?;
+    let paged =
+        Application::list_user_applications(state.db.as_ref(), user.user_id, page, page_size)
+            .await
+            .map_err(ApiError::from)?;
 
     Ok(Json(paged))
 }
 
-/// Get application by ID with tier info
-/// GET /api/applications/:id
-pub async fn get_application(
-    State(state): State<AppState>,
-    SessionDataUserExt(user): SessionDataUserExt,
-    Path(app_id): Path<Uuid>,
-) -> Result<Json<ApplicationWithUsageResponse>, ApiError> {
-    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    Ok(Json(app))
-}
-
 /// Update application metadata
-/// PATCH /api/applications/:id
+#[utoipa::path(
+    patch,
+    path = "/api/applications/{app_id}",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID")
+    ),
+    request_body = UpdateApplication,
+    responses(
+        (status = 200, description = "Application updated successfully", body = ApplicationResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn update_application(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -210,7 +292,24 @@ pub async fn update_application(
 }
 
 /// Deactivate application
-/// DELETE /api/applications/:id
+#[utoipa::path(
+    delete,
+    path = "/api/applications/{app_id}",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID")
+    ),
+    responses(
+        (status = 204, description = "Application deactivated successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn deactivate_application(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -245,7 +344,29 @@ pub async fn deactivate_application(
 }
 
 /// Get chart data for application by ID
-/// GET /api/applications/:id/chart?granularity=daily&metric=messages&start=2023-01-01&end=2023-01-31
+#[utoipa::path(
+    get,
+    path = "/api/applications/{app_id}/chart",
+    params(
+        ("app_id" = Uuid, Path, description = "Application ID"),
+        ("granularity" = String, Query, description = "Aggregation granularity (daily, weekly)"),
+        ("metric" = String, Query, description = "Metric to chart (messages, bandwidth, storage, proofs, rate_limits, cost, all)"),
+        ("start" = String, Query, description = "Start date in YYYY-MM-DD format"),
+        ("end" = String, Query, description = "End date in YYYY-MM-DD format")
+    ),
+    responses(
+        (status = 200, description = "Chart data retrieved successfully", body = ApplicationChartData),
+        (status = 400, description = "Invalid query parameters"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn get_chart_data(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -337,9 +458,20 @@ pub async fn get_chart_data(
     Ok(Json(chart_data))
 }
 
-/// GET /api/v1/applications/usage-summary
-///
 /// Returns aggregated usage statistics across all user's applications.
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/usage-summary",
+    responses(
+        (status = 200, description = "Usage summary retrieved successfully", body = UserUsageSummary),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn get_user_usage_summary(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -351,24 +483,35 @@ pub async fn get_user_usage_summary(
     Ok(Json(summary))
 }
 
-/// GET /api/v1/applications/quota-warnings
-///
 /// Returns applications that are approaching or exceeding their quota limits.
-///
-/// Query params:
-/// - threshold: Percentage threshold (default: 80)
-/// - page: Page number (default: 1)
-/// - page_size: Items per page (default: 20)
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/quota-warnings",
+    params(QuotaWarningsQuery),
+    responses(
+        (status = 200, description = "Quota warnings retrieved successfully", body = PaginatedQuotaWarnings),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 #[debug_handler]
 pub async fn get_quota_warnings(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
     Query(params): Query<QuotaWarningsQuery>,
 ) -> Result<Json<PaginatedQuotaWarnings>, ApiError> {
+    let threshold = params.threshold.and_then(|t| {
+        Decimal::from_str(&t.to_string()).ok()
+    });
+    
     let warnings = Application::get_quota_warnings(
         &state.db,
         user.user_id,
-        params.threshold,
+        threshold,
         params.page,
         params.page_size,
     )
@@ -379,8 +522,24 @@ pub async fn get_quota_warnings(
 }
 
 /// Get application by ID including, publishable keys, and webhooks.
-///
-/// Route: GET /api/applications/:id/with_keys
+#[utoipa::path(
+    get,
+    path = "/api/applications/{application_id}/with_keys",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID")
+    ),
+    responses(
+        (status = 200, description = "Application with keys retrieved successfully", body = ApplicationWithKeys),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "applications"
+)]
 pub async fn get_application_with_keys_handler(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
@@ -394,4 +553,3 @@ pub async fn get_application_with_keys_handler(
 
     Ok(Json(app_with_keys))
 }
-

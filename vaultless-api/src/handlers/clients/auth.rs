@@ -1,7 +1,7 @@
 use crate::{
     middleware::{
         application::ApplicationKeyViewExt,
-        client::{ClientExt, SessionDataClientExt},
+        client::{ClientResponse, SessionDataClientExt},
         error::ApiError,
     },
     state::AppState,
@@ -170,10 +170,9 @@ pub async fn health_check() -> Json<serde_json::Value> {
 
 /// Get current authenticated client info
 /// GET /api/clients/me
-pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Arc<Client>> {
+pub async fn get_current_client(client: ClientResponse) -> Json<ClientResponse> {
     Json(client)
 }
-
 /// Logout (revoke current session)
 /// POST /api/clients/logout
 /// Logout handler - uses secure verification
@@ -222,7 +221,7 @@ pub async fn deactivate_client(
         state.db.as_ref(),
         state.session_verifier_hybrid.clone(),
         session_data.client_id,
-        None, 
+        None,
     )
     .await
     .map_err(ApiError::from)?;

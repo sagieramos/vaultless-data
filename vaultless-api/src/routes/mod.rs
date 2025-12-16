@@ -22,7 +22,7 @@ pub fn build_routes(state: AppState) -> Router {
         .route("/live", get(health::liveness_check))
         .route("/check_cache", get(health::check_cache_handler))
         .nest(
-            "/developer",
+            "/dev",
             Router::new()
                 .nest("/auth", user_routes(state.clone()))
                 .nest("/applications", application_routes(state.clone())),

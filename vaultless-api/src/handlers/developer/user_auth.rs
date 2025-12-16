@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
 use std::net::SocketAddr;
-use uuid::Uuid;
+use utoipa::ToSchema;
 use validator::Validate;
 use vaultless_core::models::user::User;
 
@@ -24,43 +24,46 @@ use vaultless_core::VaultlessError;
 
 use super::dto::*;
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct UserResponse {
-    pub id: Uuid,
     pub email: String,
     pub name: Option<String>,
     pub avatar_url: Option<String>,
     pub email_verified: bool,
     pub is_active: bool,
-    pub is_admin: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
-    pub metadata: Option<serde_json::Value>,
 }
 
 impl From<User> for UserResponse {
     fn from(user: User) -> Self {
         UserResponse {
-            id: user.id,
             email: user.email,
             name: user.name,
             avatar_url: user.avatar_url,
             email_verified: user.email_verified,
             is_active: user.is_active,
-            is_admin: user.is_admin,
             created_at: user.created_at,
             updated_at: user.updated_at,
             last_login_at: user.last_login_at,
-            metadata: user.metadata,
         }
     }
 }
 
-// ============================================================================
-// REGISTRATION
-// ============================================================================
-
+/// Register a new user
+#[utoipa::path(
+    post,
+    path = "/dev/auth/register",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "User registered successfully", body = RegisterResponse),
+        (status = 400, description = "Bad request"),
+        (status = 409, description = "User already exists"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn register(
     State(state): State<AppState>,
     /*  ConnectInfo(addr): ConnectInfo<SocketAddr>, */
@@ -94,9 +97,20 @@ pub async fn register(
     ))
 }
 
-// ============================================================================
-// LOGIN
-// ============================================================================
+/// User login
+#[utoipa::path(
+    post,
+    path = "/dev/auth/login",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Login successful", body = LoginResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 429, description = "Too many requests"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -183,9 +197,8 @@ pub async fn login(
     }))
 }
 
-/// ============================================================================
 /// RESEND VERIFICATION EMAIL
-/// ============================================================================
+///
 /// Example: POST /resend-verification-email { "email": "<youremail@gmail.com>"}
 pub async fn resend_verification_email(
     State(state): State<AppState>,
@@ -207,10 +220,19 @@ pub async fn resend_verification_email(
     })))
 }
 
-// ============================================================================
-// REFRESH TOKEN
-// ============================================================================
-
+/// Refresh access token using refresh token
+#[utoipa::path(
+    post,
+    path = "/dev/auth/refresh-token",
+    request_body = RefreshTokenRequest,
+    responses(
+        (status = 200, description = "Token refreshed successfully", body = RefreshTokenResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn refresh_token(
     State(state): State<AppState>,
     Json(req): Json<RefreshTokenRequest>,
@@ -227,10 +249,20 @@ pub async fn refresh_token(
     }))
 }
 
-// ============================================================================
-// LOGOUT
-// ============================================================================
-
+/// User logout
+#[utoipa::path(
+    post,
+    path = "/dev/auth/logout",
+    responses(
+        (status = 200, description = "Logged out successfully", body = LogoutResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "auth"
+)]
 pub async fn logout(
     State(state): State<AppState>,
     Extension(session): Extension<SessionData>,
@@ -248,14 +280,24 @@ pub async fn logout(
     }))
 }
 
-// ============================================================================
-// EMAIL VERIFICATION
-// ============================================================================
-
-/// ============================================================================
 /// GET HANDLER (For email link click)
-/// ============================================================================
+///
 /// Example: GET /verify-email?token=abc123
+/// Verify user email using token
+#[utoipa::path(
+    get,
+    path = "/dev/auth/verify-email",
+    params(
+        ("token" = String, Query, description = "Verification token")
+    ),
+    responses(
+        (status = 200, description = "Email verified successfully", body = Value),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "Token not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn verify_email_get(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -279,10 +321,23 @@ pub async fn verify_email_get(
         "message": format!("Email verified successfully for {}", user.email),
     })))
 }
-/// ============================================================================
+///
 /// POST HANDLER (For API / Mobile clients)
-/// ============================================================================
+///
 /// Example: POST /api/verify-email { "token": "abc123" }
+/// Verify user email using token (API endpoint)
+#[utoipa::path(
+    post,
+    path = "/dev/auth/verify-email",
+    request_body = VerifyEmailRequest,
+    responses(
+        (status = 200, description = "Email verified successfully", body = VerifyEmailResponse),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "Token not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn verify_email_post(
     State(state): State<AppState>,
     Json(req): Json<VerifyEmailRequest>,
@@ -303,10 +358,23 @@ pub async fn verify_email_post(
     }))
 }
 
-// ============================================================================
+//
 // PASSWORD RESET REQUEST
-// ============================================================================
+//
 
+/// Request password reset
+#[utoipa::path(
+    post,
+    path = "/dev/auth/request-password-reset",
+    request_body = RequestPasswordResetRequest,
+    responses(
+        (status = 200, description = "Password reset token generated", body = RequestPasswordResetResponse),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "User not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn request_password_reset(
     State(state): State<AppState>,
     Json(req): Json<RequestPasswordResetRequest>,
@@ -346,10 +414,23 @@ pub async fn request_password_reset(
     }
 }
 
-// ============================================================================
+//
 // PASSWORD RESET
-// ============================================================================
+//
 
+/// Reset password using token
+#[utoipa::path(
+    post,
+    path = "/dev/auth/reset-password",
+    request_body = ResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset successfully", body = ResetPasswordResponse),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "Token not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn reset_password(
     State(state): State<AppState>,
     Json(req): Json<ResetPasswordRequest>,
@@ -372,10 +453,24 @@ pub async fn reset_password(
     }))
 }
 
-// ============================================================================
+//
 // GET CURRENT USER
-// ============================================================================
+//
 
+/// Get current user information
+#[utoipa::path(
+    get,
+    path = "/dev/auth/me",
+    responses(
+        (status = 200, description = "Current user information", body = UserResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "auth"
+)]
 pub async fn get_current_user(
     State(_state): State<AppState>,
     UserExt(user): UserExt,

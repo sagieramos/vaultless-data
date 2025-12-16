@@ -21,7 +21,6 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
     // Routes without query parameters
     let no_query_routes = Router::new()
         .route("/", post(application::create_application))
-        .route("/{id}", get(application::get_application))
         .route("/{id}", patch(application::update_application))
         .route("/{id}", delete(application::deactivate_application))
         .route(
