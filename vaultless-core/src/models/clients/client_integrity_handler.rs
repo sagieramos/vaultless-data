@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as jsonValue;
 use sqlx::types::chrono::DateTime;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AttestationRecord {
@@ -14,14 +15,17 @@ pub struct AttestationRecord {
 
     #[serde(default, skip_serializing_if = "jsonValue::is_null")]
     pub extra: jsonValue,
+
+    platform_version: Uuid,
 }
 
-impl From<AttestationResult> for AttestationRecord {
-    fn from(result: AttestationResult) -> Self {
+impl AttestationResult {
+    pub fn into_record(self, current_platform_version: Uuid) -> AttestationRecord {
         AttestationRecord {
-            attested_at: result.verified_at,
-            trust_score_percent: result.trust_score_percent,
-            extra: result.extra,
+            attested_at: self.verified_at,
+            trust_score_percent: self.trust_score_percent,
+            extra: self.extra,
+            platform_version: current_platform_version,
         }
     }
 }
@@ -30,7 +34,7 @@ impl From<AttestationResult> for AttestationRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientIntegrityHandler {
     /// Map: platform string ("ios", "android", "iot", "browser") -> AttestationRecord
-    pub platforms: HashMap<String, AttestationRecord>,
+    pub platforms: HashMap<Platform, AttestationRecord>,
 }
 
 impl ClientIntegrityHandler {
@@ -48,7 +52,7 @@ impl ClientIntegrityHandler {
 
     /// Returns the attestation record for a specific platform
     pub fn get_platform(&self, platform: Platform) -> Option<&AttestationRecord> {
-        self.platforms.get(platform.as_str())
+        self.platforms.get(&platform)
     }
 
     /// Check if a platform needs re-attestation based on a maximum age (days)
@@ -63,15 +67,29 @@ impl ClientIntegrityHandler {
                 let age_days = Utc::now()
                     .signed_duration_since(record.attested_at)
                     .num_days();
-                record.trust_score_percent < min_trust_score || age_days >= max_age_days as i64
+
+                let trust_failed = record.trust_score_percent < min_trust_score;
+                let expired = age_days >= max_age_days as i64;
+
+                let version_mismatch = match self.get_platform_version(platform) {
+                    Some(current_version) => record.platform_version != current_version,
+                    None => true,
+                };
+
+                trust_failed || expired || version_mismatch
             }
-            None => true, 
+            None => true,
         }
     }
 
     pub fn get_platform_trust_score(&self, platform: Platform) -> Option<u8> {
         self.get_platform(platform)
             .map(|record| record.trust_score_percent)
+    }
+
+    fn get_platform_version(&self, platform: Platform) -> Option<Uuid> {
+        self.get_platform(platform)
+            .map(|record| record.platform_version)
     }
 }
 

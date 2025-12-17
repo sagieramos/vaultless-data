@@ -211,6 +211,7 @@ impl Client {
 
         let integrity_handler = app_resolved.integrity()?;
         let (trust_score, max_age) = integrity_handler.get_trust_score_and_reattestation(platform);
+        let platform_version = integrity_handler.get_platform_config_version().get(platform);
 
         let client_attestation = client.integrity()?;
         let current_score = client_attestation
@@ -252,7 +253,7 @@ impl Client {
             ));
         }
 
-        let record: AttestationRecord = attestation_result.into();
+        let record: AttestationRecord = attestation_result.into_record(platform_version);
         let new_score = record.trust_score_percent;
 
         sqlx::query(

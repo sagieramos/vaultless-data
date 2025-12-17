@@ -76,6 +76,10 @@ impl IntegrityConfigHandler {
         }
     }
 
+    pub fn get_platform_config_version(&self) -> &PlatformConfigVersion {
+        &self.platform_config_version
+    }
+
     pub fn get_android_config(&self) -> Option<&AndroidIntegrityConfig> {
         self.config.android.as_ref()
     }
