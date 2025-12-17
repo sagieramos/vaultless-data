@@ -7,12 +7,6 @@ use vaultless_core::SessionKeyManager;
 // For manual env loading, we don't strictly need it, but I'll leave it on leaf structs just in case.
 use serde::Deserialize;
 
-pub struct AuthHeader;
-
-impl AuthHeader {
-    pub const API_KEY: &'static str = "X-Api-Key-Id ";
-    pub const BEARER: &'static str = "Bearer ";
-}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -52,7 +46,7 @@ pub struct SecurityConfig {
     pub paseto_client_session_key_manager: Arc<SessionKeyManager>,
 }
 
-impl fmt::Debug for SecurityConfig {
+/* impl fmt::Debug for SecurityConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecurityConfig")
             .field(
@@ -80,7 +74,7 @@ impl fmt::Debug for SecurityConfig {
             )
             .finish()
     }
-}
+} */
 
 /// Dragonfly/Redis cache configuration
 #[derive(Debug, Clone, Deserialize)]
