@@ -8,25 +8,16 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
+const INTEGRITY_PLATFORMS: [&str; 4] = ["browser", "ios", "android", "iot"];
+
 macro_rules! dynamic_update {
-    ($qb:ident, $sep:ident, $($field:expr => $sql_field:expr),* $(,)?) => {{
+    ($sep:ident, $($field:expr => $sql_field:expr),* $(,)?) => {{
         $(
             if let Some(ref value) = $field {
                 $sep.push(format!("{} = ", $sql_field)).push_bind(value);
             }
         )*
     }};
-}
-
-macro_rules! validate_config {
-    ($config:expr, $($field:ident => $msg:expr),* $(,)?) => {
-        $(
-            if let Some(ref inner_config) = $config.$field {
-                inner_config.validate()
-                    .map_err(|e| VaultlessError::Validation(format!("{}: {}", $msg, e)))?;
-            }
-        )*
-    };
 }
 
 impl Application {
@@ -36,7 +27,7 @@ impl Application {
         let mut fingerprint_updates = serde_json::Map::new();
 
         // Generate new UUIDs for any platforms that are being updated
-        for platform in ["browser", "ios", "android", "iot"] {
+        for platform in INTEGRITY_PLATFORMS {
             if integrity_patch.get(platform).is_some() {
                 fingerprint_updates.insert(platform.to_string(), serde_json::json!(Uuid::new_v4()));
             }
@@ -55,64 +46,14 @@ impl Application {
         application_id: Uuid,
         user_id: Uuid,
     ) -> Result<Application> {
-        update
-            .validate()
-            .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
+        let (mut qb, integrity_patch_opt) = Self::build_update_query(&update)?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.integrity_config
-        {
-            cfg.validate().map_err(|e| {
-                VaultlessError::Validation(format!("Integrity config invalid: {}", e))
-            })?;
-
-            Some(
-                serde_json::to_value(cfg)
-                    .map_err(|e| VaultlessError::Serialization(e.to_string()))?,
-            )
-        } else {
-            None
-        };
-
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
-        {
-            let mut separated = qb.separated(", ");
-
-            dynamic_update!(
-                qb,
-                separated,
-                update.name => "name",
-                update.description => "description",
-                update.is_active => "is_active",
-                update.max_ttl_seconds => "max_ttl_seconds",
-                update.is_key_rotation_forced => "is_key_rotation_forced",
-                update.internal_notes => "internal_notes",
-            );
-
-            if let Some(patch) = &integrity_patch_opt {
-                let wrapped_patch = Self::create_app_meta_patch(patch);
-
-                separated
-                    .push("app_meta = jsonb_merge_patch(app_meta, ")
-                    .push_bind(wrapped_patch)
-                    .push(")");
-            }
-        }
-
-        let built_sql = qb.sql();
-        if built_sql.trim_end().ends_with("SET")
-            || built_sql
-                .trim()
-                .eq_ignore_ascii_case("UPDATE applications SET")
-        {
+        if Self::is_empty_update(qb.sql()) {
             tracing::info!(application_id = %application_id, "No fields to update");
             return Self::find_by_id_and_user_id(exec.as_ref(), application_id, user_id).await;
         }
 
-        qb.push(" , updated_at = NOW() WHERE id = ")
-            .push_bind(application_id)
-            .push(" AND user_id = ")
-            .push_bind(user_id)
-            .push(" RETURNING *");
+        Self::finalize_update_query(&mut qb, application_id, user_id);
 
         let updated_app = qb
             .build_query_as::<Application>()
@@ -124,9 +65,8 @@ impl Application {
         }
 
         if let Some(pool) = redis {
-            let exec_clone = exec.clone();
             tokio::spawn(async move {
-                Self::invalidate_caches(exec_clone, pool, application_id).await;
+                Self::invalidate_caches(exec, pool, application_id).await;
             });
         }
 
@@ -140,6 +80,36 @@ impl Application {
         application_id: Uuid,
         user_id: Uuid,
     ) -> Result<Application> {
+        let (mut qb, integrity_patch_opt) = Self::build_update_query(&update)?;
+
+        if Self::is_empty_update(qb.sql()) {
+            let existing: Application = sqlx::query_as::<_, Application>(
+                "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
+            )
+            .bind(application_id)
+            .bind(user_id)
+            .fetch_one(&mut **tx)
+            .await?;
+            return Ok(existing);
+        }
+
+        Self::finalize_update_query(&mut qb, application_id, user_id);
+
+        let updated_app = qb
+            .build_query_as::<Application>()
+            .fetch_one(&mut **tx)
+            .await?;
+
+        if integrity_patch_opt.is_some() {
+            Self::validate_app_meta(&updated_app.app_meta)?;
+        }
+
+        Ok(updated_app)
+    }
+
+    fn build_update_query(
+        update: &UpdateApplication,
+    ) -> Result<(QueryBuilder<'static, Postgres>, Option<JsonValue>)> {
         update
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
@@ -162,7 +132,6 @@ impl Application {
             let mut separated = qb.separated(", ");
 
             dynamic_update!(
-                qb,
                 separated,
                 update.name => "name",
                 update.description => "description",
@@ -182,38 +151,20 @@ impl Application {
             }
         }
 
-        let built_sql = qb.sql();
-        if built_sql.trim_end().ends_with("SET")
-            || built_sql
-                .trim()
-                .eq_ignore_ascii_case("UPDATE applications SET")
-        {
-            let existing: Application = sqlx::query_as::<_, Application>(
-                "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
-            )
-            .bind(application_id)
-            .bind(user_id)
-            .fetch_one(&mut **tx)
-            .await?;
-            return Ok(existing);
-        }
+        Ok((qb, integrity_patch_opt))
+    }
 
+    fn is_empty_update(sql: &str) -> bool {
+        sql.trim_end().ends_with("SET")
+            || sql.trim().eq_ignore_ascii_case("UPDATE applications SET")
+    }
+
+    fn finalize_update_query(qb: &mut QueryBuilder<'_, Postgres>, application_id: Uuid, user_id: Uuid) {
         qb.push(" , updated_at = NOW() WHERE id = ")
             .push_bind(application_id)
             .push(" AND user_id = ")
             .push_bind(user_id)
             .push(" RETURNING *");
-
-        let updated_app = qb
-            .build_query_as::<Application>()
-            .fetch_one(&mut **tx)
-            .await?;
-
-        if integrity_patch_opt.is_some() {
-            Self::validate_app_meta(&updated_app.app_meta)?;
-        }
-
-        Ok(updated_app)
     }
 
     fn validate_app_meta<T: serde::Serialize>(config: &T) -> Result<()> {
@@ -223,14 +174,26 @@ impl Application {
         let app_meta = AppMetaData::from_jsonb(&config_json)?;
         let config = app_meta.integrity_config;
 
-        validate_config!(
-            config,
-            browser => "Browser config invalid",
-            ios => "iOS config invalid",
-            android => "Android config invalid",
-            iot => "IoT config invalid",
-            rate_limits => "Rate limits invalid",
-        );
+        if let Some(ref c) = config.browser {
+            c.validate()
+                .map_err(|e| VaultlessError::Validation(format!("Browser config invalid: {}", e)))?;
+        }
+        if let Some(ref c) = config.ios {
+            c.validate()
+                .map_err(|e| VaultlessError::Validation(format!("iOS config invalid: {}", e)))?;
+        }
+        if let Some(ref c) = config.android {
+            c.validate()
+                .map_err(|e| VaultlessError::Validation(format!("Android config invalid: {}", e)))?;
+        }
+        if let Some(ref c) = config.iot {
+            c.validate()
+                .map_err(|e| VaultlessError::Validation(format!("IoT config invalid: {}", e)))?;
+        }
+        if let Some(ref c) = config.rate_limits {
+            c.validate()
+                .map_err(|e| VaultlessError::Validation(format!("Rate limits invalid: {}", e)))?;
+        }
 
         Ok(())
     }
@@ -242,15 +205,13 @@ impl Application {
     ) {
         super::material_view_helper::trigger_view_refresh_debounced(exec.clone(), redis.clone());
 
-        tokio::spawn(async move {
-            if let Err(e) = Self::invalidate_auth_cache(application_id, &exec, redis).await {
-                tracing::error!(
-                    application_id = %application_id,
-                    error = %e,
-                    "Cache invalidation failed"
-                );
-            }
-        });
+        if let Err(e) = Self::invalidate_auth_cache(application_id, &exec, redis).await {
+            tracing::error!(
+                application_id = %application_id,
+                error = %e,
+                "Cache invalidation failed"
+            );
+        }
     }
 
     pub async fn batch_update(
