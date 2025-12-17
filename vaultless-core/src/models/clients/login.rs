@@ -219,7 +219,7 @@ impl Client {
             .unwrap_or(0);
 
         let requires_reattestation =
-            client_attestation.platform_requires_reattestation(platform, trust_score, max_age);
+            client_attestation.platform_requires_reattestation(platform, trust_score, max_age, platform_version);
 
         if !requires_reattestation {
             return Ok(AttestationResult::NotRequired(current_score));

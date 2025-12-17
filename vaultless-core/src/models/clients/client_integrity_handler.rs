@@ -56,11 +56,13 @@ impl ClientIntegrityHandler {
     }
 
     /// Check if a platform needs re-attestation based on a maximum age (days)
+    /// and current app platform config version
     pub fn platform_requires_reattestation(
         &self,
         platform: Platform,
         min_trust_score: u8,
         max_age_days: u32,
+        current_platform_version: Uuid,
     ) -> bool {
         match self.get_platform(platform) {
             Some(record) => {
@@ -70,11 +72,7 @@ impl ClientIntegrityHandler {
 
                 let trust_failed = record.trust_score_percent < min_trust_score;
                 let expired = age_days >= max_age_days as i64;
-
-                let version_mismatch = match self.get_platform_version(platform) {
-                    Some(current_version) => record.platform_version != current_version,
-                    None => true,
-                };
+                let version_mismatch = record.platform_version != current_platform_version;
 
                 trust_failed || expired || version_mismatch
             }
@@ -85,11 +83,6 @@ impl ClientIntegrityHandler {
     pub fn get_platform_trust_score(&self, platform: Platform) -> Option<u8> {
         self.get_platform(platform)
             .map(|record| record.trust_score_percent)
-    }
-
-    fn get_platform_version(&self, platform: Platform) -> Option<Uuid> {
-        self.get_platform(platform)
-            .map(|record| record.platform_version)
     }
 }
 
