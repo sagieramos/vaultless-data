@@ -46,7 +46,7 @@ pub struct SecurityConfig {
     pub paseto_client_session_key_manager: Arc<SessionKeyManager>,
 }
 
-/* impl fmt::Debug for SecurityConfig {
+impl fmt::Debug for SecurityConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecurityConfig")
             .field(
@@ -74,7 +74,7 @@ pub struct SecurityConfig {
             )
             .finish()
     }
-} */
+}
 
 /// Dragonfly/Redis cache configuration
 #[derive(Debug, Clone, Deserialize)]
