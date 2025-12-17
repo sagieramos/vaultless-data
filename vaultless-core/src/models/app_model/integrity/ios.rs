@@ -3,7 +3,6 @@ use crate::error::{Result, VaultlessError};
 use crate::models::app_model::integrity::dto::IosIntegrityConfig;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use webpki::{EndEntityCert, Time};
 use x509_parser::asn1_rs::Tag;
@@ -23,7 +22,8 @@ const APPLE_APPATTEST_EXTENSION_OID: &str = "1.2.840.113635.100.8.2";
 // APP ATTEST RESPONSE TYPES
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct AppAttestObject {
     #[serde(rename = "fmt")]
     format: Option<String>,
@@ -33,7 +33,8 @@ struct AppAttestObject {
     auth_data: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct AttestationStatement {
     #[serde(rename = "x5c")]
     x5c: Option<Vec<String>>,
@@ -160,13 +161,13 @@ pub async fn verify_ios_attestation(
     device_model: Option<&str>,
     config: &IosIntegrityConfig,
 ) -> Result<AttestationResult> {
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut confidence: u8 = 0;
 
     // ---------------------------
     // 1. Validate iOS version
     // ---------------------------
-    let version_info = if let Some(min_version) = config.min_version_code {
+    let _version_info = if let Some(min_version) = config.min_version_code {
         match validate_ios_version_from_client(ios_version, min_version) {
             Ok(info) => {
                 confidence += 20;

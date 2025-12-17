@@ -11,10 +11,6 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-const CACHE_TTL_SECS: u64 = 600;
-const MAX_QUEUE_LEN: isize = 10_000;
-
-
 // Lua script for atomic delivery counting
 const ATOMIC_DELIVERY_COUNT_SCRIPT: &str = r#"
 local counted_key = KEYS[1]

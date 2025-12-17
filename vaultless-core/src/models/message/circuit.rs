@@ -2,52 +2,13 @@ use super::dto::*;
 use crate::error::{Result, VaultlessError};
 
 use chrono::Utc;
-use redis::AsyncCommands;
-use sqlx::PgPool;
 use std::sync::atomic::Ordering;
 use tracing::{error, info};
 use uuid::Uuid;
 
 impl InstantMessage {
-    /// Get Redis connection with circuit breaker
-    async fn get_redis_conn(&self) -> Result<impl AsyncCommands> {
-        let guard = self.redis_breaker.allow_request()?;
-
-        match self.redis_pool.get().await {
-            Ok(conn) => {
-                guard.success();
-                Ok(conn)
-            }
-            Err(e) => {
-                guard.failure();
-                Err(e.into())
-            }
-        }
-    }
-
-    /// Execute DB query with circuit breaker
-    async fn execute_db_query<F, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(
-            &PgPool,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send>>,
-    {
-        let guard = self.db_breaker.allow_request()?;
-
-        match f(&self.db_pool).await {
-            Ok(result) => {
-                guard.success();
-                Ok(result)
-            }
-            Err(e) => {
-                guard.failure();
-                Err(e)
-            }
-        }
-    }
-
     /// Send message to dead letter queue
+    #[allow(dead_code)]
     async fn send_to_dlq(
         &self,
         msg_id: Uuid,
@@ -78,7 +39,7 @@ impl InstantMessage {
     pub async fn process_dlq_entry(&self, msg_id: Uuid) -> Result<()> {
         // Fetch from DLQ
         let entry: Option<(String, i32, Option<String>)> = sqlx::query_as(
-            "SELECT reason, retry_count, original_data FROM message_dlq 
+            "SELECT reason, retry_count, original_data FROM message_dlq
              WHERE msg_id = $1 AND processed_at IS NULL",
         )
         .bind(msg_id)

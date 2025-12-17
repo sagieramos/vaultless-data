@@ -2,7 +2,7 @@ use super::types::*;
 use crate::error::{Result, VaultlessError};
 use crate::models::app_model::integrity::dto::AndroidIntegrityConfig;
 use chrono::{DateTime, Utc};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
 use once_cell::sync::OnceCell;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
@@ -158,7 +158,6 @@ async fn get_google_jwks_cached(client: &HttpClient) -> Result<Jwks> {
 
 struct AttestationResultBuilder {
     is_valid: bool,
-    platform: Platform,
     extra: jsonValue,
 
     device_trusted: bool,
@@ -169,10 +168,9 @@ struct AttestationResultBuilder {
 }
 
 impl AttestationResultBuilder {
-    fn new(platform: Platform) -> Self {
+    fn new() -> Self {
         Self {
             is_valid: false,
-            platform,
             extra: jsonValue::Null,
             device_trusted: false,
             verdict: None,
@@ -314,9 +312,9 @@ pub async fn verify_android_attestation_offline(
     token: &str,
     config: &AndroidIntegrityConfig,
 ) -> Result<AttestationResult> {
-    use serde_json::{Value as JsonValue, json};
+    use serde_json::json;
 
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut score: u8 = 0;
 
     let http_client = HttpClient::builder()
@@ -361,18 +359,6 @@ pub async fn verify_android_attestation_offline(
 
     let claims = token_data.claims;
 
-    // Build AndroidData (your domain struct)
-    let android_data = AndroidData {
-        package_name: claims.app_integrity.package_name.clone(),
-        certificate_sha256: claims
-            .app_integrity
-            .certificate_sha256_digest
-            .get(0)
-            .cloned()
-            .unwrap_or_default(),
-        attestation_token: token.to_string(),
-    };
-
     // Build "extra" JSON for storage
     let extra_json = json!({
         "pkg_name": claims.app_integrity.package_name,
@@ -384,7 +370,7 @@ pub async fn verify_android_attestation_offline(
     });
 
     // Build the attestation result
-    let builder = AttestationResultBuilder::new(Platform::Android).extra(extra_json);
+    let builder = AttestationResultBuilder::new().extra(extra_json);
 
     // Timestamp verification
     if let Err(e) = verify_timestamp(

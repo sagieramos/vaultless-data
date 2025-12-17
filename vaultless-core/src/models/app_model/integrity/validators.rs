@@ -8,6 +8,7 @@ lazy_static! {
     static ref ORIGIN_RE: Regex = Regex::new(r"^https://[a-zA-Z0-9.-]+(:\d{1,5})?$").unwrap();
 }
 
+#[allow(dead_code)]
 const WHITELISTED_DOMAINS: &[&str] = &["example.com", "*.example.org", "myapp.io"];
 
 /// Validate a single origin URL
@@ -56,6 +57,7 @@ pub fn validate_origin_list(origins: &Vec<String>) -> Result<(), VaultlessError>
 }
 
 /// Check host against whitelist (supports wildcards)
+#[allow(dead_code)]
 fn is_domain_allowed(host: &str) -> bool {
     for pattern in WHITELISTED_DOMAINS {
         if pattern.starts_with("*.") {

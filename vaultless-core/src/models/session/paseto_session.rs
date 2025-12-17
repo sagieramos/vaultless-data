@@ -266,7 +266,7 @@ pub fn extract_token_expiration(
 
 use deadpool_redis::Pool as RedisPool;
 use moka::future::Cache;
-use redis::{AsyncCommands, Script};
+use redis::Script;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 

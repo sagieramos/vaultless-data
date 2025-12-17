@@ -2,7 +2,6 @@ use crate::error::{Result, VaultlessError};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use x509_parser::prelude::*;
 
 // =============================================================================
 // iOS VERSION EXTRACTION METHODS
@@ -143,8 +142,8 @@ pub struct AppAttestReceipt {
 
 /// Extract iOS version from App Attest receipt (if available)
 pub fn extract_version_from_receipt(receipt_b64: &str) -> Result<Option<String>> {
-    // Decode base64 receipt
-    let receipt_data = BASE64.decode(receipt_b64).map_err(|e| {
+    // Decode base64 receipt to validate format
+    let _receipt_data = BASE64.decode(receipt_b64).map_err(|e| {
         VaultlessError::IntegrityCheckFailed(format!("Invalid receipt base64: {}", e))
     })?;
 
@@ -180,10 +179,10 @@ pub struct DeviceCheckPayload {
 
 /// Validate DeviceCheck token with Apple's server
 pub async fn validate_devicecheck_token(
-    device_token: &str,
-    team_id: &str,
-    key_id: &str,
-    private_key: &[u8],
+    _device_token: &str,
+    _team_id: &str,
+    _key_id: &str,
+    _private_key: &[u8],
 ) -> Result<bool> {
     // This would make a request to Apple's DeviceCheck API
     // https://developer.apple.com/documentation/devicecheck/accessing_and_modifying_per-device_data
@@ -255,7 +254,7 @@ impl ClientData {
 /// Extract and validate client data from attestation
 pub fn extract_client_data_from_authdata(
     auth_data: &[u8],
-    expected_client_data_hash: &[u8],
+    _expected_client_data_hash: &[u8],
 ) -> Result<()> {
     // AuthData structure:
     // - RP ID hash: 32 bytes
@@ -294,8 +293,8 @@ pub fn extract_client_data_from_authdata(
         let cred_id_len = u16::from_be_bytes([auth_data[offset], auth_data[offset + 1]]) as usize;
         offset += 2;
 
-        // Skip credential ID
-        offset += cred_id_len;
+        // Skip credential ID (offset updated for future extension parsing)
+        let _final_offset = offset + cred_id_len;
     }
 
     if has_extensions {
@@ -309,15 +308,6 @@ pub fn extract_client_data_from_authdata(
 
     Ok(())
 }
-
-// =============================================================================
-// RECOMMENDED IMPLEMENTATION: COMBINED APPROACH
-// =============================================================================
-
-use super::types::*;
-use crate::models::app_model::integrity::dto::IosIntegrityConfig;
-use chrono::Utc;
-
 
 // =============================================================================
 // HELPER: GENERATE MIN VERSION CODE

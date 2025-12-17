@@ -31,7 +31,6 @@ pub fn is_platform_allowed(
         (Platform::IoT, Some(platforms)) => platforms.iot.unwrap_or(true),
         (Platform::Browser, Some(platforms)) => platforms.browser.unwrap_or(true),
         (_, None) => true, // If no allowed_platforms defined, all platforms are allowed
-        _ => true,         // Default to allowing platform if not specified in config
     }
 }
 
