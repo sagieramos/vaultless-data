@@ -17,6 +17,7 @@ pub const SIGNATURE_SIZE: usize = 64;
 
 /// Signed data with signature and public key
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[must_use]
 pub struct SignedData {
     /// Base64-encoded Ed25519 signature (64 bytes)
     pub signature: String,
@@ -40,6 +41,7 @@ pub struct SignedData {
 /// - Uses deterministic Ed25519 (RFC 8032)
 /// - Same data + key = same signature (for verification)
 /// - Public key is derived from private key
+#[must_use = "signed data must be stored or transmitted"]
 pub fn sign_data(data: &[u8], private_key: &[u8; PRIVATE_KEY_SIZE]) -> Result<SignedData> {
     // Create signing key
     let signing_key = SigningKey::from_bytes(private_key);
@@ -47,7 +49,7 @@ pub fn sign_data(data: &[u8], private_key: &[u8; PRIVATE_KEY_SIZE]) -> Result<Si
     // Sign the data
     let signature = signing_key
         .try_sign(data)
-        .map_err(|e| VaultlessError::Validation(format!("Signing failed: {}", e)))?;
+        .map_err(|e| VaultlessError::Signing(format!("Signing failed: {}", e)))?;
 
     // Get public key
     let verifying_key = signing_key.verifying_key();

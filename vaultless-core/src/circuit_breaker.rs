@@ -44,7 +44,7 @@ impl CircuitBreaker {
                 let last_failure = self.unpack_last_failure(packed);
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
 
                 if now - last_failure > self.timeout_seconds {
@@ -98,7 +98,7 @@ impl CircuitBreaker {
         let new_count = failure_count + 1;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         if new_count >= self.failure_threshold {
@@ -118,7 +118,7 @@ impl CircuitBreaker {
     fn transition_to_half_open(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         let new_packed = self.pack_state(CircuitState::HalfOpen, 0, now);
         self.state.store(new_packed, Ordering::Release);
