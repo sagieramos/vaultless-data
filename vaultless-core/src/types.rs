@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::Type;
 use std::{fmt, str::FromStr};
+use utoipa::ToSchema;
 
 #[macro_export]
 macro_rules! cache_key {
@@ -10,7 +11,7 @@ macro_rules! cache_key {
 }
 
 /// Subscription tier enum matching the database
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type, ToSchema)]
 #[sqlx(type_name = "subscription_tier", rename_all = "lowercase")]
 #[serde(rename_all = "PascalCase")]
 pub enum SubscriptionTier {

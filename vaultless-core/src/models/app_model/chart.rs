@@ -1,4 +1,5 @@
 use super::dto::Application;
+use utoipa::ToSchema;
 use crate::error::{Result, VaultlessError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ const CHART_MAX_POINTS_DAILY: i64 = 100;
 const CHART_MAX_POINTS_WEEKLY: i64 = 160;
 
 /// Metric types the frontend can request
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChartMetric {
     Messages,
@@ -45,7 +46,7 @@ impl FromStr for ChartMetric {
 }
 
 /// Granularity of chart buckets
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChartGranularity {
     Daily,
@@ -100,37 +101,47 @@ impl ChartGranularity {
 }
 
 /// A single point in a usage chart
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
 pub struct UsageChartPoint {
     #[serde(skip_serializing)]
     pub application_name: String,
+    #[schema(example = "2023-01-01T00:00:00Z")]
     pub timestamp: DateTime<Utc>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 100)]
     pub messages_sent: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 50)]
     pub messages_received: Option<i64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 25)]
     pub proofs_verified: Option<i64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 102400)]
     pub bytes_sent: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 51200)]
     pub bytes_received: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 204800)]
     pub bytes_stored: Option<i64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 5)]
     pub rate_limit_hits: Option<i64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 500)]
     pub cost_cents: Option<i64>,
 }
 
 /// Aggregated chart data for a single application
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ApplicationChartData {
+    #[schema(value_type = String)]
     pub application_id: Uuid,
     pub application_name: String,
     pub time_range: String,
@@ -139,20 +150,28 @@ pub struct ApplicationChartData {
     pub data_points: Vec<UsageChartPoint>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1000)]
     pub total_messages_sent: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 500)]
     pub total_messages_received: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 250)]
     pub total_proofs_verified: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 1024000)]
     pub total_bytes_sent: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 512000)]
     pub total_bytes_received: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 2048000)]
     pub total_bytes_stored: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 50)]
     pub total_rate_limit_hits: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 5000)]
     pub total_cost_cents: Option<i64>,
 }
 

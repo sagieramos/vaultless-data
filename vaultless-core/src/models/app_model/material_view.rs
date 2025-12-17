@@ -38,11 +38,11 @@ impl Application {
         exec: E,
         application_id: Uuid,
         user_id: Uuid,
-    ) -> Result<ApplicationWithUsageResponse>
+    ) -> Result<ApplicationWithUsage>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let app = sqlx::query_as::<_, ApplicationWithUsageResponse>(
+        let app = sqlx::query_as::<_, ApplicationWithUsage>(
             r#"
             SELECT
                 a.application_id,

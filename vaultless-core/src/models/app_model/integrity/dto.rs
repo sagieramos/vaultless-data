@@ -2,6 +2,7 @@ use super::Platform;
 use crate::error::{Result as VaultlessErrorResult, VaultlessError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use utoipa::ToSchema;
 
 // =============================================================================
 // VALIDATOR MOCKS
@@ -23,7 +24,7 @@ fn validate_sha256(_s: &str) -> Result<(), VaultlessError> {
 // INTEGRITY CONFIG STRUCTURES
 // =============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct AllowedPlatforms {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<bool>,
@@ -38,7 +39,7 @@ pub struct AllowedPlatforms {
     pub iot: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PlatformConfigVersion {
     pub browser: Uuid,
     pub ios: Uuid,
@@ -117,7 +118,7 @@ impl PlatformConfigVersion {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AppMetaData {
     pub platform_fingerprint: PlatformConfigVersion,
     pub integrity_config: IntegrityConfig,
@@ -146,7 +147,7 @@ impl AppMetaData {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct IntegrityConfig {
     #[serde(default)]
     pub allow_unauthenticated: Option<bool>,
@@ -194,7 +195,7 @@ impl IntegrityConfig {
 // =============================================================================
 // Browser Integrity Config
 // =============================================================================
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct BrowserIntegrityConfig {
     pub authorized_origins: Vec<String>,
 
@@ -352,7 +353,7 @@ impl BrowserIntegrityConfig {
 // =============================================================================
 // iOS Integrity Config
 // =============================================================================
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct IosIntegrityConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reattestation_days: Option<u32>,
@@ -445,7 +446,7 @@ impl IosIntegrityConfig {
 // =============================================================================
 // Android Integrity Config
 // =============================================================================
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct AndroidIntegrityConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reattestation_days: Option<u32>,
@@ -565,7 +566,7 @@ impl AndroidIntegrityConfig {
 // =============================================================================
 // IoT INTEGRITY CONFIGURATION
 // =============================================================================
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct IoTIntegrityConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reattestation_days: Option<u32>,
@@ -749,7 +750,7 @@ impl IoTIntegrityConfig {
 // =============================================================================
 // Rate Limits
 // =============================================================================
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct RateLimits {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_attestations_per_user_per_hour: Option<u32>,

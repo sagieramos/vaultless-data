@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
-use vaultless_core::{Decimal, models::app_model::integrity::dto::AppMetaData};
+use vaultless_core::{Decimal, models::app_model::integrity::dto::{AppMetaData, IntegrityConfig}};
 use vaultless_core::{
     models::{
         Application, CreateApplication, UpdateApplication,
@@ -99,7 +99,7 @@ pub struct ApplicationResponse {
     pub internal_notes: Option<String>,
 
     /// Integrity configuration metadata
-    pub integrity_config: AppMetaData,
+    pub integrity_config: IntegrityConfig,
 }
 
 impl From<Application> for ApplicationResponse {
@@ -115,7 +115,7 @@ impl From<Application> for ApplicationResponse {
             is_key_rotation_forced: app.is_key_rotation_forced,
             deletion_requested_at: app.deletion_requested_at,
             internal_notes: app.internal_notes,
-            integrity_config: app.app_meta.0,
+            integrity_config: app.app_meta.0.integrity_config,
         }
     }
 }

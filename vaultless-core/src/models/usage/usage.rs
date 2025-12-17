@@ -538,13 +538,21 @@ where
 // Metric Counters & Cost Estimation
 // =============================================================================
 
-#[derive(Debug, Default, Clone, Serialize)]
+use utoipa::ToSchema;
+
+#[derive(Debug, Default, Clone, Serialize, ToSchema)]
 pub struct MetricCounters {
+    #[schema(example = 100)]
     pub messages_sent: i64,
+    #[schema(example = 50)]
     pub messages_received: i64,
+    #[schema(example = 25)]
     pub proofs_verified: i64,
+    #[schema(example = 102400)]
     pub total_bytes_sent: i64,
+    #[schema(example = 51200)]
     pub total_bytes_received: i64,
+    #[schema(example = 5)]
     pub rate_limit_hits: i64,
 }
 

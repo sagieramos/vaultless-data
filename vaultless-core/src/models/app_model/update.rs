@@ -30,6 +30,24 @@ macro_rules! validate_config {
 }
 
 impl Application {
+    /// Creates the app_meta patch with IntegrityConfig updates and regenerates
+    /// platform fingerprint UUIDs for any platforms that are being updated
+    fn create_app_meta_patch(integrity_patch: &JsonValue) -> JsonValue {
+        let mut fingerprint_updates = serde_json::Map::new();
+
+        // Generate new UUIDs for any platforms that are being updated
+        for platform in ["browser", "ios", "android", "iot"] {
+            if integrity_patch.get(platform).is_some() {
+                fingerprint_updates.insert(platform.to_string(), serde_json::json!(Uuid::new_v4()));
+            }
+        }
+
+        serde_json::json!({
+            "IntegrityConfig": integrity_patch,
+            "PlatformFingerPrint": fingerprint_updates
+        })
+    }
+
     pub async fn update(
         exec: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
@@ -41,7 +59,8 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta {
+        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.integrity_config
+        {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
             })?;
@@ -70,9 +89,11 @@ impl Application {
             );
 
             if let Some(patch) = &integrity_patch_opt {
+                let wrapped_patch = Self::create_app_meta_patch(patch);
+
                 separated
                     .push("app_meta = jsonb_merge_patch(app_meta, ")
-                    .push_bind(patch)
+                    .push_bind(wrapped_patch)
                     .push(")");
             }
         }
@@ -123,7 +144,8 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.app_meta {
+        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.integrity_config
+        {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
             })?;
@@ -151,9 +173,11 @@ impl Application {
             );
 
             if let Some(patch) = &integrity_patch_opt {
+                let wrapped_patch = Self::create_app_meta_patch(patch);
+
                 separated
                     .push("app_meta = jsonb_merge_patch(app_meta, ")
-                    .push_bind(patch)
+                    .push_bind(wrapped_patch)
                     .push(")");
             }
         }
@@ -196,8 +220,8 @@ impl Application {
         let config_json = serde_json::to_value(config)
             .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
-        let config: IntegrityConfig = serde_json::from_value(config_json)
-            .map_err(|e| VaultlessError::Validation(format!("Invalid config: {}", e)))?;
+        let app_meta = AppMetaData::from_jsonb(&config_json)?;
+        let config = app_meta.integrity_config;
 
         validate_config!(
             config,
