@@ -19,7 +19,6 @@ mod middleware;
 mod routes;
 mod services;
 mod state;
-use hyper::header;
 
 use crate::config::Config;
 use crate::middleware::track_metrics;
