@@ -46,7 +46,10 @@ impl Application {
         application_id: Uuid,
         user_id: Uuid,
     ) -> Result<Application> {
-        let (mut qb, integrity_patch_opt) = Self::build_update_query(&update)?;
+        let integrity_patch_opt = Self::validate_and_serialize_integrity(&update)?;
+
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
+        Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
 
         if Self::is_empty_update(qb.sql()) {
             tracing::info!(application_id = %application_id, "No fields to update");
@@ -80,7 +83,10 @@ impl Application {
         application_id: Uuid,
         user_id: Uuid,
     ) -> Result<Application> {
-        let (mut qb, integrity_patch_opt) = Self::build_update_query(&update)?;
+        let integrity_patch_opt = Self::validate_and_serialize_integrity(&update)?;
+
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
+        Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
 
         if Self::is_empty_update(qb.sql()) {
             let existing: Application = sqlx::query_as::<_, Application>(
@@ -107,51 +113,49 @@ impl Application {
         Ok(updated_app)
     }
 
-    fn build_update_query(
-        update: &UpdateApplication,
-    ) -> Result<(QueryBuilder<'static, Postgres>, Option<JsonValue>)> {
+    fn validate_and_serialize_integrity(update: &UpdateApplication) -> Result<Option<JsonValue>> {
         update
             .validate()
             .map_err(|e| VaultlessError::Validation(format!("Invalid update: {}", e)))?;
 
-        let integrity_patch_opt: Option<JsonValue> = if let Some(ref cfg) = update.integrity_config
-        {
+        if let Some(ref cfg) = update.integrity_config {
             cfg.validate().map_err(|e| {
                 VaultlessError::Validation(format!("Integrity config invalid: {}", e))
             })?;
-            Some(
+            Ok(Some(
                 serde_json::to_value(cfg)
                     .map_err(|e| VaultlessError::Serialization(e.to_string()))?,
-            )
+            ))
         } else {
-            None
-        };
-
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
-        {
-            let mut separated = qb.separated(", ");
-
-            dynamic_update!(
-                separated,
-                update.name => "name",
-                update.description => "description",
-                update.is_active => "is_active",
-                update.max_ttl_seconds => "max_ttl_seconds",
-                update.is_key_rotation_forced => "is_key_rotation_forced",
-                update.internal_notes => "internal_notes",
-            );
-
-            if let Some(patch) = &integrity_patch_opt {
-                let wrapped_patch = Self::create_app_meta_patch(patch);
-
-                separated
-                    .push("app_meta = jsonb_merge_patch(app_meta, ")
-                    .push_bind(wrapped_patch)
-                    .push(")");
-            }
+            Ok(None)
         }
+    }
 
-        Ok((qb, integrity_patch_opt))
+    fn build_update_fields<'a>(
+        qb: &mut QueryBuilder<'a, Postgres>,
+        update: &'a UpdateApplication,
+        integrity_patch_opt: &'a Option<JsonValue>,
+    ) {
+        let mut separated = qb.separated(", ");
+
+        dynamic_update!(
+            separated,
+            update.name => "name",
+            update.description => "description",
+            update.is_active => "is_active",
+            update.max_ttl_seconds => "max_ttl_seconds",
+            update.is_key_rotation_forced => "is_key_rotation_forced",
+            update.internal_notes => "internal_notes",
+        );
+
+        if let Some(patch) = integrity_patch_opt {
+            let wrapped_patch = Self::create_app_meta_patch(patch);
+
+            separated
+                .push("app_meta = jsonb_merge_patch(app_meta, ")
+                .push_bind(wrapped_patch)
+                .push(")");
+        }
     }
 
     fn is_empty_update(sql: &str) -> bool {

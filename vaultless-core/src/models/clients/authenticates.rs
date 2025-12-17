@@ -5,7 +5,7 @@ use crate::models::session::paseto_session::SessionVerifier;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
-    models::session::paseto_session::{SessionKeyManager, verify_session_token},
+    models::session::paseto_session::verify_session_token,
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Duration, Utc};
