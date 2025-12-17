@@ -22,7 +22,7 @@ const SESSION_DURATION_HOURS: u64 = 24 * 30; // 30 days
 
 enum AttestationResult {
     NotRequired(u8),
-    Reattested { previous_score: u8, new_score: u8 },
+    Reattested { _previous_score: u8, new_score: u8 },
 }
 
 /// Internal struct to hold the results of the common authentication steps
@@ -275,7 +275,7 @@ impl Client {
         .await?;
 
         Ok(AttestationResult::Reattested {
-            previous_score: current_score,
+            _previous_score: current_score,
             new_score,
         })
     }
