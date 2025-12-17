@@ -56,7 +56,7 @@ pub struct CreateApplication {
     "max_ttl_seconds": 3600,
     "is_key_rotation_forced": false,
     "internal_notes": "Some internal notes",
-    "app_meta": {
+    "integrity_config": {
         "allow_unauthenticated": false,
         "browser": {
             "authorized_origins": ["https://example.com", "https://app.example.com"],
