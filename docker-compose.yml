@@ -1,26 +1,42 @@
+# =============================================================================
+# Vaultless Data - Docker Compose Configuration
+# =============================================================================
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose logs -f        # View logs
+#   docker-compose down           # Stop all services
+#   docker-compose down -v        # Stop and remove volumes
+
 services:
+  # ───────────────────────────────────────────────────────────────────────────
+  # PostgreSQL with TimescaleDB
+  # ───────────────────────────────────────────────────────────────────────────
   postgres:
-    image: timescale/timescaledb:2.15.2-pg16 # postgres:16-alpine
+    image: timescale/timescaledb:2.15.2-pg16
     container_name: vaultless-postgres
     environment:
-      POSTGRES_USER: vaultless
-      POSTGRES_PASSWORD: vaultless_dev_pass
-      POSTGRES_DB: vaultless_db
+      POSTGRES_USER: ${DB_USERNAME:-vaultless}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-vaultless_dev_pass}
+      POSTGRES_DB: ${DB_NAME:-vaultless_db}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vaultless"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-vaultless}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # Dragonfly (Redis-compatible cache)
+  # ───────────────────────────────────────────────────────────────────────────
   dragonfly:
     image: docker.dragonflydb.io/dragonflydb/dragonfly
     container_name: vaultless-dragonfly
     ports:
-      - "6379:6379"
+      - "${CACHE_PORT:-6379}:6379"
     command: >
       --bind 0.0.0.0
       --logtostderr
@@ -29,12 +45,43 @@ services:
       --proactor_threads 2
     volumes:
       - dragonfly_data:/data
-    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Vaultless API (optional - uncomment to run in Docker)
+  # ───────────────────────────────────────────────────────────────────────────
+  # api:
+  #   build: .
+  #   container_name: vaultless-api
+  #   ports:
+  #     - "${SERVER_PORT:-8080}:8080"
+  #   environment:
+  #     - SERVER_HOST=0.0.0.0
+  #     - SERVER_PORT=8080
+  #     - DB_HOST=postgres
+  #     - DB_PORT=5432
+  #     - DB_NAME=${DB_NAME:-vaultless_db}
+  #     - DB_USERNAME=${DB_USERNAME:-vaultless}
+  #     - DB_PASSWORD=${DB_PASSWORD:-vaultless_dev_pass}
+  #     - DB_MAX_CONNECTIONS=10
+  #     - CACHE_HOST=dragonfly
+  #     - CACHE_PORT=6379
+  #     - CACHE_MAX_POOL_SIZE=20
+  #     - CACHE_DEFAULT_TTL=3600
+  #     - API_KEY_SALT=${API_KEY_SALT:-change-this-random-salt-in-production}
+  #     - PASETO_CLIENT_SESSION_CURRENT_KEY=${PASETO_CLIENT_SESSION_CURRENT_KEY}
+  #     - RUST_LOG=info,vaultless_api=debug
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     dragonfly:
+  #       condition: service_healthy
+  #   restart: unless-stopped
 
 volumes:
   postgres_data:
