@@ -1,25 +1,21 @@
 use crate::{
     middleware::{
         application::ApplicationKeyViewExt,
-        client::{ClientExt, SessionDataClientExt},
+        client::{ClientResponse, SessionDataClientExt},
         error::ApiError,
     },
     state::AppState,
 };
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
 };
-use chrono::Utc;
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
-use vaultless_core::models::session::extract_token_expiration;
+use std::sync::Arc;
 use vaultless_core::{
-    AuthenticateClientRequest, AuthenticateClientResponse, Client, RegisterClientRequest,
-    RegisterClientResponse,
+    Client, LoginClientRequest, LoginClientResponse, SignupClientRequest, SignupClientResponse,
 };
-
-use vaultless_core::models::session::paseto_session::verify_session_token;
 
 // =============================================================================
 // Request/Response Types
@@ -56,24 +52,20 @@ pub struct ChallengeResponse {
 /// Register new client with optional platform attestation
 /// POST /api/clients/register
 #[axum::debug_handler]
-pub async fn register_client(
+pub async fn sign_up_client(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     ApplicationKeyViewExt(auth_config): ApplicationKeyViewExt,
-    Json(input): Json<RegisterClientRequest>,
-) -> Result<Json<RegisterClientResponse>, ApiError> {
-    tracing::info!(
-        platform = ?input.attestation.as_ref().map(|a| &a.platform),
-        has_attestation = input.attestation.is_some(),
-        "Client registration attempt"
-    );
-
-    let response = Client::sign_up(
+    Json(input): Json<SignupClientRequest>,
+) -> Result<Json<SignupClientResponse>, ApiError> {
+    let response = Client::sign_up_hybrid(
         state.db.as_ref(),
-        Some(state.redis_pool),
-        state.session_key_manager,
+        state.redis_pool,
+        state.session_verifier_hybrid,
+        auth_config,
         state.attestation_service,
         input,
-        auth_config,
+        addr.ip(),
     )
     .await
     .map_err(ApiError::from)?;
@@ -90,54 +82,19 @@ pub async fn register_client(
 /// POST /api/clients/login
 
 /// Login handler - uses fast verification
-#[tracing::instrument(skip(state, headers, input), fields(endpoint = "login_client"))]
+#[tracing::instrument(skip(state, input), fields(endpoint = "login_client"))]
 #[axum::debug_handler]
-pub async fn login(
+pub async fn login_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
     ApplicationKeyViewExt(auth_config): ApplicationKeyViewExt,
-    Json(input): Json<AuthenticateClientRequest>,
-) -> Result<Json<AuthenticateClientResponse>, ApiError> {
-    tracing::info!(
-        application_id = %auth_config.app_id,
-        "Client authentication attempt"
-    );
-
-    // 1 Try verifying existing session token (FAST PATH with caching)
-    if let Ok(token) = crate::middleware::helper::extract_bearer_token(&headers)
-        && let Ok(session_data) = state.session_verifier.verify_fast(token).await
-    {
-        tracing::info!(
-            client_id = %session_data.client_id,
-            device_trusted = session_data.device_trusted,
-            platform = %session_data.platform,
-            "Valid session found - reusing token"
-        );
-
-        // Extract expiration only when needed
-        let expires_at = extract_token_expiration(&state.session_key_manager, token)
-            .unwrap_or_else(|_| Utc::now() + chrono::Duration::days(30));
-
-        let response = AuthenticateClientResponse {
-            client_id: session_data.client_id,
-            session_token: token.to_string(),
-            expires_at,
-            is_new_session: false,
-            was_reattested: false,
-        };
-
-        return Ok(Json(response));
-    }
-
-    // 2 Challenge-based authentication
-    tracing::info!("Authenticating with challenge-based flow");
-
-    let response = Client::login(
+    Json(input): Json<LoginClientRequest>,
+) -> Result<Json<LoginClientResponse>, ApiError> {
+    let response = Client::login_hybrid(
         state.db.as_ref(),
-        state.redis_pool.clone(),
-        state.session_key_manager.clone(),
+        state.redis_pool,
+        state.session_verifier_hybrid,
         auth_config,
-        state.attestation_service.clone(),
+        state.attestation_service,
         input,
     )
     .await
@@ -146,7 +103,7 @@ pub async fn login(
     tracing::info!(
         client_id = %response.client_id,
         was_reattested = %response.was_reattested,
-        "Client authenticated successfully"
+        "Client logged in successfully"
     );
 
     Ok(Json(response))
@@ -186,7 +143,7 @@ pub async fn lookup_client(
         Some(state.redis_pool.clone()),
         query.pubkey.as_deref(),
         query.identifier.as_deref(),
-        None, // client_identifier is never passed from the query
+        None,
     )
     .await
     .map_err(ApiError::from)?;
@@ -213,10 +170,9 @@ pub async fn health_check() -> Json<serde_json::Value> {
 
 /// Get current authenticated client info
 /// GET /api/clients/me
-pub async fn get_current_client(ClientExt(client): ClientExt) -> Json<Client> {
+pub async fn get_current_client(client: ClientResponse) -> Json<ClientResponse> {
     Json(client)
 }
-
 /// Logout (revoke current session)
 /// POST /api/clients/logout
 /// Logout handler - uses secure verification
@@ -230,25 +186,22 @@ pub async fn logout(
 
     // Use SECURE verification for logout (bypasses cache)
     let session_data = state
-        .session_verifier
+        .session_verifier_hybrid
         .verify_secure(token)
         .await
         .map_err(ApiError::from)?;
 
-    // Extract JTI for revocation
-    let (_, jti) =
-        verify_session_token(&state.session_key_manager, token).map_err(ApiError::from)?;
-
-    // Revoke session (broadcasts to all nodes)
-    state
-        .session_verifier
-        .revoke_session(&jti, 2592000)
-        .await // 30 days TTL
-        .map_err(ApiError::from)?;
+    Client::revoke_client_session_with_hybrid_verifier(
+        state.db.as_ref(),
+        state.session_verifier_hybrid,
+        session_data.client_id,
+        Some(token),
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     tracing::info!(
         client_id = %session_data.client_id,
-        jti = %jti,
         "Client logged out successfully"
     );
 
@@ -264,20 +217,23 @@ pub async fn deactivate_client(
     State(state): State<AppState>,
     SessionDataClientExt(session_data): SessionDataClientExt,
 ) -> Result<Json<SuccessResponse>, ApiError> {
-    Client::revoke_client_session(
+    Client::revoke_client_session_with_hybrid_verifier(
         state.db.as_ref(),
-        Some(&state.redis_pool),
-        &state.session_key_manager,
+        state.session_verifier_hybrid.clone(),
         session_data.client_id,
         None,
     )
-    .await?;
-    Client::deactivate(
+    .await
+    .map_err(ApiError::from)?;
+
+    Client::deactivate_with_hybrid_verifier(
         state.db.as_ref(),
         Some(&state.redis_pool),
+        state.session_verifier_hybrid,
         session_data.client_id,
     )
-    .await?;
+    .await
+    .map_err(ApiError::from)?;
 
     tracing::info!("Client {} deactivated", session_data.client_id);
 

@@ -12,8 +12,8 @@ pub fn client_routes(state: AppState) -> Router<AppState> {
         .route("/logout", post(logout))
         .layer(middleware::from_fn_with_state(state.clone(), client_auth))
         // Public routes
-        .route("/register", post(register_client))
-        .route("/authenticate", post(login))
+        .route("/register", post(sign_up_client))
+        .route("/authenticate", post(login_client))
         .route("/challenge", get(generate_challenge))
         .route("/lookup", get(lookup_client))
         .route("/health", get(health_check))

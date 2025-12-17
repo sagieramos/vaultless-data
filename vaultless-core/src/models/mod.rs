@@ -11,7 +11,7 @@ pub mod user;
 
 pub use api_key::{ApiKey, CachedApiKey, CreateApiKey};
 pub use app_model::dto::{
-    Application, ApplicationWithTier, CreateApplication, CreateApplicationResponse,
+    Application, CreateApplication, CreateApplicationResponse,
     UpdateApplication,
 };
 pub use billing::*;

@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use validator::Validate;
+use utoipa::ToSchema;
 
 // ============================================================================
 // REGISTRATION
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
     #[validate(email(message = "Invalid email address"))]
     pub email: String,
@@ -21,7 +22,7 @@ pub struct RegisterRequest {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RegisterResponse {
     pub email: String,
     pub message: String,
@@ -31,7 +32,7 @@ pub struct RegisterResponse {
 // LOGIN
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct LoginRequest {
     #[validate(email(message = "Invalid email address"))]
     pub email: String,
@@ -40,7 +41,7 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LoginResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -49,7 +50,7 @@ pub struct LoginResponse {
     pub user: UserInfo,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UserInfo {
     pub email: String,
     pub name: Option<String>,
@@ -61,12 +62,12 @@ pub struct UserInfo {
 // TOKEN REFRESH
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RefreshTokenResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -78,12 +79,12 @@ pub struct RefreshTokenResponse {
 // EMAIL VERIFICATION
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct VerifyEmailRequest {
     pub token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct VerifyEmailResponse {
     pub message: String,
     pub email: String,
@@ -93,24 +94,24 @@ pub struct VerifyEmailResponse {
 // PASSWORD RESET
 // ============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct RequestPasswordResetRequest {
     #[validate(email(message = "Invalid email address"))]
     pub email: String,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ResendVerificationRequest {
     #[validate(email(message = "Invalid email address"))]
     pub email: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RequestPasswordResetResponse {
     pub message: String,
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ResetPasswordRequest {
     pub token: String,
 
@@ -118,7 +119,7 @@ pub struct ResetPasswordRequest {
     pub new_password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ResetPasswordResponse {
     pub message: String,
 }
@@ -127,7 +128,7 @@ pub struct ResetPasswordResponse {
 // LOGOUT
 // ============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LogoutResponse {
     pub message: String,
 }
@@ -136,7 +137,7 @@ pub struct LogoutResponse {
 // CURRENT USER
 // ============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CurrentUserResponse {
     pub user: UserInfo,
 }

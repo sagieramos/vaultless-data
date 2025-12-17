@@ -38,13 +38,11 @@ pub struct ApiKey {
     pub id: Uuid,
     pub user_id: Uuid,
     pub key_prefix: String,
-    // key_hash is now Option<String> in the DB, but mandatory for Secret keys
     #[serde(skip_serializing)]
     pub key_hash: Option<String>,
-    // Tier is now nullable in the DB, but mandatory for Secret keys
-    pub tier: SubscriptionTier,
-    pub monthly_message_quota: i32,
-    pub message_retention_seconds: i32,
+    pub tier: Option<SubscriptionTier>,
+    pub monthly_message_quota: i64,
+    pub message_retention_seconds: i64,
     pub description: Option<String>,
     pub scopes: Option<String>,
     pub is_active: bool,
@@ -63,9 +61,9 @@ pub struct CachedApiKey {
     pub id: Uuid,
     pub user_id: Uuid,
     // key_prefix, key_hash, publishable_key_plaintext are omitted
-    pub tier: SubscriptionTier,
-    pub monthly_message_quota: i32,
-    pub message_retention_seconds: i32,
+    pub tier: Option<SubscriptionTier>,
+    pub monthly_message_quota: i64,
+    pub message_retention_seconds: i64,
     // description and scopes are omitted
     pub is_active: bool,
     pub created_at: DateTime<Utc>,

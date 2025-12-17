@@ -95,7 +95,7 @@ pub async fn get_application_quota_status(
     State(state): State<AppState>,
 ) -> Result<Json<QuotaStatusResponse>, ApiError> {
     // Get application with usage data
-    let app = Application::find_owned_by_user(&*state.db, app_id, user.user_id).await?;
+    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
 
     // Calculate quota status
     let usage_percentage = app.quota_usage_percentage;
@@ -159,7 +159,7 @@ pub async fn get_application_cost_breakdown(
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<CostBreakdownResponse>, ApiError> {
-    let app = Application::find_owned_by_user(&*state.db, app_id, user.user_id).await?;
+    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
 
     // Calculate cost breakdown (based on your pricing model)
     let message_cost = (app.current_month_messages_sent as f64 / 1000.0) * 1.0; // $0.01 per 1000
@@ -209,7 +209,7 @@ pub async fn export_application_usage(
     SessionDataUserExt(session): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    let app = Application::find_owned_by_user(&*state.db, app_id, session.user_id).await?;
+    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id).await?;
 
     match query.format {
         ExportFormat::Json => Ok(Json(app).into_response()),
@@ -243,7 +243,7 @@ pub async fn get_application_trends(
     SessionDataUserExt(session): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<TrendsResponse>, ApiError> {
-    let app = Application::find_owned_by_user(&*state.db, app_id, session.user_id).await?;
+    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id).await?;
 
     // Calculate trends
     let daily_average = app.last_30d_messages_sent as f64 / 30.0;
@@ -282,7 +282,7 @@ pub async fn get_application_trends(
 // HELPER FUNCTIONS (UNMODIFIED)
 // ============================================================================
 
-fn generate_usage_csv(app: &ApplicationWithUsageResponse) -> Result<String, ApiError> {
+fn generate_usage_csv(app: &ApplicationWithUsage) -> Result<String, ApiError> {
     let mut csv = String::from("metric,current_month,last_7d,last_30d,lifetime\n");
 
     csv.push_str(&format!(

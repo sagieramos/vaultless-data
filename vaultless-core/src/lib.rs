@@ -1,3 +1,4 @@
+pub mod circuit_breaker;
 pub mod crypto;
 pub mod error;
 pub mod models;
@@ -6,6 +7,7 @@ pub mod utils;
 
 // Re-export commonly used types
 pub use error::{Result, VaultlessError};
+pub use futures_util;
 pub use types::SubscriptionTier;
 
 // Re-export models
@@ -13,34 +15,32 @@ pub use models::{
     ApiKey,
     CreateApiKey,
     CreateProof,
-    Message,
     MessageProof,
     ProofVerificationResult,
     RefreshToken,
     User,
     UserSession,
     VerifyProofRequest,
-    app_model::attestation::AttestationService,
+    app_model::integrity::AttestationService,
     app_model::{
         dto::{
-            Application, ApplicationKeyView, ApplicationWithTier, CreateApplication,
-            CreateApplicationResponse, PaginatedApplicationsWithKeys, UpdateApplication,
+            Application, ApplicationKeyView, CreateApplication, CreateApplicationResponse,
+            PaginatedApplicationsWithKeys, UpdateApplication,
         },
-        helper::get_global_mv_etag,
+        material_view_helper::get_global_mv_etag,
     },
 
     // application::{Application, CreateApplication},
     billing::*,
     client_token::*,
     clients::dto::{
-        AuthenticateClientRequest, AuthenticateClientResponse, AuthenticationChallenge, Client,
-        RegisterClientRequest, RegisterClientResponse,
+        AuthenticationChallenge, Client, LoginClientRequest, LoginClientResponse,
+        SignupClientRequest, SignupClientResponse,
     },
 
     dashboard::get_live_usage,
 
     message::*,
-    message::{InstantMessage, P2PFile, ReadReceipt, instant_message},
     session::{
         claims_keys,
         paseto_session::{SessionData, SessionKeyManager},

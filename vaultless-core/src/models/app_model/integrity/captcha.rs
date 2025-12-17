@@ -40,6 +40,7 @@ struct TurnstileVerifyRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct TurnstileVerifyResponse {
     success: bool,
     #[serde(rename = "error-codes")]
@@ -103,6 +104,7 @@ struct HCaptchaVerifyRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct HCaptchaVerifyResponse {
     success: bool,
     #[serde(rename = "error-codes")]
@@ -171,6 +173,7 @@ struct ReCaptchaVerifyRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ReCaptchaVerifyResponse {
     success: bool,
     #[serde(rename = "error-codes")]

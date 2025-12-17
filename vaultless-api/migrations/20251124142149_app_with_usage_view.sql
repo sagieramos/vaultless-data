@@ -46,7 +46,7 @@ SELECT
     a.is_key_rotation_forced,
     a.deletion_requested_at,
     a.internal_notes,
-    a.integrity_config,
+    a.app_meta,
     
     -- ========================================================================
     -- SECRET KEY INFO
@@ -268,7 +268,7 @@ RETURNS TABLE (
     is_key_rotation_forced BOOLEAN,
     deletion_requested_at TIMESTAMPTZ,
     internal_notes TEXT,
-    integrity_config JSONB,
+    app_meta JSONB,
     secret_key_id UUID,
     publishable_keys JSONB,
     webhooks JSONB
@@ -291,7 +291,7 @@ BEGIN
         a.is_key_rotation_forced,
         a.deletion_requested_at,
         a.internal_notes,
-        a.integrity_config,
+        a.app_meta,
         sk.id AS secret_key_id,
         COALESCE(
             (

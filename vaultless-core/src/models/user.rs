@@ -9,11 +9,6 @@ use uuid::Uuid;
 
 use crate::VaultlessError;
 
-struct UserRegistration {
-    email: String,
-    password: String,
-    name: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct User {
@@ -45,20 +40,18 @@ impl User {
         password: String,
         name: Option<String>,
     ) -> Result<Self, VaultlessError> {
-        let user = UserRegistration {
-            email,
-            password,
-            name,
-        };
-        // Hash password (bcrypt with cost 12)
-        let password_hash = bcrypt::hash(user.password, 12)
+        let password_hash = bcrypt::hash(&password, 12)
             .map_err(|e| VaultlessError::Internal(format!("Password hashing failed: {}", e)))?;
 
-        // Generate email verification token
         let verification_token = Self::generate_token().map_err(|e| {
             VaultlessError::Internal(format!("Failed to generate verification token: {}", e))
         })?;
+
+        let token_hash = hash_content(verification_token.as_bytes());
         let verification_expires = Utc::now() + Duration::hours(24);
+
+        // Note: verification_token is returned to caller for email dispatch
+        // Do not log sensitive tokens
 
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -67,10 +60,10 @@ impl User {
             RETURNING *
             "#,
         )
-        .bind(&user.email)
+        .bind(&email)
         .bind(&password_hash)
-        .bind(user.name)
-        .bind(&verification_token)
+        .bind(&name)
+        .bind(&token_hash)
         .bind(verification_expires)
         .fetch_one(pool)
         .await
@@ -150,18 +143,19 @@ impl User {
         let reset_token = Self::generate_token().map_err(|e| {
             VaultlessError::Internal(format!("Failed to generate reset token: {}", e))
         })?;
+        let reset_token_hash = hash_content(reset_token.as_bytes());
         let reset_expires = Utc::now() + Duration::hours(1);
 
         let result = sqlx::query(
             r#"
-        UPDATE users 
+        UPDATE users
         SET password_reset_token = $1,
             password_reset_expires_at = $2,
             updated_at = NOW()
         WHERE email = $3 AND is_active = true
         "#,
         )
-        .bind(&reset_token)
+        .bind(&reset_token_hash)
         .bind(reset_expires)
         .bind(email)
         .execute(pool)
@@ -184,20 +178,22 @@ impl User {
         let password_hash = bcrypt::hash(new_password, 12)
             .map_err(|e| VaultlessError::Internal(format!("Password hashing failed: {}", e)))?;
 
+        let token_hash = hash_content(token.as_bytes());
+
         let user = sqlx::query_as::<_, User>(
             r#"
-            UPDATE users 
+            UPDATE users
             SET password_hash = $1,
                 password_reset_token = NULL,
                 password_reset_expires_at = NULL,
                 updated_at = NOW()
-            WHERE password_reset_token = $2 
+            WHERE password_reset_token = $2
                 AND password_reset_expires_at > NOW()
             RETURNING *
             "#,
         )
         .bind(&password_hash)
-        .bind(token)
+        .bind(&token_hash)
         .fetch_one(pool)
         .await
         .map_err(|_| VaultlessError::Unauthorized("Invalid or expired reset token".to_string()))?;
@@ -426,11 +422,6 @@ impl User {
 pub struct UserSession {
     pub id: Uuid,
     pub user_id: Uuid,
-    /*
-    #[serde(skip_serializing)]
-    #[sqlx(skip)]resend_verification_token
-    pub access_token: String,
-    */
     pub access_token_hash: String,
     pub token_type: String,
     pub scope: Option<String>,

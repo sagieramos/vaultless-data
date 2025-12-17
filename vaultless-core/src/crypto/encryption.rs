@@ -16,6 +16,7 @@ pub const KEY_SIZE: usize = 32;
 
 /// Encrypted data with nonce
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[must_use]
 pub struct EncryptedData {
     /// Base64-encoded ciphertext
     pub ciphertext: String,
@@ -38,6 +39,7 @@ pub struct EncryptedData {
 /// - Uses a randomly generated 12-byte nonce (GCM standard) for each encryption.
 /// - Key is zeroized from memory after use.
 /// - Never reuse the same nonce with the same key (nonce is returned for decryption).
+#[must_use = "encrypted data must be stored or transmitted"]
 pub fn encrypt(plaintext: &[u8], key: &mut [u8]) -> Result<EncryptedData> {
     if key.len() != KEY_SIZE {
         // KEY_SIZE = 32
@@ -92,12 +94,9 @@ pub fn encrypt(plaintext: &[u8], key: &mut [u8]) -> Result<EncryptedData> {
 /// - Verifies authentication tag automatically
 /// - Key is zeroized from memory after use
 /// - Returns error if authentication fails (tampered data)
+#[must_use = "decrypted data should be used"]
 pub fn decrypt(encrypted: &EncryptedData, key: &mut [u8; KEY_SIZE]) -> Result<Vec<u8>> {
-    if key.len() != KEY_SIZE {
-        return Err(VaultlessError::Decryption(
-            "Invalid key size. Expected 32 bytes for AES-256".to_string(),
-        ));
-    }
+    // Note: key size is guaranteed at compile time by the [u8; KEY_SIZE] type
 
     // Decode from base64
     let ciphertext_bytes = BASE64

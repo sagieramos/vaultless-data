@@ -12,12 +12,14 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use vaultless_core::models::usage::{FlusherMetrics, MetricsConfig, start_redis_flusher};
+mod api_doc;
 mod config;
 mod handlers;
 mod middleware;
 mod routes;
 mod services;
 mod state;
+use hyper::header;
 
 use crate::config::Config;
 use crate::middleware::track_metrics;
@@ -74,14 +76,12 @@ async fn main() -> anyhow::Result<()> {
         redis_operation_timeout_secs: config.metrics_redis_timeout_secs.unwrap_or(30),
     });
 
-    let session_key_manager = config.security.paseto_client_session_key_manager.clone();
-
     let app_state = AppState::new(
         db,
         redis_pool,
         Arc::clone(&metrics_config),
         config.cache.url,
-        session_key_manager,
+        config.security.paseto_client_session_key_manager.clone(),
     )?;
 
     let flusher_metrics = Arc::new(FlusherMetrics::new());
@@ -104,11 +104,14 @@ async fn main() -> anyhow::Result<()> {
         .with_state(app_state.clone());
 
     //----------------------------------------------------
-    // 6. Build main app with middleware
+    // 6. Build main app with middleware and Swagger UI
     //----------------------------------------------------
+    let swagger_ui = api_doc::openapi_config();
+
     let app = Router::new()
         .merge(api_router)
         .merge(metrics_router)
+        .merge(swagger_ui)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -213,30 +216,3 @@ async fn shutdown_signal(
         tracing::info!("✅ Redis flusher shutdown complete");
     }
 }
-/* ```
-
-## Key Features:
-
-1. **Automatic metric registration** using `Lazy` - metrics are registered on first use
-2. **Path normalization** to prevent cardinality explosion (e.g., `/users/123` → `/users/:id`)
-3. **Multiple metrics**:
-   - `http_requests_total` - Request counter by method, path, and status
-   - `http_request_duration_seconds` - Request duration histogram
-   - `db_query_duration_seconds` - Database query timing (for future use)
-   - `cache_operations_total` - Cache operation counter (for future use)
-4. **Proper histogram buckets** for latency tracking
-5. **Debug logging** for request completion
-
-## Expected Metrics Output:
-```
-# HELP http_requests_total Number of HTTP requests received
-# TYPE http_requests_total counter
-http_requests_total{method="GET",path="/health",status="200"} 5
-http_requests_total{method="GET",path="/metrics",status="200"} 10
-http_requests_total{method="GET",path="/users/:id",status="200"} 15
-
-# HELP http_request_duration_seconds HTTP request duration in seconds
-# TYPE http_request_duration_seconds histogram
-http_request_duration_seconds_bucket{method="GET",path="/health",le="0.005"} 5
-http_request_duration_seconds_sum{method="GET",path="/health"} 0.015
-http_request_duration_seconds_count{method="GET",path="/health"} 5 */

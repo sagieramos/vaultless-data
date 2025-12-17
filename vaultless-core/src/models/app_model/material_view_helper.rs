@@ -3,7 +3,7 @@ use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use sqlx::Pool;
-use sqlx::{Executor, Postgres};
+use sqlx::Postgres;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::{Duration, sleep};

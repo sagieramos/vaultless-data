@@ -4,7 +4,7 @@ use axum::{
 };
 
 use crate::{
-    handlers::developer::{analytics, application},
+    handlers::developer::{analytics, application, application_dashboard},
     middleware::{global::reject_all_query, user::user_auth},
     state::AppState,
 };
@@ -21,12 +21,15 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
     // Routes without query parameters
     let no_query_routes = Router::new()
         .route("/", post(application::create_application))
-        .route("/{id}", get(application::get_application))
         .route("/{id}", patch(application::update_application))
         .route("/{id}", delete(application::deactivate_application))
         .route(
             "/{id}/with_keys",
             get(application::get_application_with_keys_handler),
+        )
+        .route(
+            "/{id}/analytics",
+            get(application_dashboard::get_application_with_keys_handler),
         )
         .route("/usage-summary", get(application::get_user_usage_summary))
         .route(
