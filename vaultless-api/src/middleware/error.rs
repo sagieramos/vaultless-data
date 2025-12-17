@@ -8,6 +8,7 @@ use axum::{
 };
 use serde_json::json;
 use tracing::error;
+use sqlx;
 use vaultless_core::VaultlessError;
 
 /// API error response wrapper

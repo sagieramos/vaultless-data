@@ -60,6 +60,7 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
     /// Enable SSL mode (disable, require, prefer)
     pub ssl_mode: Option<String>,
+    pub database_url: String,
 }
 
 impl DatabaseConfig {
@@ -88,6 +89,7 @@ impl fmt::Debug for DatabaseConfig {
             .field("password", &"<redacted>")
             .field("max_connections", &self.max_connections)
             .field("ssl_mode", &self.ssl_mode)
+            .field("database_url", &self.database_url)
             .finish()
     }
 }
@@ -262,6 +264,7 @@ impl Config {
                     .unwrap_or_else(|_| "10".to_string())
                     .parse()?,
                 ssl_mode: env::var("DB_SSL_MODE").ok(),
+                database_url: env::var("DATABASE_URL").unwrap_or_default(),
             },
 
             // ─────────────────────────────────────────────────────────────────
@@ -273,9 +276,7 @@ impl Config {
                     .unwrap_or_else(|_| "6379".to_string())
                     .parse()?,
                 password: env::var("CACHE_PASSWORD").ok(),
-                database: env::var("CACHE_DATABASE")
-                    .ok()
-                    .and_then(|s| s.parse().ok()),
+                database: env::var("CACHE_DATABASE").ok().and_then(|s| s.parse().ok()),
                 max_pool_size: env::var("CACHE_MAX_POOL_SIZE")
                     .unwrap_or_else(|_| "20".to_string())
                     .parse()?,
@@ -427,8 +428,11 @@ mod tests {
 
     #[test]
     fn test_bind_address() {
-        let key_manager =
-            SessionKeyManager::new("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899", None).unwrap();
+        let key_manager = SessionKeyManager::new(
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+            None,
+        )
+        .unwrap();
 
         let config = Config {
             server: ServerConfig {
@@ -457,7 +461,8 @@ mod tests {
                 api_key_salt: "test-salt-minimum16".to_string(),
                 admin_api_key: Some("test-admin".to_string()),
                 rate_limit_per_minute: 60,
-                paseto_current_key: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899".to_string(),
+                paseto_current_key:
+                    "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899".to_string(),
                 paseto_previous_key: None,
                 session_key_manager: Arc::new(key_manager),
             },

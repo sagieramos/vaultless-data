@@ -1,8 +1,4 @@
-// vaultless-api/src/main.rs
-//! Vaultless API Server
-//!
-//! Privacy-first, end-to-end encrypted message relay platform.
-
+// api/src/main.rs
 use axum::extract::State;
 use axum::{Router, middleware as axum_middleware, routing::get};
 use deadpool_redis::Config as RedisConfig;
@@ -15,8 +11,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use vaultless_core::models::usage::{FlusherMetrics, MetricsConfig as CoreMetricsConfig, start_redis_flusher};
-
+use vaultless_core::models::usage::{FlusherMetrics, MetricsConfig, start_redis_flusher};
 mod api_doc;
 mod config;
 mod handlers;
@@ -30,10 +25,6 @@ use crate::middleware::track_metrics;
 use crate::routes::build_routes;
 use crate::state::AppState;
 
-// =============================================================================
-// INITIALIZATION
-// =============================================================================
-
 /// Initialize tracing/logging
 fn init_tracing(level: &str) {
     let level = level.parse().unwrap_or(tracing::Level::INFO);
@@ -43,75 +34,55 @@ fn init_tracing(level: &str) {
         .init();
 }
 
-// =============================================================================
-// MAIN
-// =============================================================================
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ─────────────────────────────────────────────────────────────────────────
-    // 1. Load Configuration
-    // ─────────────────────────────────────────────────────────────────────────
+    //----------------------------------------------------
+    // 1. Load configuration
+    //----------------------------------------------------
     let config = Config::from_env()?;
     init_tracing(&config.server.log_level);
 
-    tracing::info!("🚀 Starting Vaultless API...");
-    tracing::debug!(?config, "Loaded configuration");
+    tracing::info!(" Starting Vaultless API...");
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 2. Database Connection (PostgreSQL)
-    // ─────────────────────────────────────────────────────────────────────────
-    tracing::info!(
-        host = %config.database.host,
-        port = %config.database.port,
-        database = %config.database.name,
-        "⏳ Connecting to PostgreSQL..."
-    );
-
+    //----------------------------------------------------
+    // 2. Database setup
+    //----------------------------------------------------
+    tracing::info!(" Connecting to PostgreSQL...");
     let db = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
         .acquire_timeout(Duration::from_secs(10))
-        .connect(&config.database.connection_url())
+        .connect(&config.database.database_url)
         .await?;
 
-    tracing::info!("✅ Connected to PostgreSQL");
+    tracing::info!(" Connected to PostgreSQL");
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 3. Cache Connection (Redis/Dragonfly)
-    // ─────────────────────────────────────────────────────────────────────────
-    tracing::info!(
-        host = %config.cache.host,
-        port = %config.cache.port,
-        "⏳ Connecting to Redis/Dragonfly..."
-    );
-
+    //----------------------------------------------------
+    // 3. Redis setup
+    //----------------------------------------------------
+    tracing::info!(" Connecting to Redis...");
     let redis_cfg = RedisConfig::from_url(config.cache.connection_url());
     let redis_pool = redis_cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
+    tracing::info!(" Connected to Redis");
 
-    tracing::info!("✅ Connected to Redis/Dragonfly");
+    //----------------------------------------------------
+    // 4. Build AppState
+    //----------------------------------------------------
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 4. Build Application State
-    // ─────────────────────────────────────────────────────────────────────────
-    let metrics_config = Arc::new(CoreMetricsConfig {
+    let metrics_config = Arc::new(MetricsConfig {
         max_batch_size: config.metrics.max_batch_size,
         metric_ttl_secs: config.metrics.ttl_secs,
         flush_interval_secs: config.metrics.flush_interval_secs,
         redis_operation_timeout_secs: config.metrics.redis_timeout_secs,
     });
 
-    let cache_url = config.cache.connection_url();
     let app_state = AppState::new(
         db,
         redis_pool,
         Arc::clone(&metrics_config),
-        cache_url,
+        config.cache.connection_url(),
         config.security.session_key_manager.clone(),
     )?;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 5. Start Background Services
-    // ─────────────────────────────────────────────────────────────────────────
     let flusher_metrics = Arc::new(FlusherMetrics::new());
 
     let (flusher_handle, shutdown_notify) = start_redis_flusher(
@@ -121,19 +92,19 @@ async fn main() -> anyhow::Result<()> {
         Some(Arc::clone(&flusher_metrics)),
     );
 
-    tracing::info!("✅ Redis metrics flusher started");
+    tracing::info!(" Redis metrics flusher started");
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 6. Build Routes
-    // ─────────────────────────────────────────────────────────────────────────
+    //----------------------------------------------------
+    // 5. Routers
+    //----------------------------------------------------
     let api_router = build_routes(app_state.clone());
     let metrics_router = Router::new()
         .route("/metrics", get(metrics_handler))
         .with_state(app_state.clone());
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 7. Build Application with Middleware
-    // ─────────────────────────────────────────────────────────────────────────
+    //----------------------------------------------------
+    // 6. Build main app with middleware and Swagger UI
+    //----------------------------------------------------
     let swagger_ui = api_doc::openapi_config();
 
     let app = Router::new()
@@ -151,23 +122,17 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .into_make_service_with_connect_info::<std::net::SocketAddr>();
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 8. Start Server
-    // ─────────────────────────────────────────────────────────────────────────
-    let bind_addr: SocketAddr = config
-        .bind_address()
+    //----------------------------------------------------
+    // 7. Start server
+    //----------------------------------------------------
+    let bind_addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()
         .expect("Invalid bind address");
 
     let listener = TcpListener::bind(bind_addr).await?;
-
-    tracing::info!("🌍 Listening on http://{}", listener.local_addr()?);
+    tracing::info!("Listening on http://{}", listener.local_addr()?);
     tracing::info!(
-        "📊 Metrics available at http://{}/metrics",
-        listener.local_addr()?
-    );
-    tracing::info!(
-        "📚 API docs available at http://{}/swagger-ui/",
+        "Metrics available at http://{}/metrics",
         listener.local_addr()?
     );
 
@@ -178,11 +143,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// =============================================================================
-// METRICS ENDPOINT
-// =============================================================================
-
-/// Prometheus metrics scrape endpoint
+//----------------------------------------------------
+// Metrics endpoint (Prometheus scrape target)
+//----------------------------------------------------
 async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response::IntoResponse {
     use prometheus::{Encoder, TextEncoder};
 
@@ -200,7 +163,7 @@ async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response:
 
     match String::from_utf8(buffer) {
         Ok(metrics_text) => {
-            tracing::debug!("📊 Metrics response: {} bytes", metrics_text.len());
+            tracing::debug!("Metrics response: {} bytes", metrics_text.len());
             (axum::http::StatusCode::OK, metrics_text)
         }
         Err(e) => {
@@ -213,11 +176,9 @@ async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response:
     }
 }
 
-// =============================================================================
-// GRACEFUL SHUTDOWN
-// =============================================================================
-
-/// Handle shutdown signals (SIGTERM, SIGINT)
+//----------------------------------------------------
+// Graceful shutdown signal
+//----------------------------------------------------
 async fn shutdown_signal(
     flusher_shutdown: Arc<tokio::sync::Notify>,
     flusher_handle: tokio::task::JoinHandle<()>,
@@ -244,17 +205,13 @@ async fn shutdown_signal(
         _ = terminate => {},
     }
 
-    tracing::warn!("🛑 Shutdown signal received, shutting down gracefully...");
-
-    // Signal flusher to stop
+    tracing::warn!("Shutdown signal received, shutting down gracefully...");
     flusher_shutdown.notify_one();
 
-    // Wait for flusher to complete final flush (with timeout)
-    if let Err(e) = tokio::time::timeout(Duration::from_secs(30), flusher_handle).await {
+    // Wait for flusher to complete final flush
+    if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(30), flusher_handle).await {
         tracing::warn!("Flusher did not complete within 30s: {:?}", e);
     } else {
-        tracing::info!("✅ Redis flusher shutdown complete");
+        tracing::info!(" Redis flusher shutdown complete");
     }
-
-    tracing::info!("👋 Goodbye!");
 }

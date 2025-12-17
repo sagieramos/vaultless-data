@@ -1,6 +1,7 @@
 use deadpool_redis::Pool;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 

@@ -1,4 +1,5 @@
 use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
+use vaultless_core::redis;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;

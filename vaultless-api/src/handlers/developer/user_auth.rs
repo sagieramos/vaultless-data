@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{self, json};
 use std::net::SocketAddr;
 use utoipa::ToSchema;
 use validator::Validate;

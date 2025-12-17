@@ -3,6 +3,7 @@ use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use tokio;
 use std::sync::Arc;
 use uuid::Uuid;
 use vaultless_core::getrandom;

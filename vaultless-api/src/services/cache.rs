@@ -1,5 +1,6 @@
 use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
 use serde::{Serialize, de::DeserializeOwned};
+use serde_json;
 use std::sync::Arc;
 use std::time::Duration;
 

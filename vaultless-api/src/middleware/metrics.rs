@@ -1,6 +1,6 @@
 // api/src/middleware/metrics.rs
 use axum::{extract::Request, middleware::Next, response::Response};
-use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, Opts};
+use prometheus::{self, HistogramOpts, HistogramVec, IntCounterVec, Opts};
 use std::time::Instant;
 
 use once_cell::sync::Lazy;
