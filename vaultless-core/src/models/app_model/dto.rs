@@ -410,6 +410,7 @@ pub struct UserUsageSummary {
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow, ToSchema)]
 pub struct ApplicationWithKeys {
     pub application_id: Uuid,
+    #[serde(skip_serializing)]
     pub user_id: Uuid,
     pub name: String,
     pub description: Option<String>,

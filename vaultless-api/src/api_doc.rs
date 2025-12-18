@@ -26,6 +26,7 @@ use utoipa::{OpenApi, Modify};
         crate::handlers::developer::user_auth::logout,
         crate::handlers::developer::user_auth::verify_email_get,
         crate::handlers::developer::user_auth::verify_email_post,
+        crate::handlers::developer::user_auth::resend_verification_email,
         crate::handlers::developer::user_auth::request_password_reset,
         crate::handlers::developer::user_auth::reset_password,
         crate::handlers::developer::user_auth::get_current_user,

@@ -643,7 +643,33 @@ verified!" [Resend Email]
 
 ---
 
-### 4.8 Cost Breakdown
+### 4.8 Quota Status
+
+**Endpoint:** `GET /dev/applications/{id}/quota-status`
+
+#### Response Data
+
+| Field | Type | Description |
+|-------|------|-------------|
+| application_id | UUID | Application identifier |
+| messages_used | integer | Messages used this month |
+| messages_limit | integer | Monthly message quota |
+| usage_percentage | float | Current usage as percentage |
+| is_over_quota | boolean | Whether quota is exceeded |
+| overage_count | integer | Messages over quota |
+| resets_at | timestamp | When quota resets |
+| alert_level | string | null, "info", "warning", or "critical" |
+
+#### UI Integration
+
+Use this endpoint to display real-time quota status in:
+- Application overview cards
+- Quota warning banners
+- Usage meters and progress bars
+
+---
+
+### 4.9 Cost Breakdown
 
 **Endpoint:** `GET /dev/applications/{id}/costs`
 
@@ -670,7 +696,7 @@ verified!" [Resend Email]
 
 ---
 
-### 4.9 Trends Analysis
+### 4.10 Trends Analysis
 
 **Endpoint:** `GET /dev/applications/{id}/trends`
 
@@ -684,7 +710,7 @@ verified!" [Resend Email]
 
 ---
 
-### 4.10 Export Functionality
+### 4.11 Export Functionality
 
 **Endpoint:** `GET /dev/applications/{id}/export`
 

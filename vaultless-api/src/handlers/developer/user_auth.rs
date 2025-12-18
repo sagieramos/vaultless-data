@@ -197,9 +197,20 @@ pub async fn login(
     }))
 }
 
-/// RESEND VERIFICATION EMAIL
-///
-/// Example: POST /resend-verification-email { "email": "<youremail@gmail.com>"}
+/// Resend verification email to user
+#[utoipa::path(
+    post,
+    path = "/dev/auth/resend-verification-email",
+    request_body = ResendVerificationRequest,
+    responses(
+        (status = 200, description = "Verification email resent successfully"),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "User not found"),
+        (status = 429, description = "Too many requests"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "auth"
+)]
 pub async fn resend_verification_email(
     State(state): State<AppState>,
     Json(req): Json<ResendVerificationRequest>,
