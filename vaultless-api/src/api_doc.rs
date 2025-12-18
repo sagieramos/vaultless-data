@@ -15,10 +15,10 @@ use utoipa::{OpenApi, Modify};
         crate::handlers::developer::application::get_quota_warnings,
         crate::handlers::developer::application::get_application_with_keys_handler,
         // Analytics handlers
-        crate::handlers::developer::analytics::get_application_quota_status,
-        crate::handlers::developer::analytics::get_application_cost_breakdown,
+        // crate::handlers::developer::analytics::get_application_quota_status,
+        // crate::handlers::developer::analytics::get_application_cost_breakdown,
         crate::handlers::developer::analytics::export_application_usage,
-        crate::handlers::developer::analytics::get_application_trends,
+        // crate::handlers::developer::analytics::get_application_trends,
         // User auth handlers
         crate::handlers::developer::user_auth::register,
         crate::handlers::developer::user_auth::login,

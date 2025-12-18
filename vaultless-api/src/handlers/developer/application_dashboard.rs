@@ -167,16 +167,25 @@ impl From<ApplicationWithUsage> for ApplicationResponse {
     }
 }
 
-/// GET /api/v1/applications/:application_id/analytics
-/// Full analytics endpoint for dashboards or heavy reporting
+/// Full analytics endpoint for dashboards or heavy reporting.
+///
+/// This endpoint supports ETag caching. Include the `If-None-Match` header with
+/// a previously received ETag to get a 304 Not Modified response if data hasn't changed.
 #[utoipa::path(
     get,
-    path = "/api/v1/applications/{application_id}/analytics",
+    path = "/dev/applications/{application_id}/analytics",
     params(
-        ("application_id" = Uuid, Path, description = "Application ID")
+        ("application_id" = Uuid, Path, description = "Application ID"),
+        ("If-None-Match" = Option<String>, Header, description = "ETag from previous response for conditional request")
     ),
     responses(
-        (status = 200, description = "Application details with usage data", body = ApplicationResponse),
+        (status = 200, description = "Application details with usage data", body = ApplicationResponse,
+            headers(
+                ("ETag" = String, description = "Entity tag for cache validation"),
+                ("Cache-Control" = String, description = "Cache directives (e.g., public, max-age=60)")
+            )
+        ),
+        (status = 304, description = "Not Modified - Data hasn't changed since last request"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Application not found"),

@@ -256,15 +256,23 @@ pub struct PaginationParams {
 }
 
 /// List user's applications with tier information
+///
+/// This endpoint supports ETag caching. Include the `If-None-Match` header with
+/// a previously received ETag to get a 304 Not Modified response if data hasn't changed.
 #[utoipa::path(
     get,
     path = "/dev/applications",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
-        ("page_size" = Option<i64>, Query, description = "Page size (default: 20)")
+        ("page_size" = Option<i64>, Query, description = "Page size (default: 20)"),
+        ("If-None-Match" = Option<String>, Header, description = "ETag from previous response for conditional request")
     ),
     responses(
         (status = 200, description = "List of applications retrieved successfully", body = PaginatedApplicationsSummary,
+            headers(
+                ("ETag" = String, description = "Entity tag for cache validation. Use this in If-None-Match header for subsequent requests."),
+                ("Cache-Control" = String, description = "Cache directives (e.g., public, max-age=60)")
+            ),
             example = json!({
                 "data": [
                     {
@@ -287,6 +295,7 @@ pub struct PaginationParams {
                 "total_pages": 1
             })
         ),
+        (status = 304, description = "Not Modified - Data hasn't changed since last request. Use cached data."),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
@@ -509,11 +518,23 @@ pub async fn get_chart_data(
 }
 
 /// Returns aggregated usage statistics across all user's applications.
+///
+/// This endpoint supports ETag caching. Include the `If-None-Match` header with
+/// a previously received ETag to get a 304 Not Modified response if data hasn't changed.
 #[utoipa::path(
     get,
-    path = "/api/v1/applications/usage-summary",
+    path = "/dev/applications/usage-summary",
+    params(
+        ("If-None-Match" = Option<String>, Header, description = "ETag from previous response for conditional request")
+    ),
     responses(
-        (status = 200, description = "Usage summary retrieved successfully", body = UserUsageSummary),
+        (status = 200, description = "Usage summary retrieved successfully", body = UserUsageSummary,
+            headers(
+                ("ETag" = String, description = "Entity tag for cache validation"),
+                ("Cache-Control" = String, description = "Cache directives (e.g., public, max-age=60)")
+            )
+        ),
+        (status = 304, description = "Not Modified - Data hasn't changed since last request"),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
@@ -534,12 +555,24 @@ pub async fn get_user_usage_summary(
 }
 
 /// Returns applications that are approaching or exceeding their quota limits.
+///
+/// This endpoint supports ETag caching. Include the `If-None-Match` header with
+/// a previously received ETag to get a 304 Not Modified response if data hasn't changed.
 #[utoipa::path(
     get,
-    path = "/api/v1/applications/quota-warnings",
-    params(QuotaWarningsQuery),
+    path = "/dev/applications/quota-warnings",
+    params(
+        QuotaWarningsQuery,
+        ("If-None-Match" = Option<String>, Header, description = "ETag from previous response for conditional request")
+    ),
     responses(
-        (status = 200, description = "Quota warnings retrieved successfully", body = PaginatedQuotaWarnings),
+        (status = 200, description = "Quota warnings retrieved successfully", body = PaginatedQuotaWarnings,
+            headers(
+                ("ETag" = String, description = "Entity tag for cache validation"),
+                ("Cache-Control" = String, description = "Cache directives (e.g., public, max-age=60)")
+            )
+        ),
+        (status = 304, description = "Not Modified - Data hasn't changed since last request"),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
@@ -571,15 +604,25 @@ pub async fn get_quota_warnings(
     Ok(Json(warnings))
 }
 
-/// Get application by ID including, publishable keys, and webhooks.
+/// Get application by ID including publishable keys and webhooks.
+///
+/// This endpoint supports ETag caching. Include the `If-None-Match` header with
+/// a previously received ETag to get a 304 Not Modified response if data hasn't changed.
 #[utoipa::path(
     get,
-    path = "/api/applications/{application_id}/with_keys",
+    path = "/dev/applications/{application_id}/with_keys",
     params(
-        ("application_id" = Uuid, Path, description = "Application ID")
+        ("application_id" = Uuid, Path, description = "Application ID"),
+        ("If-None-Match" = Option<String>, Header, description = "ETag from previous response for conditional request")
     ),
     responses(
-        (status = 200, description = "Application with keys retrieved successfully", body = ApplicationWithKeys),
+        (status = 200, description = "Application with keys retrieved successfully", body = ApplicationWithKeys,
+            headers(
+                ("ETag" = String, description = "Entity tag for cache validation"),
+                ("Cache-Control" = String, description = "Cache directives (e.g., public, max-age=60)")
+            )
+        ),
+        (status = 304, description = "Not Modified - Data hasn't changed since last request"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Application not found"),
