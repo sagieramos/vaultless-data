@@ -4,6 +4,7 @@ pub mod billing;
 pub mod client_token;
 pub mod clients;
 pub mod message;
+pub mod notification;
 pub mod proof;
 pub mod session;
 pub mod usage;
@@ -16,6 +17,12 @@ pub use app_model::dto::{
 };
 pub use billing::*;
 pub use message::*;
+pub use notification::{
+    CreateNotification, Notification, NotificationBuilder, NotificationEventTracker,
+    NotificationJobConfig, NotificationQuery, NotificationSeverity, NotificationSummary,
+    NotificationType, PaginatedNotifications, RateLimitNotificationData, UnreadCountResponse,
+    UpdateNotification, start_notification_job,
+};
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use usage::*;
 pub use user::{LoginAttempt, RefreshToken, User, UserSession};

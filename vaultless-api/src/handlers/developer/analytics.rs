@@ -10,14 +10,16 @@ use axum::{
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use hyper::header;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use utoipa::ToSchema;
 use uuid::Uuid;
 use vaultless_core::{models::app_model::dto::*, types::SubscriptionTier};
 
 // ============================================================================
-// REQUEST/RESPONSE DTOs (UNMODIFIED)
+// REQUEST/RESPONSE DTOs
 // ============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TrendsResponse {
     pub daily_average_messages: i64,
     pub weekly_average_messages: i64,
@@ -26,13 +28,13 @@ pub struct TrendsResponse {
     pub quota_trend: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CostBreakdownResponse {
     pub total_cost_cents: i64,
     pub breakdown: Vec<CostItem>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CostItem {
     pub category: String,
     pub amount_cents: i64,
@@ -44,34 +46,34 @@ fn default_interval() -> String {
     "day".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpgradeOption {
     pub tier: String,
     pub monthly_price_cents: Option<i32>,
     pub benefits: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Clone, Copy, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
     Json,
     Csv,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ExportQuery {
     pub format: ExportFormat,
 }
 
-#[derive(Debug, Serialize)]
-pub struct AnalyticsResponse<T> {
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AnalyticsResponse<T: ToSchema> {
     pub success: bool,
     pub data: T,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upgrade_message: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct QuotaStatusResponse {
     pub application_id: Uuid,
     pub messages_used: i64,
@@ -83,10 +85,35 @@ pub struct QuotaStatusResponse {
     pub alert_level: Option<String>,
 }
 
-/// GET /analytics/quota/status
-/// Real-time quota status check
-/// GET /api/v1/applications/:id/quota-status
-/// Real-time quota status for a specific application
+/// Get real-time quota status for a specific application
+#[utoipa::path(
+    get,
+    path = "/dev/applications/{application_id}/quota-status",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID")
+    ),
+    responses(
+        (status = 200, description = "Quota status retrieved successfully", body = QuotaStatusResponse,
+            example = json!({
+                "application_id": "550e8400-e29b-41d4-a716-446655440000",
+                "messages_used": 8500,
+                "messages_limit": 10000,
+                "usage_percentage": 85.0,
+                "is_over_quota": false,
+                "overage_count": 0,
+                "resets_at": "2025-02-01T00:00:00Z",
+                "alert_level": "warning"
+            })
+        ),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "analytics"
+)]
 pub async fn get_application_quota_status(
     Path(app_id): Path<Uuid>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -150,8 +177,34 @@ pub async fn get_application_quota_status(
     }))
 }
 
-/// GET /api/v1/applications/:id/costs
-/// Detailed cost breakdown
+/// Get detailed cost breakdown for an application
+#[utoipa::path(
+    get,
+    path = "/dev/applications/{application_id}/costs",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID")
+    ),
+    responses(
+        (status = 200, description = "Cost breakdown retrieved successfully", body = CostBreakdownResponse,
+            example = json!({
+                "total_cost_cents": 1250,
+                "breakdown": [
+                    {"category": "Messages", "amount_cents": 850, "unit": "per 1000 messages", "quantity": 85000},
+                    {"category": "Bandwidth", "amount_cents": 200, "unit": "per GB", "quantity": 2},
+                    {"category": "Storage", "amount_cents": 150, "unit": "per GB/month", "quantity": 3},
+                    {"category": "Proofs", "amount_cents": 50, "unit": "per 1000 proofs", "quantity": 10000}
+                ]
+            })
+        ),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "analytics"
+)]
 pub async fn get_application_cost_breakdown(
     Path(app_id): Path<Uuid>,
     SessionDataUserExt(user): SessionDataUserExt,
@@ -199,8 +252,25 @@ pub async fn get_application_cost_breakdown(
     }))
 }
 
-/// GET /api/v1/applications/:id/export?format=csv
-/// Export application usage data
+/// Export application usage data in JSON or CSV format
+#[utoipa::path(
+    get,
+    path = "/dev/applications/{application_id}/export",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID"),
+        ("format" = ExportFormat, Query, description = "Export format: json or csv")
+    ),
+    responses(
+        (status = 200, description = "Usage data exported successfully (JSON or CSV based on format parameter)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "analytics"
+)]
 pub async fn export_application_usage(
     Path(app_id): Path<Uuid>,
     Query(query): Query<ExportQuery>,
@@ -234,8 +304,32 @@ pub async fn export_application_usage(
     }
 }
 
-/// GET /api/v1/applications/:id/trends
-/// Calculate usage trends and growth rates
+/// Get usage trends and growth rates for an application
+#[utoipa::path(
+    get,
+    path = "/dev/applications/{application_id}/trends",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID")
+    ),
+    responses(
+        (status = 200, description = "Trends retrieved successfully", body = TrendsResponse,
+            example = json!({
+                "daily_average_messages": 2833,
+                "weekly_average_messages": 3000,
+                "growth_percentage_7d": 5.9,
+                "projected_monthly_cost_cents": 4500,
+                "quota_trend": "increasing"
+            })
+        ),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    tag = "analytics"
+)]
 pub async fn get_application_trends(
     Path(app_id): Path<Uuid>,
     SessionDataUserExt(session): SessionDataUserExt,

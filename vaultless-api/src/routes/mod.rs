@@ -2,8 +2,9 @@ pub mod application_route;
 pub mod client;
 pub mod health;
 pub mod instant_message;
-//pub mod proof;
 pub mod limits;
+pub mod notification;
+//pub mod proof;
 pub mod user;
 
 use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
@@ -11,6 +12,7 @@ use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
 use application_route::application_routes;
 use client::client_routes;
 use instant_message::message_routes;
+use notification::notification_routes;
 use user::user_routes;
 
 use crate::{middleware::global::reject_suspicious_query, state::AppState};
@@ -25,7 +27,8 @@ pub fn build_routes(state: AppState) -> Router {
             "/dev",
             Router::new()
                 .nest("/auth", user_routes(state.clone()))
-                .nest("/applications", application_routes(state.clone())),
+                .nest("/applications", application_routes(state.clone()))
+                .nest("/notifications", notification_routes(state.clone())),
         )
         .nest(
             "/api/v1",

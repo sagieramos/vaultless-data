@@ -12,6 +12,7 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use vaultless_core::models::usage::{FlusherMetrics, MetricsConfig, start_redis_flusher};
+use vaultless_core::models::{NotificationJobConfig, start_notification_job};
 mod api_doc;
 mod config;
 mod handlers;
@@ -83,8 +84,10 @@ async fn main() -> anyhow::Result<()> {
         config.security.session_key_manager.clone(),
     )?;
 
+    //----------------------------------------------------
+    // 4b. Start instant message flusher background job
+    //----------------------------------------------------
     let flusher_metrics = Arc::new(FlusherMetrics::new());
-
     let (flusher_handle, shutdown_notify) = start_redis_flusher(
         app_state.redis_pool.clone(),
         app_state.db.clone(),
@@ -93,6 +96,18 @@ async fn main() -> anyhow::Result<()> {
     );
 
     tracing::info!(" Redis metrics flusher started");
+
+    //----------------------------------------------------
+    // 4b. Start notification background job
+    //----------------------------------------------------
+    let notification_config = NotificationJobConfig::default();
+    let (notification_handle, notification_shutdown) = start_notification_job(
+        app_state.redis_pool.clone(),
+        app_state.db.clone(),
+        notification_config,
+    );
+
+    tracing::info!(" Notification job started");
 
     //----------------------------------------------------
     // 5. Routers
@@ -137,7 +152,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_notify, flusher_handle))
+        .with_graceful_shutdown(shutdown_signal(
+            shutdown_notify,
+            flusher_handle,
+            notification_shutdown,
+            notification_handle,
+        ))
         .await?;
 
     Ok(())
@@ -182,6 +202,8 @@ async fn metrics_handler(State(_state): State<AppState>) -> impl axum::response:
 async fn shutdown_signal(
     flusher_shutdown: Arc<tokio::sync::Notify>,
     flusher_handle: tokio::task::JoinHandle<()>,
+    notification_shutdown: Arc<tokio::sync::Notify>,
+    notification_handle: tokio::task::JoinHandle<()>,
 ) {
     let ctrl_c = async {
         signal::ctrl_c()
@@ -206,12 +228,24 @@ async fn shutdown_signal(
     }
 
     tracing::warn!("Shutdown signal received, shutting down gracefully...");
+
+    // Signal both background jobs to shutdown
     flusher_shutdown.notify_one();
+    notification_shutdown.notify_one();
 
     // Wait for flusher to complete final flush
     if let Err(e) = tokio::time::timeout(std::time::Duration::from_secs(30), flusher_handle).await {
         tracing::warn!("Flusher did not complete within 30s: {:?}", e);
     } else {
         tracing::info!(" Redis flusher shutdown complete");
+    }
+
+    // Wait for notification job to complete
+    if let Err(e) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), notification_handle).await
+    {
+        tracing::warn!("Notification job did not complete within 10s: {:?}", e);
+    } else {
+        tracing::info!(" Notification job shutdown complete");
     }
 }

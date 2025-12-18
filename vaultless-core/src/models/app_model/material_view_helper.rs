@@ -86,20 +86,27 @@ pub async fn refresh_view_sync(db: &Pool<Postgres>, redis: Arc<RedisPool>) -> sq
     refresh_applications_view(db, redis).await
 }
 
+/// Get the global ETag for the materialized view
+/// Returns the timestamp (milliseconds) when the view was last refreshed
 pub async fn get_global_mv_etag(redis: &RedisPool) -> error::Result<Option<i64>> {
     let mut conn = redis
         .get()
         .await
         .map_err(|_| VaultlessError::Internal("Failed to get Redis connection".into()))?;
-    let v: Option<i64> = conn.get(MV_ETAG_KEY).await?;
+    // Use the same key format as set_global_mv_etag (with cache_key! macro)
+    let cache_key = crate::cache_key!(MV_ETAG_KEY);
+    let v: Option<i64> = conn.get(&cache_key).await?;
     Ok(v)
 }
 
+/// Set the global ETag for the materialized view
+/// Called after the view is refreshed to update the cache timestamp
 async fn set_global_mv_etag(redis: Arc<RedisPool>) {
     if let Ok(mut conn) = redis.get().await {
         let cache_key = crate::cache_key!(MV_ETAG_KEY);
         let ts = Utc::now().timestamp_millis();
         let _: Result<(), _> = conn.set(&cache_key, ts).await;
-        let _: Result<(), _> = conn.expire(cache_key, 3600).await;
+        // Set TTL to 1 hour - if Redis loses the key, clients will get fresh data
+        let _: Result<(), _> = conn.expire(&cache_key, 3600).await;
     }
 }

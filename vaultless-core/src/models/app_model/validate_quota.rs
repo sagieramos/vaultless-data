@@ -1,6 +1,7 @@
 use super::dto::*;
 use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
+use crate::models::notification::NotificationEventTracker;
 use crate::models::ApiKey;
 use crate::models::usage::{
     MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool,
@@ -42,6 +43,15 @@ impl ApplicationKeyView {
 
         let monthly_quota = self.sk_monthly_message_quota.unwrap_or(i32::MAX) as i64;
         if monthly_messages >= monthly_quota {
+            // Track quota exceeded event for notification (once per day)
+            let sk_id = self.sk_id;
+            let pool_clone = redis_pool.clone();
+            tokio::spawn(async move {
+                // This will only mark as "needs notification" if not already marked today
+                let _ = NotificationEventTracker::check_and_mark_quota_exceeded(&pool_clone, sk_id)
+                    .await;
+            });
+
             return Err(VaultlessError::QuotaExceeded(
                 "API key monthly quota exhausted.".into(),
             ));
@@ -53,9 +63,14 @@ impl ApplicationKeyView {
             let pool_clone = redis_pool.clone();
 
             tokio::spawn(async move {
+                // Increment usage metrics
                 let _ =
                     increment_rate_limit_hit_pool(&pool_clone, sk_id, &MetricsConfig::default())
                         .await;
+
+                // Track rate limit hit for daily notification aggregation
+                let _ = NotificationEventTracker::increment_rate_limit_hits(&pool_clone, sk_id)
+                    .await;
             });
 
             return Err(VaultlessError::RateLimitExceeded(

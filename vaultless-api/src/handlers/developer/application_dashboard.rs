@@ -185,7 +185,7 @@ impl From<ApplicationWithUsage> for ApplicationResponse {
     security(
         ("bearer_auth" = [])
     ),
-    tag = "developer"
+    tag = "analytics"
 )]
 pub async fn get_application_with_keys_handler(
     State(state): State<AppState>,
