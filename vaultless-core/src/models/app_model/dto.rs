@@ -440,7 +440,7 @@ pub struct ApplicationWithKeys {
     pub webhooks: Json<Vec<Webhook>>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct PaginatedApplicationsSummary {
     pub data: Vec<ApplicationSummary>,
     pub total_count: i64,
@@ -449,7 +449,7 @@ pub struct PaginatedApplicationsSummary {
     pub total_pages: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow, ToSchema)]
 pub struct ApplicationSummary {
     pub application_id: Uuid,
     pub name: String,

@@ -13,7 +13,6 @@ use axum::{
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::sync::Arc;
 use vaultless_core::{
     Client, LoginClientRequest, LoginClientResponse, SignupClientRequest, SignupClientResponse,
 };

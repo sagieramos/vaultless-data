@@ -9,7 +9,6 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use std::sync::Arc;
 use vaultless_core::{Client, SessionData as SessionDataClient};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

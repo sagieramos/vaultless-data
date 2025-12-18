@@ -191,3 +191,16 @@ pub struct HealthStatus {
     pub redis_circuit_state: String,
     pub db_circuit_state: String,
 }
+
+/// Inbox status for WebSocket connection notification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxStatus {
+    /// Number of unread/pending messages
+    pub unread_count: usize,
+    /// Timestamp of oldest unread message (if any)
+    pub oldest_unread_at: Option<DateTime<Utc>>,
+    /// Timestamp of newest unread message (if any)
+    pub newest_unread_at: Option<DateTime<Utc>>,
+    /// Total size of pending messages in bytes
+    pub total_size_bytes: i64,
+}

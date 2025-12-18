@@ -65,6 +65,7 @@ pub struct DatabaseConfig {
 
 impl DatabaseConfig {
     /// Build the PostgreSQL connection URL from explicit fields
+    #[allow(dead_code)]
     pub fn connection_url(&self) -> String {
         let ssl_param = self
             .ssl_mode
@@ -335,11 +336,11 @@ impl Config {
         }
 
         if self.security.api_key_salt == "change-this-random-salt-in-production" {
-            tracing::warn!("⚠️  Using default API_KEY_SALT - change this in production!");
+            tracing::warn!("Using default API_KEY_SALT - change this in production!");
         }
 
         if self.security.api_key_salt.len() < 16 {
-            tracing::warn!("⚠️  API_KEY_SALT is too short - use at least 16 characters");
+            tracing::warn!("API_KEY_SALT is too short - use at least 16 characters");
         }
 
         Ok(())
@@ -369,6 +370,7 @@ mod tests {
             password: "testpass".to_string(),
             max_connections: 10,
             ssl_mode: None,
+            database_url: "".to_string(),
         };
 
         assert_eq!(
@@ -387,6 +389,7 @@ mod tests {
             password: "prodpass".to_string(),
             max_connections: 20,
             ssl_mode: Some("require".to_string()),
+            database_url: "".to_string(),
         };
 
         assert_eq!(
@@ -448,6 +451,7 @@ mod tests {
                 password: "testpass".to_string(),
                 max_connections: 10,
                 ssl_mode: None,
+                database_url: "".to_string(),
             },
             cache: CacheConfig {
                 host: "localhost".to_string(),

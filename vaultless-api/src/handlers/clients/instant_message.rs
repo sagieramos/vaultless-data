@@ -45,12 +45,6 @@ fn default_require_verification() -> bool {
     true // Default to requiring verification for security
 }
 
-#[derive(Debug, Deserialize)]
-pub struct FetchMessagesQuery {
-    /// Optional limit (defaults to service max)
-    pub limit: Option<usize>,
-}
-
 // =============================================================================
 // Response Types (UPDATED)
 // =============================================================================
@@ -109,8 +103,8 @@ pub async fn send_message(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()).with_code("VALIDATION_ERROR"))?;
 
-    // --- 2. Compute content size server-side (NOW i64 for large files) ---
-    let content_size_bytes = input.ciphertext.len() as i64; // FIXED: i32 -> i64
+    // --- 2. Compute content size server-side ---
+    let content_size_bytes = input.ciphertext.len() as i64; 
 
     // --- 3. Verify signature is provided if verification required ---
     if input.require_proof_verification && input.signature.is_none() {
@@ -211,7 +205,6 @@ pub async fn send_message(
 pub async fn fetch_inbox(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
-    Query(_query): Query<FetchMessagesQuery>,
 ) -> Result<Json<FetchMessagesResponse>, ApiError> {
     tracing::debug!(
         recipient = %client_info.client_id,
@@ -295,7 +288,7 @@ pub async fn mark_message_read(
 pub async fn get_read_receipts(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
-    ApplicationKeyViewExt(app): ApplicationKeyViewExt,
+    ApplicationKeyViewExt(_): ApplicationKeyViewExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<ReadReceiptsResponse>, ApiError> {
     tracing::debug!(

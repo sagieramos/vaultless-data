@@ -8,11 +8,11 @@ use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::json;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
-use vaultless_core::{Decimal, models::app_model::integrity::dto::{AppMetaData, IntegrityConfig}};
+use vaultless_core::{Decimal, models::app_model::integrity::dto::IntegrityConfig};
 use vaultless_core::{
     models::{
         Application, CreateApplication, UpdateApplication,
@@ -121,6 +121,24 @@ impl From<Application> for ApplicationResponse {
     }
 }
 
+/// Response returned when creating a new application
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateApplicationResponse {
+    /// The created application details
+    pub application: ApplicationResponse,
+
+    /// Secret API key (only shown once - save immediately!)
+    #[schema(example = "sk_live_abc123xyz...")]
+    pub secret_key: String,
+
+    /// Publishable API key
+    #[schema(example = "pk_live_def456uvw...")]
+    pub publishable_key: String,
+
+    /// Important message about saving the secret key
+    #[schema(example = "IMPORTANT: Save your secret key now. You won't be able to see it again!")]
+    pub message: String,
+}
 
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct QuotaWarningsQuery {
@@ -159,10 +177,28 @@ fn default_page_size() -> i64 {
 /// Create a new application
 #[utoipa::path(
     post,
-    path = "/api/applications",
+    path = "/dev/applications",
     request_body = CreateApplicationRequest,
     responses(
-        (status = 201, description = "Application created successfully", body = Value),
+        (status = 201, description = "Application created successfully", body = CreateApplicationResponse,
+            example = json!({
+                "application": {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "name": "My App",
+                    "description": "A sample application",
+                    "is_active": true,
+                    "created_at": "2025-01-15T10:30:00Z",
+                    "updated_at": "2025-01-15T10:30:00Z",
+                    "max_ttl_seconds": 3600,
+                    "is_key_rotation_forced": false,
+                    "internal_notes": null,
+                    "integrity_config": {}
+                },
+                "secret_key": "sk_live_abc123xyz789...",
+                "publishable_key": "pk_live_def456uvw123...",
+                "message": "IMPORTANT: Save your secret key now. You won't be able to see it again!"
+            })
+        ),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 409, description = "Conflict - application already exists"),
@@ -177,7 +213,7 @@ pub async fn create_application(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
     Json(req): Json<CreateApplicationRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<CreateApplicationResponse>, ApiError> {
     // Create application input
     let input = CreateApplication {
         user_id: session.user_id,
@@ -199,12 +235,13 @@ pub async fn create_application(
     );
 
     // Return the response with keys (only shown once!)
-    Ok(Json(serde_json::json!({
-        "application": response.application,
-        "secret_key": response.secret_key,
-        "publishable_key": response.publishable_key_plaintext,
-        "message": "IMPORTANT: Save your secret key now. You won't be able to see it again!"
-    })))
+    Ok(Json(CreateApplicationResponse {
+        application: response.application.into(),
+        secret_key: response.secret_key.unwrap_or_default(),
+        publishable_key: response.publishable_key_plaintext,
+        message: "IMPORTANT: Save your secret key now. You won't be able to see it again!"
+            .to_string(),
+    }))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -221,13 +258,35 @@ pub struct PaginationParams {
 /// List user's applications with tier information
 #[utoipa::path(
     get,
-    path = "/api/applications",
+    path = "/dev/applications",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("page_size" = Option<i64>, Query, description = "Page size (default: 20)")
     ),
     responses(
-        (status = 200, description = "List of applications retrieved successfully", body = Value),
+        (status = 200, description = "List of applications retrieved successfully", body = PaginatedApplicationsSummary,
+            example = json!({
+                "data": [
+                    {
+                        "application_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "name": "My App",
+                        "description": "A sample application",
+                        "is_active": true,
+                        "created_at": "2025-01-15T10:30:00Z",
+                        "updated_at": "2025-01-15T10:30:00Z",
+                        "tier": "pro",
+                        "monthly_message_quota": 100000,
+                        "publishable_key_count": 2,
+                        "webhook_count": 1,
+                        "quota_usage_percentage": 45.5
+                    }
+                ],
+                "total_count": 1,
+                "page": 1,
+                "page_size": 20,
+                "total_pages": 1
+            })
+        ),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
@@ -240,7 +299,7 @@ pub async fn list_applications(
     State(state): State<AppState>,
     SessionDataUserExt(user): SessionDataUserExt,
     Query(params): Query<PaginationParams>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Json<PaginatedApplicationsSummary>, ApiError> {
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(20).clamp(1, 200);
 
@@ -316,16 +375,6 @@ pub async fn deactivate_application(
     SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    // Verify ownership
-    let app = Application::find_by_id(state.db.as_ref(), app_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    if app.user_id != user.user_id {
-        return Err(ApiError::forbidden("You don't own this application").with_code("NOT_OWNER"));
-    }
-
-    // Deactivate
     Application::deactivate_weak(
         state.db,
         Some(state.redis_pool.clone()),
@@ -505,10 +554,10 @@ pub async fn get_quota_warnings(
     SessionDataUserExt(user): SessionDataUserExt,
     Query(params): Query<QuotaWarningsQuery>,
 ) -> Result<Json<PaginatedQuotaWarnings>, ApiError> {
-    let threshold = params.threshold.and_then(|t| {
-        Decimal::from_str(&t.to_string()).ok()
-    });
-    
+    let threshold = params
+        .threshold
+        .and_then(|t| Decimal::from_str(&t.to_string()).ok());
+
     let warnings = Application::get_quota_warnings(
         &state.db,
         user.user_id,

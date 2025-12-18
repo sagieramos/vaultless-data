@@ -18,6 +18,7 @@ services:
       POSTGRES_USER: ${DB_USERNAME:-vaultless}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-vaultless_dev_pass}
       POSTGRES_DB: ${DB_NAME:-vaultless_db}
+      DATABASE_URL: ${DATABASE_URL:-postgres://vaultless:vaultless_dev_pass@localhost:5432/vaultless_db}
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:

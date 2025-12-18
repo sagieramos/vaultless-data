@@ -296,6 +296,159 @@ impl InstantMessage {
     }
 
     // -------------------------------------------------------------------------
+    // Get Inbox Status (lightweight - no message content fetched)
+    // -------------------------------------------------------------------------
+    /// Returns inbox status for a recipient without fetching full messages.
+    /// Used to inform clients about pending messages on WebSocket connect.
+    pub async fn get_inbox_status(
+        &self,
+        recipient_client_id: Uuid,
+    ) -> Result<InboxStatus> {
+        let mut conn = self.redis_pool.get().await?;
+        let queue_key = instant_inbox_key(recipient_client_id);
+
+        // Get inbox length from Redis
+        let inbox_len: isize = conn
+            .llen(&queue_key)
+            .await
+            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+        if inbox_len == 0 {
+            // Check if we need to rebuild from DB
+            // First, try to get count from DB for undelivered messages
+            let db_count: Option<(i64,)> = sqlx::query_as(
+                "SELECT COUNT(*) FROM messages WHERE recipient_client_id = $1 AND is_delivered = false"
+            )
+            .bind(recipient_client_id)
+            .fetch_optional(self.db_pool.as_ref())
+            .await
+            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+            let unread_count = db_count.map(|(c,)| c as usize).unwrap_or(0);
+
+            if unread_count == 0 {
+                return Ok(InboxStatus {
+                    unread_count: 0,
+                    oldest_unread_at: None,
+                    newest_unread_at: None,
+                    total_size_bytes: 0,
+                });
+            }
+
+            // Get timestamp range and total size from DB
+            let stats: Option<(Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>, Option<i64>)> = sqlx::query_as(
+                "SELECT MIN(created_at), MAX(created_at), SUM(content_size_bytes) FROM messages WHERE recipient_client_id = $1 AND is_delivered = false"
+            )
+            .bind(recipient_client_id)
+            .fetch_optional(self.db_pool.as_ref())
+            .await
+            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+            let (oldest, newest, total_size) = stats.unwrap_or((None, None, None));
+
+            return Ok(InboxStatus {
+                unread_count,
+                oldest_unread_at: oldest,
+                newest_unread_at: newest,
+                total_size_bytes: total_size.unwrap_or(0),
+            });
+        }
+
+        // Get message IDs from Redis inbox
+        let msg_id_strs: Vec<String> = conn
+            .lrange(&queue_key, 0, -1)
+            .await
+            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+        let msg_ids: Vec<Uuid> = msg_id_strs
+            .iter()
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect();
+
+        if msg_ids.is_empty() {
+            return Ok(InboxStatus {
+                unread_count: 0,
+                oldest_unread_at: None,
+                newest_unread_at: None,
+                total_size_bytes: 0,
+            });
+        }
+
+        // Bulk fetch message metadata from Redis (we only need created_at and size)
+        let redis_keys: Vec<String> = msg_ids.iter().map(|id| instant_message_key(*id)).collect();
+        let results: Vec<Option<String>> = conn
+            .mget(&redis_keys)
+            .await
+            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+        let mut oldest_at: Option<chrono::DateTime<Utc>> = None;
+        let mut newest_at: Option<chrono::DateTime<Utc>> = None;
+        let mut total_size: i64 = 0;
+        let mut valid_count: usize = 0;
+
+        for data_opt in results.into_iter().flatten() {
+            if let Ok(msg) = serde_json::from_str::<Message>(&data_opt) {
+                valid_count += 1;
+                total_size += msg.content_size_bytes;
+
+                match &oldest_at {
+                    None => oldest_at = Some(msg.created_at),
+                    Some(existing) if msg.created_at < *existing => oldest_at = Some(msg.created_at),
+                    _ => {}
+                }
+
+                match &newest_at {
+                    None => newest_at = Some(msg.created_at),
+                    Some(existing) if msg.created_at > *existing => newest_at = Some(msg.created_at),
+                    _ => {}
+                }
+            }
+        }
+
+        // If some messages weren't in Redis, fall back to DB for accurate stats
+        if valid_count < msg_ids.len() {
+            let missing_ids: Vec<Uuid> = msg_ids.iter().skip(valid_count).cloned().collect();
+            if !missing_ids.is_empty() {
+                let db_stats: Option<(Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>, Option<i64>, i64)> = sqlx::query_as(
+                    "SELECT MIN(created_at), MAX(created_at), SUM(content_size_bytes), COUNT(*) FROM messages WHERE id = ANY($1::uuid[]) AND is_delivered = false"
+                )
+                .bind(&missing_ids)
+                .fetch_optional(self.db_pool.as_ref())
+                .await
+                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+                if let Some((db_oldest, db_newest, db_size, db_count)) = db_stats {
+                    valid_count += db_count as usize;
+                    total_size += db_size.unwrap_or(0);
+
+                    if let Some(db_old) = db_oldest {
+                        oldest_at = Some(match oldest_at {
+                            None => db_old,
+                            Some(existing) if db_old < existing => db_old,
+                            Some(existing) => existing,
+                        });
+                    }
+
+                    if let Some(db_new) = db_newest {
+                        newest_at = Some(match newest_at {
+                            None => db_new,
+                            Some(existing) if db_new > existing => db_new,
+                            Some(existing) => existing,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(InboxStatus {
+            unread_count: valid_count,
+            oldest_unread_at: oldest_at,
+            newest_unread_at: newest_at,
+            total_size_bytes: total_size,
+        })
+    }
+
+    // -------------------------------------------------------------------------
     // Fetch read receipts
     // -------------------------------------------------------------------------
     /// Fetches read receipts for a message from DB.
