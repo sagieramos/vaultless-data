@@ -85,6 +85,12 @@ dotenvy = "0.15.7"
 # HTTP client/server
 hyper = { version = "1.7.0", features = ["full"] }
 
+# HTTP client for OAuth and external API calls
+reqwest = { version = "0.12", features = ["json"] }
+
+# URL encoding for OAuth parameters
+urlencoding = "2.1"
+
 # Email sending
 lettre = { version = "0.11.19", features = ["tokio1", "tokio1-native-tls", "smtp-transport"] }
 

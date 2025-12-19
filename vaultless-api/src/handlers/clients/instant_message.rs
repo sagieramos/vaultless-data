@@ -7,12 +7,13 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 use chrono;
+use utoipa::ToSchema;
 use vaultless_core::Client;
 use vaultless_core::models::message::dto::{HealthStatus, Message, ReadReceipt};
 
@@ -20,7 +21,7 @@ use vaultless_core::models::message::dto::{HealthStatus, Message, ReadReceipt};
 // Request Types (UPDATED)
 // =============================================================================
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct SendMessageRequest {
     pub recipient_identifier: Option<String>,
     pub recipient_pubkey: Option<String>,
@@ -49,7 +50,7 @@ fn default_require_verification() -> bool {
 // Response Types (UPDATED)
 // =============================================================================
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SendMessageResponse {
     pub success: bool,
     pub message_id: Uuid,
@@ -58,30 +59,33 @@ pub struct SendMessageResponse {
     pub recipient_online: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct FetchMessagesResponse {
     pub success: bool,
+    #[schema(value_type = Vec<Object>)]
     pub messages: Vec<Message>,
     pub count: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MarkReadResponse {
     pub success: bool,
     pub message: String,
     pub read_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ReadReceiptsResponse {
     pub success: bool,
+    #[schema(value_type = Vec<Object>)]
     pub receipts: Vec<ReadReceipt>,
     pub count: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthStatusResponse {
     pub success: bool,
+    #[schema(value_type = Object)]
     pub status: HealthStatus,
     pub websocket_connections: usize,
 }
@@ -92,6 +96,19 @@ pub struct HealthStatusResponse {
 
 /// Send an instant message (P2P) - UPDATED WITH ALL FIXES
 /// POST /api/messages/send
+#[utoipa::path(
+    post,
+    path = "/api/messages/send",
+    tag = "Instant Messaging",
+    security(("bearer_auth" = [])),
+    request_body = SendMessageRequest,
+    responses(
+        (status = 200, description = "Message sent successfully", body = SendMessageResponse),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Recipient not found")
+    )
+)]
 pub async fn send_message(
     State(state): State<AppState>,
     SessionDataClientExt(sender): SessionDataClientExt,
@@ -202,6 +219,16 @@ pub async fn send_message(
 
 /// Fetch messages for current user (inbox) - UPDATED
 /// GET /api/messages/inbox
+#[utoipa::path(
+    get,
+    path = "/api/messages/inbox",
+    tag = "Instant Messaging",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Messages fetched successfully", body = FetchMessagesResponse),
+        (status = 401, description = "Unauthorized")
+    )
+)]
 pub async fn fetch_inbox(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
@@ -242,6 +269,20 @@ pub async fn fetch_inbox(
 
 /// Mark a message as read - UPDATED
 /// POST /api/messages/{message_id}/read
+#[utoipa::path(
+    post,
+    path = "/api/messages/{message_id}/read",
+    tag = "Instant Messaging",
+    security(("bearer_auth" = [])),
+    params(
+        ("message_id" = Uuid, Path, description = "Message ID to mark as read")
+    ),
+    responses(
+        (status = 200, description = "Message marked as read", body = MarkReadResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Message not found")
+    )
+)]
 pub async fn mark_message_read(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
@@ -285,10 +326,24 @@ pub async fn mark_message_read(
 
 /// Get read receipts for a message - UPDATED
 /// GET /api/messages/{message_id}/receipts
+#[utoipa::path(
+    get,
+    path = "/api/messages/{message_id}/receipts",
+    tag = "Instant Messaging",
+    security(("bearer_auth" = [])),
+    params(
+        ("message_id" = Uuid, Path, description = "Message ID to get receipts for")
+    ),
+    responses(
+        (status = 200, description = "Read receipts fetched successfully", body = ReadReceiptsResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Message not found")
+    )
+)]
 pub async fn get_read_receipts(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
-    ApplicationKeyViewExt(_): ApplicationKeyViewExt,
+    ApplicationKeyViewExt(_app): ApplicationKeyViewExt,
     Path(message_id): Path<Uuid>,
 ) -> Result<Json<ReadReceiptsResponse>, ApiError> {
     tracing::debug!(
@@ -321,6 +376,14 @@ pub async fn get_read_receipts(
 
 /// Health check for InstantMessage service - UPDATED
 /// GET /api/messages/health
+#[utoipa::path(
+    get,
+    path = "/api/messages/health",
+    tag = "Instant Messaging",
+    responses(
+        (status = 200, description = "Message service health status", body = HealthStatusResponse)
+    )
+)]
 #[axum::debug_handler]
 pub async fn message_health_check(State(state): State<AppState>) -> Json<HealthStatusResponse> {
     let status = state.instant_message.get_health_status();

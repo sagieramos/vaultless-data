@@ -76,12 +76,20 @@ async fn main() -> anyhow::Result<()> {
         redis_operation_timeout_secs: config.metrics.redis_timeout_secs,
     });
 
+    // Prepare Google OAuth config (Some if enabled, None otherwise)
+    let google_oauth_config = if config.google_oauth.enabled {
+        Some(config.google_oauth.clone())
+    } else {
+        None
+    };
+
     let app_state = AppState::new(
         db,
         redis_pool,
         Arc::clone(&metrics_config),
         config.cache.connection_url(),
         config.security.session_key_manager.clone(),
+        google_oauth_config,
     )?;
 
     //----------------------------------------------------
@@ -121,11 +129,13 @@ async fn main() -> anyhow::Result<()> {
     // 6. Build main app with middleware and Swagger UI
     //----------------------------------------------------
     let swagger_ui = api_doc::openapi_config();
+    let client_swagger_ui = api_doc::client_openapi_config();
 
     let app = Router::new()
         .merge(api_router)
         .merge(metrics_router)
         .merge(swagger_ui)
+        .merge(client_swagger_ui)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

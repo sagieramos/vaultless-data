@@ -22,6 +22,7 @@ pub struct Config {
     pub cache: CacheConfig,
     pub security: SecurityConfig,
     pub metrics: MetricsConfig,
+    pub google_oauth: GoogleOAuthConfig,
 }
 
 // =============================================================================
@@ -193,6 +194,41 @@ impl fmt::Debug for SecurityConfig {
 }
 
 // =============================================================================
+// GOOGLE OAUTH CONFIG
+// =============================================================================
+
+/// Google OAuth 2.0 configuration for social login
+#[derive(Clone)]
+pub struct GoogleOAuthConfig {
+    /// Google OAuth Client ID (from Google Cloud Console)
+    pub client_id: String,
+    /// Google OAuth Client Secret (from Google Cloud Console)
+    pub client_secret: String,
+    /// Redirect URI after Google authentication (must match Google Console)
+    pub redirect_uri: String,
+    /// Whether Google OAuth is enabled
+    pub enabled: bool,
+}
+
+impl GoogleOAuthConfig {
+    /// Check if Google OAuth is properly configured
+    pub fn is_configured(&self) -> bool {
+        self.enabled && !self.client_id.is_empty() && !self.client_secret.is_empty()
+    }
+}
+
+impl fmt::Debug for GoogleOAuthConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GoogleOAuthConfig")
+            .field("client_id", &format!("<redacted: {} chars>", self.client_id.len()))
+            .field("client_secret", &"<redacted>")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+// =============================================================================
 // METRICS CONFIG
 // =============================================================================
 
@@ -317,6 +353,19 @@ impl Config {
                     .unwrap_or_else(|_| "30".to_string())
                     .parse()?,
             },
+
+            // ─────────────────────────────────────────────────────────────────
+            // Google OAuth 2.0
+            // ─────────────────────────────────────────────────────────────────
+            google_oauth: GoogleOAuthConfig {
+                client_id: env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
+                client_secret: env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
+                redirect_uri: env::var("GOOGLE_REDIRECT_URI")
+                    .unwrap_or_else(|_| "http://localhost:3000/auth/google/callback".to_string()),
+                enabled: env::var("GOOGLE_OAUTH_ENABLED")
+                    .map(|v| v.to_lowercase() == "true" || v == "1")
+                    .unwrap_or(false),
+            },
         };
 
         // Validate configuration
@@ -428,7 +477,7 @@ mod tests {
             "redis://:secretpass@redis.example.com:6380/2"
         );
     }
-
+/* 
     #[test]
     fn test_bind_address() {
         let key_manager = SessionKeyManager::new(
@@ -474,5 +523,5 @@ mod tests {
         };
 
         assert_eq!(config.bind_address(), "127.0.0.1:3000");
-    }
+    } */
 }

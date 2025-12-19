@@ -13,6 +13,7 @@ use axum::{
 use hyper::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use utoipa::{IntoParams, ToSchema};
 use vaultless_core::{
     Client, LoginClientRequest, LoginClientResponse, SignupClientRequest, SignupClientResponse,
 };
@@ -21,25 +22,26 @@ use vaultless_core::{
 // Request/Response Types
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct LookupClientQuery {
     pub identifier: Option<String>,
     pub pubkey: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ClientLookupResponse {
     pub success: bool,
+    #[schema(value_type = Option<Object>)]
     pub client: Option<Client>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SuccessResponse {
     pub success: bool,
     pub message: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ChallengeResponse {
     pub challenge: String,
     pub expires_at: String,
@@ -51,6 +53,17 @@ pub struct ChallengeResponse {
 
 /// Register new client with optional platform attestation
 /// POST /api/clients/register
+#[utoipa::path(
+    post,
+    path = "/api/clients/register",
+    tag = "Client Authentication",
+    request_body(content = Object, description = "Client registration request"),
+    responses(
+        (status = 200, description = "Client registered successfully", body = Object),
+        (status = 400, description = "Invalid request"),
+        (status = 500, description = "Internal server error")
+    )
+)]
 #[axum::debug_handler]
 pub async fn sign_up_client(
     State(state): State<AppState>,
@@ -80,8 +93,17 @@ pub async fn sign_up_client(
 
 /// Authenticate existing client (issue new session or refresh)
 /// POST /api/clients/login
-
-/// Login handler - uses fast verification
+#[utoipa::path(
+    post,
+    path = "/api/clients/login",
+    tag = "Client Authentication",
+    request_body(content = Object, description = "Client login request"),
+    responses(
+        (status = 200, description = "Client logged in successfully", body = Object),
+        (status = 401, description = "Invalid credentials"),
+        (status = 500, description = "Internal server error")
+    )
+)]
 #[tracing::instrument(skip(state, input), fields(endpoint = "login_client"))]
 #[axum::debug_handler]
 pub async fn login_client(
@@ -111,6 +133,15 @@ pub async fn login_client(
 
 /// Generate authentication challenge (for signature-based auth)
 /// GET /api/clients/challenge
+#[utoipa::path(
+    get,
+    path = "/api/clients/challenge",
+    tag = "Client Authentication",
+    responses(
+        (status = 200, description = "Challenge generated successfully", body = ChallengeResponse),
+        (status = 500, description = "Internal server error")
+    )
+)]
 #[axum::debug_handler]
 pub async fn generate_challenge(
     State(state): State<AppState>,
@@ -127,6 +158,16 @@ pub async fn generate_challenge(
 
 /// Lookup client by identifier (public or hashed)
 /// GET /api/clients/lookup?identifier=<identifier>&pubkey=<pubkey>
+#[utoipa::path(
+    get,
+    path = "/api/clients/lookup",
+    tag = "Client Authentication",
+    params(LookupClientQuery),
+    responses(
+        (status = 200, description = "Client lookup result", body = ClientLookupResponse),
+        (status = 500, description = "Internal server error")
+    )
+)]
 #[axum::debug_handler]
 pub async fn lookup_client(
     State(state): State<AppState>,
@@ -156,6 +197,14 @@ pub async fn lookup_client(
 
 /// Health check endpoint
 /// GET /api/clients/health
+#[utoipa::path(
+    get,
+    path = "/api/clients/health",
+    tag = "Client Authentication",
+    responses(
+        (status = 200, description = "Health check status", body = Object)
+    )
+)]
 #[axum::debug_handler]
 pub async fn health_check() -> Json<serde_json::Value> {
     Json(serde_json::json!({
@@ -170,12 +219,32 @@ pub async fn health_check() -> Json<serde_json::Value> {
 
 /// Get current authenticated client info
 /// GET /api/clients/me
+#[utoipa::path(
+    get,
+    path = "/api/clients/me",
+    tag = "Client Authentication",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Current client info", body = ClientResponse),
+        (status = 401, description = "Unauthorized")
+    )
+)]
 pub async fn get_current_client(client: ClientResponse) -> Json<ClientResponse> {
     Json(client)
 }
+
 /// Logout (revoke current session)
 /// POST /api/clients/logout
-/// Logout handler - uses secure verification
+#[utoipa::path(
+    post,
+    path = "/api/clients/logout",
+    tag = "Client Authentication",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Logged out successfully", body = Object),
+        (status = 401, description = "Unauthorized")
+    )
+)]
 #[tracing::instrument(skip(state, headers), fields(endpoint = "logout_client"))]
 #[axum::debug_handler]
 pub async fn logout(
@@ -213,6 +282,16 @@ pub async fn logout(
 
 /// Deactivate client account
 /// DELETE /api/clients/me
+#[utoipa::path(
+    delete,
+    path = "/api/clients/me",
+    tag = "Client Authentication",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Client deactivated successfully", body = SuccessResponse),
+        (status = 401, description = "Unauthorized")
+    )
+)]
 pub async fn deactivate_client(
     State(state): State<AppState>,
     SessionDataClientExt(session_data): SessionDataClientExt,

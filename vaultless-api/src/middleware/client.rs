@@ -2,6 +2,7 @@ use super::helper::*;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::{middleware::error::ApiError, state::AppState};
 use axum::{
@@ -11,7 +12,7 @@ use axum::{
 };
 use vaultless_core::{Client, SessionData as SessionDataClient};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ClientResponse {
     pub identifier: Option<String>,
     pub public_key: Option<String>,

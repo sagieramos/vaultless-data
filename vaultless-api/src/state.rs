@@ -1,5 +1,7 @@
 use super::services::token::*;
+use crate::config::GoogleOAuthConfig;
 use crate::services::cache::CacheService;
+use crate::services::google_oauth::GoogleOAuthService;
 use crate::services::real_time_message::WsManager;
 use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
@@ -20,6 +22,8 @@ pub struct AppState {
     pub _session_verifier: Arc<SessionVerifier>,
     pub ws_manager: Arc<WsManager>,
     pub attestation_service: Option<Arc<AttestationService>>,
+    /// Google OAuth 2.0 service (None if not configured)
+    pub google_oauth: Option<Arc<GoogleOAuthService>>,
 }
 
 impl AppState {
@@ -29,6 +33,7 @@ impl AppState {
         metrics_config: Arc<MetricsConfig>,
         redis_url: String,
         session_key_manager: Arc<SessionKeyManager>,
+        google_oauth_config: Option<GoogleOAuthConfig>,
     ) -> anyhow::Result<Self> {
         let im_db_clone = db.clone();
         let im_redis_pool_clone = redis_pool.clone();
@@ -59,6 +64,23 @@ impl AppState {
 
         let ws_manager = WsManager::new(redis_url, Arc::clone(&instant_message));
 
+        // Initialize Google OAuth service if configured
+        let google_oauth = google_oauth_config
+            .filter(|config| config.is_configured())
+            .map(|config| {
+                tracing::info!("Google OAuth 2.0 enabled");
+                Arc::new(GoogleOAuthService::new(
+                    config.client_id,
+                    config.client_secret,
+                    config.redirect_uri,
+                    arc_redis_pool.clone(),
+                ))
+            });
+
+        if google_oauth.is_none() {
+            tracing::info!("Google OAuth 2.0 not configured - social login disabled");
+        }
+
         Ok(Self {
             db: arc_db,
             redis_pool: arc_redis_pool,
@@ -68,6 +90,7 @@ impl AppState {
             _session_verifier,
             ws_manager,
             attestation_service: Some(Arc::new(attestation_service)),
+            google_oauth,
         })
     }
 

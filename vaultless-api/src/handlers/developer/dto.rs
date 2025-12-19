@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use validator::Validate;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 // ============================================================================
 // REGISTRATION
@@ -140,4 +140,94 @@ pub struct LogoutResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CurrentUserResponse {
     pub user: UserInfo,
+}
+
+// ============================================================================
+// GOOGLE OAUTH 2.0
+// ============================================================================
+
+/// Query parameters for initiating Google OAuth flow
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct GoogleAuthQuery {
+    /// Optional URL to redirect to after successful authentication
+    pub redirect_after: Option<String>,
+}
+
+/// Response when initiating Google OAuth flow
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GoogleAuthInitResponse {
+    /// URL to redirect the user to for Google authentication
+    pub auth_url: String,
+    /// State token for CSRF protection (included in auth_url)
+    pub state: String,
+}
+
+/// Query parameters received in Google OAuth callback
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct GoogleCallbackQuery {
+    /// Authorization code from Google (exchanged for tokens)
+    pub code: String,
+    /// State token for CSRF validation (must match original)
+    pub state: String,
+    /// Error code if authentication failed
+    pub error: Option<String>,
+    /// Error description if authentication failed
+    pub error_description: Option<String>,
+}
+
+/// Response from successful Google OAuth callback
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GoogleAuthResponse {
+    /// JWT access token for API authentication
+    pub access_token: String,
+    /// Refresh token for obtaining new access tokens
+    pub refresh_token: String,
+    /// Token type (always "Bearer")
+    pub token_type: String,
+    /// Access token expiry in seconds
+    pub expires_in: i64,
+    /// Authenticated user information
+    pub user: UserInfo,
+    /// Whether this is a new user (just registered via Google)
+    pub is_new_user: bool,
+    /// Optional redirect URL (from initial auth request)
+    pub redirect_after: Option<String>,
+}
+
+/// Google user profile information (returned for debugging/linking)
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GoogleUserProfile {
+    /// Google's unique user identifier
+    pub google_id: String,
+    /// User's email from Google
+    pub email: String,
+    /// Whether email is verified by Google
+    pub email_verified: bool,
+    /// User's display name
+    pub name: Option<String>,
+    /// URL to profile picture
+    pub picture: Option<String>,
+}
+
+/// Request to link Google account to existing user
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LinkGoogleAccountRequest {
+    /// Authorization code from Google OAuth callback
+    pub code: String,
+    /// State token for CSRF validation
+    pub state: String,
+}
+
+/// Response after linking Google account
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LinkGoogleAccountResponse {
+    pub message: String,
+    pub google_profile: GoogleUserProfile,
+}
+
+/// Error response for OAuth failures
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GoogleAuthError {
+    pub error: String,
+    pub error_description: Option<String>,
 }
