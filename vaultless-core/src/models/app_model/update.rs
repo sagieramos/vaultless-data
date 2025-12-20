@@ -1,6 +1,7 @@
 use super::dto::*;
 use super::integrity::dto::*;
 use crate::error::{Result, VaultlessError};
+use crate::models::webhook::WebhookRecord;
 use deadpool_redis::Pool as RedisPool;
 use serde_json::Value as JsonValue;
 use sqlx::{Postgres, QueryBuilder, Transaction};
@@ -47,7 +48,72 @@ impl Application {
         user_id: Uuid,
     ) -> Result<Application> {
         let integrity_patch_opt = Self::validate_and_serialize_integrity(&update)?;
+        let webhooks_to_sync = update.webhooks.clone();
 
+        let has_app_fields = update.name.is_some()
+            || update.description.is_some()
+            || update.is_active.is_some()
+            || update.max_ttl_seconds.is_some()
+            || update.is_key_rotation_forced.is_some()
+            || update.internal_notes.is_some()
+            || integrity_patch_opt.is_some();
+
+        let has_webhooks = webhooks_to_sync.is_some();
+
+        // If no updates at all, return existing app
+        if !has_app_fields && !has_webhooks {
+            tracing::info!(application_id = %application_id, "No fields to update");
+            return Self::find_by_id_and_user_id(exec.as_ref(), application_id, user_id).await;
+        }
+
+        // Use transaction if we have webhooks to sync
+        if has_webhooks {
+            let mut tx = exec.begin().await?;
+
+            // Update application fields if any
+            let updated_app = if has_app_fields {
+                let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
+                Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
+                Self::finalize_update_query(&mut qb, application_id, user_id);
+
+                let app = qb
+                    .build_query_as::<Application>()
+                    .fetch_one(&mut *tx)
+                    .await?;
+
+                if integrity_patch_opt.is_some() {
+                    Self::validate_app_meta(&app.app_meta)?;
+                }
+                app
+            } else {
+                sqlx::query_as::<_, Application>(
+                    "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
+                )
+                .bind(application_id)
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?
+            };
+
+            // Sync webhooks
+            if let Some(webhooks) = webhooks_to_sync {
+                WebhookRecord::sync_webhooks(&mut tx, application_id, &webhooks).await?;
+            }
+
+            tx.commit().await?;
+
+            if let Some(pool) = redis {
+                let exec_clone = exec.clone();
+                tokio::spawn(async move {
+                    Self::invalidate_caches(exec_clone, pool, application_id).await;
+                });
+            }
+
+            tracing::info!(application_id = %application_id, "Application updated successfully with webhooks");
+            return Ok(updated_app);
+        }
+
+        // No webhooks, use simple update
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
         Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
 
@@ -84,30 +150,55 @@ impl Application {
         user_id: Uuid,
     ) -> Result<Application> {
         let integrity_patch_opt = Self::validate_and_serialize_integrity(&update)?;
+        let webhooks_to_sync = update.webhooks.clone();
 
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
-        Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
+        let has_app_fields = update.name.is_some()
+            || update.description.is_some()
+            || update.is_active.is_some()
+            || update.max_ttl_seconds.is_some()
+            || update.is_key_rotation_forced.is_some()
+            || update.internal_notes.is_some()
+            || integrity_patch_opt.is_some();
 
-        if Self::is_empty_update(qb.sql()) {
-            let existing: Application = sqlx::query_as::<_, Application>(
+        // Update application fields
+        let updated_app = if has_app_fields {
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE applications SET ");
+            Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
+
+            if Self::is_empty_update(qb.sql()) {
+                sqlx::query_as::<_, Application>(
+                    "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
+                )
+                .bind(application_id)
+                .bind(user_id)
+                .fetch_one(&mut **tx)
+                .await?
+            } else {
+                Self::finalize_update_query(&mut qb, application_id, user_id);
+
+                let app = qb
+                    .build_query_as::<Application>()
+                    .fetch_one(&mut **tx)
+                    .await?;
+
+                if integrity_patch_opt.is_some() {
+                    Self::validate_app_meta(&app.app_meta)?;
+                }
+                app
+            }
+        } else {
+            sqlx::query_as::<_, Application>(
                 "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
             )
             .bind(application_id)
             .bind(user_id)
             .fetch_one(&mut **tx)
-            .await?;
-            return Ok(existing);
-        }
+            .await?
+        };
 
-        Self::finalize_update_query(&mut qb, application_id, user_id);
-
-        let updated_app = qb
-            .build_query_as::<Application>()
-            .fetch_one(&mut **tx)
-            .await?;
-
-        if integrity_patch_opt.is_some() {
-            Self::validate_app_meta(&updated_app.app_meta)?;
+        // Sync webhooks if provided
+        if let Some(webhooks) = webhooks_to_sync {
+            WebhookRecord::sync_webhooks(tx, application_id, &webhooks).await?;
         }
 
         Ok(updated_app)

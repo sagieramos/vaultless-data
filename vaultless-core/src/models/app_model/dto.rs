@@ -56,6 +56,20 @@ pub struct CreateApplication {
     "max_ttl_seconds": 3600,
     "is_key_rotation_forced": false,
     "internal_notes": "Some internal notes",
+    "webhooks": [
+        {
+            "id": null,
+            "url": "https://example.com/webhooks/vaultless",
+            "event_type": "message.created",
+            "is_active": true
+        },
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "url": "https://example.com/webhooks/delivered",
+            "event_type": "message.delivered",
+            "is_active": true
+        }
+    ],
     "integrity_config": {
         "allow_unauthenticated": false,
         "browser": {
@@ -141,8 +155,61 @@ pub struct UpdateApplication {
     #[validate(length(max = 1000))]
     pub internal_notes: Option<String>,
 
+    /// Webhooks configuration for this application.
+    ///
+    /// **Behavior:**
+    /// - If `webhooks` is `None` (field omitted): No changes to webhooks
+    /// - If `webhooks` is `Some([...])`: Replace all webhooks with the provided list
+    ///   - Webhooks with `id: null` will be created
+    ///   - Webhooks with `id: <uuid>` will be updated
+    ///   - Existing webhooks not in the list will be deleted
+    ///
+    /// **Limits:**
+    /// - Maximum 5 webhooks per application
+    /// - Each (application_id, url, event_type) combination must be unique
+    #[validate(custom(function = "validate_webhooks"))]
+    pub webhooks: Option<Vec<WebhookInput>>,
+
     #[schema(value_type = Option<IntegrityConfig>)]
     pub integrity_config: Option<IntegrityConfig>,
+}
+
+/// Validates webhooks list
+fn validate_webhooks(webhooks: &Vec<WebhookInput>) -> Result<(), validator::ValidationError> {
+    // Check max count
+    if webhooks.len() > MAX_WEBHOOKS_PER_APPLICATION {
+        let mut err = validator::ValidationError::new("max_webhooks_exceeded");
+        err.message = Some(std::borrow::Cow::Owned(format!(
+            "Maximum {} webhooks allowed per application",
+            MAX_WEBHOOKS_PER_APPLICATION
+        )));
+        return Err(err);
+    }
+
+    // Check for duplicate (url, event_type) combinations
+    let mut seen = std::collections::HashSet::new();
+    for webhook in webhooks {
+        let key = (webhook.url.clone(), webhook.event_type);
+        if !seen.insert(key) {
+            let mut err = validator::ValidationError::new("duplicate_webhook");
+            err.message = Some(std::borrow::Cow::Owned(format!(
+                "Duplicate webhook: url '{}' with event_type '{}' already exists",
+                webhook.url, webhook.event_type
+            )));
+            return Err(err);
+        }
+    }
+
+    // Validate each webhook
+    for webhook in webhooks {
+        webhook.validate().map_err(|e| {
+            let mut err = validator::ValidationError::new("invalid_webhook");
+            err.message = Some(std::borrow::Cow::Owned(format!("Invalid webhook: {}", e)));
+            err
+        })?;
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,14 +318,180 @@ pub struct PublishableKey {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
+/// Webhook response object returned from the API
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Webhook {
     pub id: Uuid,
     pub url: String,
-    pub event_type: String,
+    pub event_type: WebhookEventType,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Maximum number of webhooks allowed per application
+pub const MAX_WEBHOOKS_PER_APPLICATION: usize = 5;
+
+/// Event types that can trigger webhooks.
+///
+/// These events correspond to significant actions within an application
+/// that developers may want to be notified about in real-time.
+///
+/// Note: Message events (created, delivered, read, expired) are intentionally
+/// excluded as they are hotpath operations that would add unacceptable latency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WebhookEventType {
+    // -------------------------------------------------------------------------
+    // Client Events - Authentication and lifecycle
+    // -------------------------------------------------------------------------
+    /// Triggered when a new client registers/signs up under an application
+    #[serde(rename = "client.signup")]
+    ClientSignup,
+
+    /// Triggered when an existing client signs in/authenticates
+    #[serde(rename = "client.signin")]
+    ClientSignin,
+
+    /// Triggered when a client is deactivated or revoked
+    #[serde(rename = "client.revoked")]
+    ClientRevoked,
+
+    /// Triggered when a client's platform attestation status changes
+    #[serde(rename = "client.attestation_changed")]
+    ClientAttestationChanged,
+
+    // -------------------------------------------------------------------------
+    // Security Events - Important security-related notifications
+    // -------------------------------------------------------------------------
+    /// Triggered when rate limiting is applied to a client
+    #[serde(rename = "security.rate_limited")]
+    SecurityRateLimited,
+
+    /// Triggered when suspicious activity is detected
+    #[serde(rename = "security.suspicious_activity")]
+    SecuritySuspiciousActivity,
+
+    // -------------------------------------------------------------------------
+    // Quota Events - Application-level quota notifications
+    // -------------------------------------------------------------------------
+    /// Triggered when quota usage reaches warning threshold (e.g., 80%)
+    #[serde(rename = "quota.warning")]
+    QuotaWarning,
+
+    /// Triggered when quota is exceeded
+    #[serde(rename = "quota.exceeded")]
+    QuotaExceeded,
+}
+
+impl WebhookEventType {
+    /// Returns the string representation of the event type
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ClientSignup => "client.signup",
+            Self::ClientSignin => "client.signin",
+            Self::ClientRevoked => "client.revoked",
+            Self::ClientAttestationChanged => "client.attestation_changed",
+            Self::SecurityRateLimited => "security.rate_limited",
+            Self::SecuritySuspiciousActivity => "security.suspicious_activity",
+            Self::QuotaWarning => "quota.warning",
+            Self::QuotaExceeded => "quota.exceeded",
+        }
+    }
+
+    /// Returns all available event types
+    pub fn all() -> &'static [WebhookEventType] {
+        &[
+            Self::ClientSignup,
+            Self::ClientSignin,
+            Self::ClientRevoked,
+            Self::ClientAttestationChanged,
+            Self::SecurityRateLimited,
+            Self::SecuritySuspiciousActivity,
+            Self::QuotaWarning,
+            Self::QuotaExceeded,
+        ]
+    }
+
+    /// Returns event types grouped by category
+    pub fn by_category() -> &'static [(&'static str, &'static [WebhookEventType])] {
+        &[
+            ("Client Events", &[
+                Self::ClientSignup,
+                Self::ClientSignin,
+                Self::ClientRevoked,
+                Self::ClientAttestationChanged,
+            ]),
+            ("Security Events", &[
+                Self::SecurityRateLimited,
+                Self::SecuritySuspiciousActivity,
+            ]),
+            ("Quota Events", &[
+                Self::QuotaWarning,
+                Self::QuotaExceeded,
+            ]),
+        ]
+    }
+}
+
+impl std::fmt::Display for WebhookEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for WebhookEventType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "client.signup" => Ok(Self::ClientSignup),
+            "client.signin" => Ok(Self::ClientSignin),
+            "client.revoked" => Ok(Self::ClientRevoked),
+            "client.attestation_changed" => Ok(Self::ClientAttestationChanged),
+            "security.rate_limited" => Ok(Self::SecurityRateLimited),
+            "security.suspicious_activity" => Ok(Self::SecuritySuspiciousActivity),
+            "quota.warning" => Ok(Self::QuotaWarning),
+            "quota.exceeded" => Ok(Self::QuotaExceeded),
+            _ => Err(format!("Unknown webhook event type: '{}'. Valid types are: {}",
+                s,
+                Self::all().iter().map(|e| e.as_str()).collect::<Vec<_>>().join(", ")
+            )),
+        }
+    }
+}
+
+/// Input for creating or updating a webhook within an application update.
+///
+/// - If `id` is `None`, a new webhook will be created.
+/// - If `id` is `Some(uuid)`, the existing webhook will be updated.
+/// - Webhooks not included in the update list will be deleted.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[schema(example = json!({
+    "id": null,
+    "url": "https://example.com/webhooks/vaultless",
+    "event_type": "client.signup",
+    "is_active": true
+}))]
+pub struct WebhookInput {
+    /// Webhook ID. If provided, updates existing webhook. If null/omitted, creates new webhook.
+    #[schema(value_type = Option<String>)]
+    pub id: Option<Uuid>,
+
+    /// Webhook endpoint URL (must be HTTPS in production)
+    #[validate(url, length(max = 2048))]
+    pub url: String,
+
+    /// Event type that triggers this webhook
+    pub event_type: WebhookEventType,
+
+    /// Whether this webhook is active
+    #[serde(default = "default_webhook_active")]
+    pub is_active: bool,
+}
+
+fn default_webhook_active() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

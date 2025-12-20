@@ -9,12 +9,14 @@ pub mod proof;
 pub mod session;
 pub mod usage;
 pub mod user;
+pub mod webhook;
 
 pub use api_key::{ApiKey, CachedApiKey, CreateApiKey};
 pub use app_model::dto::{
     Application, CreateApplication, CreateApplicationResponse,
-    UpdateApplication,
+    UpdateApplication, WebhookEventType, WebhookInput, MAX_WEBHOOKS_PER_APPLICATION,
 };
+pub use webhook::WebhookRecord;
 pub use billing::*;
 pub use message::*;
 pub use notification::{
