@@ -179,7 +179,7 @@ LEFT JOIN LATERAL (
         SUM(total_rate_limit_hits) AS total_rate_limit_hits,
         SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
     FROM usage_metrics_daily
-    WHERE api_key_id = sk.id
+    WHERE application_id = sk.id
       AND day >= date_trunc('month', NOW())
 ) current_month ON true
 
@@ -197,7 +197,7 @@ LEFT JOIN LATERAL (
         SUM(total_rate_limit_hits) AS total_rate_limit_hits,
         SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
     FROM usage_metrics_daily
-    WHERE api_key_id = sk.id
+    WHERE application_id = sk.id
 ) lifetime ON true
 
 -- ============================================================================
@@ -210,7 +210,7 @@ LEFT JOIN LATERAL (
         SUM(total_bytes_received) AS total_bytes_received,
         SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
     FROM usage_metrics_daily
-    WHERE api_key_id = sk.id
+    WHERE application_id = sk.id
       AND day >= NOW() - INTERVAL '7 days'
 ) last_7d ON true
 
@@ -224,7 +224,7 @@ LEFT JOIN LATERAL (
         SUM(total_bytes_received) AS total_bytes_received,
         SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
     FROM usage_metrics_daily
-    WHERE api_key_id = sk.id
+    WHERE application_id = sk.id
       AND day >= NOW() - INTERVAL '30 days'
 ) last_30d ON true;
 

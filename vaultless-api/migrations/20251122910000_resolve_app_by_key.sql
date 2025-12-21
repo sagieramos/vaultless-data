@@ -1,9 +1,13 @@
--- Add migration script here
+-- ============================================================================
+-- Updated Auth Config Functions (Subscription-Aware)
+-- ============================================================================
+
+-- 1. Fetch by Publishable Key (Client-side lookup)
 CREATE OR REPLACE FUNCTION public.fetch_auth_config_by_publishable_key(
     pk_plaintext text
 )
 RETURNS TABLE (
-    -- Application Fields (App)
+    -- Application Fields
     app_id uuid,
     app_user_id uuid,
     app_name character varying,
@@ -13,17 +17,19 @@ RETURNS TABLE (
     app_is_key_rotation_forced boolean,
     app_app_meta jsonb,
 
-    -- Secret Key Fields (SK)
+    -- Secret Key Fields (Internal Audit/Prefix)
     sk_id uuid,
     sk_key_prefix character varying,
-    sk_tier subscription_tier,
-    sk_monthly_message_quota BIGINT,
-    sk_message_retention_seconds BIGINT,
-    sk_rate_limit_per_minute BIGINT
+
+    -- Subscription Fields (The new "Source of Truth" for Quotas)
+    sub_tier subscription_tier,
+    sub_monthly_message_quota BIGINT,
+    sub_message_retention_seconds BIGINT,
+    sub_rate_limit_per_minute integer
 )
 LANGUAGE sql
 AS $$
-    -- Step 1: Find the Secret Key's Application ID using the provided Publishable Key.
+    -- Step 1: Resolve the Application via the Publishable Key
     WITH app_lookup AS (
         SELECT application_id
         FROM api_keys
@@ -32,25 +38,30 @@ AS $$
           AND is_active = TRUE
         LIMIT 1
     )
-    -- Step 2: Join Application (A) and its active Secret Key (SK) using the found Application ID.
+    -- Step 2: Join App + Active Secret Key + Active Subscription
     SELECT
         a.id, a.user_id, a.name, a.description, a.is_active,
         a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
-        sk.id, sk.key_prefix, sk.tier, sk.monthly_message_quota, sk.message_retention_seconds,
-        sk.rate_limit_per_minute
+        sk.id, sk.key_prefix,
+        s.tier, s.monthly_message_quota, s.message_retention_seconds,
+        s.rate_limit_per_minute
     FROM applications a
     JOIN app_lookup al ON a.id = al.application_id
-    JOIN api_keys sk ON a.id = sk.application_id
-    WHERE sk.key_type = 'secret'::key_type
-      AND sk.is_active = TRUE
+    JOIN subscriptions s ON a.id = s.application_id
+    LEFT JOIN api_keys sk ON a.id = sk.application_id 
+        AND sk.key_type = 'secret'::key_type 
+        AND sk.is_active = TRUE
+    WHERE a.is_active = TRUE
+      AND s.is_active = TRUE
     LIMIT 1;
 $$;
 
+-- 2. Fetch by Secret Hash (Server-side validation)
 CREATE OR REPLACE FUNCTION public.fetch_auth_config_by_secret_hash(
     sk_hash_hex text
 )
 RETURNS TABLE (
-    -- Application Fields (App)
+    -- Application Fields
     app_id uuid,
     app_user_id uuid,
     app_name character varying,
@@ -60,27 +71,32 @@ RETURNS TABLE (
     app_is_key_rotation_forced boolean,
     app_app_meta jsonb,
 
-    -- Secret Key Fields (SK)
+    -- Secret Key Fields
     sk_id uuid,
     sk_key_prefix character varying,
-    sk_tier subscription_tier,
-    sk_monthly_message_quota BIGINT,
-    sk_message_retention_seconds BIGINT,
-    sk_rate_limit_per_minute integer
+
+    -- Subscription Fields
+    sub_tier subscription_tier,
+    sub_monthly_message_quota BIGINT,
+    sub_message_retention_seconds BIGINT,
+    sub_rate_limit_per_minute integer
 )
 LANGUAGE sql
 AS $$
-    -- Directly join the Secret Key (SK) with its Application (A) using the unique hash.
+    -- Join Secret Key (SK) -> Application (A) -> Subscription (S)
     SELECT
         a.id, a.user_id, a.name, a.description, a.is_active,
         a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
-        sk.id, sk.key_prefix, sk.tier, sk.monthly_message_quota, sk.message_retention_seconds,
-        sk.rate_limit_per_minute
+        sk.id, sk.key_prefix,
+        s.tier, s.monthly_message_quota, s.message_retention_seconds,
+        s.rate_limit_per_minute
     FROM api_keys sk
     JOIN applications a ON sk.application_id = a.id
+    JOIN subscriptions s ON a.id = s.application_id
     WHERE sk.key_hash = sk_hash_hex
       AND sk.key_type = 'secret'::key_type
       AND sk.is_active = TRUE
       AND a.is_active = TRUE
+      AND s.is_active = TRUE
     LIMIT 1;
 $$;

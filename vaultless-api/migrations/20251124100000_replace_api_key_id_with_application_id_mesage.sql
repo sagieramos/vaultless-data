@@ -47,10 +47,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_application_id
 -- Step 8: Drop the old api_key index
 DROP INDEX IF EXISTS idx_messages_api_key;
 
--- Step 9: Update the trigger function that updates api_key_last_used
--- Since we no longer have api_key_id, we need to update the application's updated_at instead
--- or remove this trigger if it's no longer relevant
-DROP TRIGGER IF EXISTS trigger_update_api_key_usage ON public.messages;
 
 -- Optionally create a new trigger to update application's updated_at
 CREATE OR REPLACE FUNCTION public.update_application_last_message()
