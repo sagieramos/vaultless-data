@@ -1,8 +1,3 @@
--- ============================================================================
--- Updated Auth Config Functions (Subscription-Aware)
--- ============================================================================
-
--- 1. Fetch by Publishable Key (Client-side lookup)
 CREATE OR REPLACE FUNCTION public.fetch_auth_config_by_publishable_key(
     pk_plaintext text
 )
@@ -21,34 +16,37 @@ RETURNS TABLE (
     sk_id uuid,
     sk_key_prefix character varying,
 
-    -- Subscription Fields (The new "Source of Truth" for Quotas)
+    -- Shared Subscription Fields (The Bundle source)
     sub_tier subscription_tier,
     sub_monthly_message_quota BIGINT,
     sub_message_retention_seconds BIGINT,
     sub_rate_limit_per_minute integer
 )
 LANGUAGE sql
+STABLE
 AS $$
-    -- Step 1: Resolve the Application via the Publishable Key
+    -- Step 1: Find the Application linked to this Publishable Key
     WITH app_lookup AS (
         SELECT application_id
-        FROM api_keys
+        FROM public.api_keys
         WHERE publishable_key_plaintext = pk_plaintext
           AND key_type = 'publishable'::key_type
           AND is_active = TRUE
         LIMIT 1
     )
-    -- Step 2: Join App + Active Secret Key + Active Subscription
+    -- Step 2: Join Application -> Subscription AND Application -> Active Secret Key
     SELECT
         a.id, a.user_id, a.name, a.description, a.is_active,
         a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
         sk.id, sk.key_prefix,
         s.tier, s.monthly_message_quota, s.message_retention_seconds,
         s.rate_limit_per_minute
-    FROM applications a
+    FROM public.applications a
     JOIN app_lookup al ON a.id = al.application_id
-    JOIN subscriptions s ON a.id = s.application_id
-    LEFT JOIN api_keys sk ON a.id = sk.application_id 
+    -- Link via application.subscription_id
+    JOIN public.subscriptions s ON a.subscription_id = s.id
+    -- Optional: Get the current active secret key if one exists
+    LEFT JOIN public.api_keys sk ON a.id = sk.application_id 
         AND sk.key_type = 'secret'::key_type 
         AND sk.is_active = TRUE
     WHERE a.is_active = TRUE
@@ -56,7 +54,6 @@ AS $$
     LIMIT 1;
 $$;
 
--- 2. Fetch by Secret Hash (Server-side validation)
 CREATE OR REPLACE FUNCTION public.fetch_auth_config_by_secret_hash(
     sk_hash_hex text
 )
@@ -75,24 +72,26 @@ RETURNS TABLE (
     sk_id uuid,
     sk_key_prefix character varying,
 
-    -- Subscription Fields
+    -- Shared Subscription Fields
     sub_tier subscription_tier,
     sub_monthly_message_quota BIGINT,
     sub_message_retention_seconds BIGINT,
     sub_rate_limit_per_minute integer
 )
 LANGUAGE sql
+STABLE
 AS $$
-    -- Join Secret Key (SK) -> Application (A) -> Subscription (S)
+    -- Direct chain: API Key -> Application -> Subscription
     SELECT
         a.id, a.user_id, a.name, a.description, a.is_active,
         a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
         sk.id, sk.key_prefix,
         s.tier, s.monthly_message_quota, s.message_retention_seconds,
         s.rate_limit_per_minute
-    FROM api_keys sk
-    JOIN applications a ON sk.application_id = a.id
-    JOIN subscriptions s ON a.id = s.application_id
+    FROM public.api_keys sk
+    INNER JOIN public.applications a ON sk.application_id = a.id
+    -- Link via application.subscription_id
+    INNER JOIN public.subscriptions s ON a.subscription_id = s.id
     WHERE sk.key_hash = sk_hash_hex
       AND sk.key_type = 'secret'::key_type
       AND sk.is_active = TRUE

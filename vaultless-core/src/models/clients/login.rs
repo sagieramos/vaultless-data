@@ -315,7 +315,7 @@ impl Client {
             platform: platform.as_str().to_string(),
             device_trust_score,
             platform_config_version: integrity_handler.platform_config_version.get(platform),
-            app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
+            app_tier: Some(app_resolved.sub_tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,
         };
@@ -451,7 +451,7 @@ impl Client {
             platform: platform.as_str().to_string(),
             device_trust_score,
             platform_config_version: integrity_handler.platform_config_version.get(platform),
-            app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
+            app_tier: Some(app_resolved.sub_tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: None,
         };

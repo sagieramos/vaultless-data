@@ -1,8 +1,9 @@
 use super::dto::*;
+use crate::cache_key;
 use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
-use crate::models::notification::NotificationEventTracker;
 use crate::models::ApiKey;
+use crate::models::notification::NotificationEventTracker;
 use crate::models::usage::{
     MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool,
 };
@@ -15,62 +16,69 @@ const PUBLISHABLE_KEY_PREFIX: &str = "pk_";
 const SECRET_KEY_PREFIX: &str = "sk_";
 
 impl ApplicationKeyView {
+    /// Validates quotas and rate limits in the fast path (Redis-only)
     pub async fn validate_hot(&self, redis_pool: Arc<RedisPool>) -> Result<()> {
         if !self.app_is_active {
             return Err(VaultlessError::Forbidden(
                 "Associated application is deactivated.".into(),
             ));
         }
-        let monthly_key = ApiKey::quota_cache_key(self.sk_id);
+
+        // --- QUOTA LOGIC (Application Level) ---
+        // Quotas are now shared across the application via app_id
+        let monthly_quota_key = cache_key!("quota", "app", self.app_id);
+
+        // --- RATE LIMIT LOGIC (Key Level) ---
+        // Rate limits remain specific to the individual API Key
         let now = Utc::now();
         let period_key = MetricKey::new(self.sk_id, now, MetricGranularity::Minute)
             .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
 
         let mut conn = redis_pool.get().await?;
 
+        // Atomic pipeline to fetch both global quota and local rate limit
         let results: Vec<Option<i64>> = redis::pipe()
             .atomic()
-            .get(&monthly_key)
-            .hget(period_key.as_str(), "messages_sent")
-            .hget(period_key.as_str(), "messages_received")
+            .get(&monthly_quota_key) // App-wide monthly total
+            .hget(period_key.as_str(), "messages_sent") // Per-key minute sent
+            .hget(period_key.as_str(), "messages_received") // Per-key minute received
             .query_async(&mut *conn)
             .await?;
 
-        let monthly_messages = results.first().copied().flatten().unwrap_or(0);
-        let messages_sent = results.get(1).copied().flatten().unwrap_or(0);
-        let messages_received = results.get(2).copied().flatten().unwrap_or(0);
-        let total_requests = messages_sent + messages_received;
+        let monthly_usage = results.first().copied().flatten().unwrap_or(0);
+        let current_min_sent = results.get(1).copied().flatten().unwrap_or(0);
+        let current_min_received = results.get(2).copied().flatten().unwrap_or(0);
+        let current_min_total = current_min_sent + current_min_received;
 
-        let monthly_quota = self.sk_monthly_message_quota.unwrap_or(i32::MAX) as i64;
-        if monthly_messages >= monthly_quota {
-            // Track quota exceeded event for notification (once per day)
-            let sk_id = self.sk_id;
+        // 1. Validate Monthly Quota (Shared across all keys in the app)
+        if monthly_usage >= self.sub_monthly_message_quota {
+            let app_id = self.app_id;
             let pool_clone = redis_pool.clone();
             tokio::spawn(async move {
-                // This will only mark as "needs notification" if not already marked today
-                let _ = NotificationEventTracker::check_and_mark_quota_exceeded(&pool_clone, sk_id)
-                    .await;
+                // Notifications are now tracked at the App/Subscription level
+                let _ =
+                    NotificationEventTracker::check_and_mark_quota_exceeded(&pool_clone, app_id)
+                        .await;
             });
 
             return Err(VaultlessError::QuotaExceeded(
-                "API key monthly quota exhausted.".into(),
+                "Application monthly message quota exhausted.".into(),
             ));
         }
 
-        let rate_limit = self.sk_rate_limit_per_minute.unwrap_or(i32::MAX) as i64;
-        if total_requests >= rate_limit {
+        // 2. Validate Rate Limit (Specific to this API Key)
+        if current_min_total >= self.sub_rate_limit_per_minute as i64 {
             let sk_id = self.sk_id;
             let pool_clone = redis_pool.clone();
 
             tokio::spawn(async move {
-                // Increment usage metrics
+                // Increment rate limit hit metrics for this specific key
                 let _ =
                     increment_rate_limit_hit_pool(&pool_clone, sk_id, &MetricsConfig::default())
                         .await;
 
-                // Track rate limit hit for daily notification aggregation
-                let _ = NotificationEventTracker::increment_rate_limit_hits(&pool_clone, sk_id)
-                    .await;
+                let _ =
+                    NotificationEventTracker::increment_rate_limit_hits(&pool_clone, sk_id).await;
             });
 
             return Err(VaultlessError::RateLimitExceeded(
@@ -126,6 +134,7 @@ impl ApplicationKeyView {
             })
         })?;
 
+        // Run the hot-path validation (Quota & Rate Limit)
         auth_config.validate_hot(redis_pool.clone()).await?;
 
         Ok(auth_config)

@@ -17,8 +17,6 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
 
     CONSTRAINT subscriptions_pkey PRIMARY KEY (id),
-    CONSTRAINT subscriptions_application_id_fkey FOREIGN KEY (application_id)
-        REFERENCES public.applications (id) ON DELETE CASCADE,
     CONSTRAINT subscriptions_user_id_fkey FOREIGN KEY (user_id)
         REFERENCES public.users (id) ON DELETE CASCADE
 );

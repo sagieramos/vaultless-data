@@ -1,6 +1,7 @@
 use super::dto::*;
 use super::integrity::integrity_handler::IntegrityConfigHandler;
 use crate::SubscriptionTier;
+use crate::cache_key;
 use crate::crypto;
 use crate::error::{Result, VaultlessError};
 use crate::models::{ApiKey, CreateApiKey};
@@ -350,35 +351,50 @@ impl Application {
         Ok(())
     }
 
-    /// Usage is determined by looking up the Secret Key ID linked to the application
-    /// and querying the real-time counter associated with that key.
-    pub async fn get_monthly_usage<'c, E>(
-        exec: E,
+    pub async fn get_live_usage(
         redis_pool: Arc<RedisPool>,
-        app_id: Uuid,
-    ) -> Result<i64>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        tracing::info!(application_id = %app_id, "Fetching monthly usage for application.");
+        application_id: Uuid,
+        quota_limit: i64,
+    ) -> Result<QuotaStatus> {
+        let quota_key = Application::quota_key(application_id);
 
-        // CRITICAL CHANGE 5: Fetch the Secret Key ID dynamically
-        let secret_key_id = Self::find_secret_key_id(exec, app_id).await?;
+        // 1. ACQUIRE CONNECTION from the pool
+        // This is now the responsibility of the utility function.
+        let mut conn = redis_pool.get().await.map_err(|e| {
+            VaultlessError::Internal(format!("Failed to acquire Redis connection: {}", e))
+        })?;
 
-        // Delegate the actual usage lookup to the ApiKey model
-        let usage = ApiKey::get_monthly_usage(redis_pool, secret_key_id).await?;
+        // 2. Execute command using the acquired connection reference
+        let monthly_count: Option<i64> = redis::cmd("GET")
+            .arg(&quota_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-        tracing::info!(
-            application_id = %app_id,
-            secret_key_id = %secret_key_id,
-            usage = usage,
-            "Successfully retrieved application monthly usage."
-        );
+        // When 'conn' goes out of scope here, it is automatically returned to the pool.
 
-        Ok(usage)
+        let used = monthly_count.unwrap_or(0);
+        let remaining = quota_limit.saturating_sub(used);
+        let percentage_used = if quota_limit > 0 {
+            (used as f64 / quota_limit as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+
+        Ok(QuotaStatus {
+            limit: quota_limit,
+            used,
+            remaining,
+            percentage_used,
+            is_exceeded: used >= quota_limit,
+        })
     }
 
     pub fn integrity(&self) -> Result<IntegrityConfigHandler> {
         IntegrityConfigHandler::new_from_jsonb(&serde_json::to_value(&self.app_meta.0)?)
+    }
+
+    pub fn quota_key(application_id: Uuid) -> String {
+        cache_key!("app", "quota", application_id)
     }
 }

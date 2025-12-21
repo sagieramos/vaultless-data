@@ -46,34 +46,12 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_application_id
     TABLESPACE pg_default;
 
 
--- 3. REFOCUS: KEY TYPE AND USAGE FIELDS
-----------------------------------------------------------------------------------------------------
-
--- Make usage-related fields nullable (since they only apply to 'secret' keys)
-ALTER TABLE public.api_keys
-ALTER COLUMN tier DROP NOT NULL,
-ALTER COLUMN monthly_message_quota DROP NOT NULL,
-ALTER COLUMN message_retention_seconds DROP NOT NULL,
-ALTER COLUMN rate_limit_per_minute DROP NOT NULL;
-
--- Drop old non-conditional CHECK constraints
-ALTER TABLE public.api_keys
-DROP CONSTRAINT IF EXISTS valid_quota,
-DROP CONSTRAINT IF EXISTS valid_retention;
 
 -- Create Key Type ENUM
 CREATE TYPE key_type AS ENUM ('secret', 'publishable');
 
 ALTER TABLE public.api_keys
 ADD COLUMN IF NOT EXISTS key_type key_type NOT NULL DEFAULT 'secret';
-
--- Re-add conditional CHECK constraints based on key_type
-ALTER TABLE public.api_keys
-ADD CONSTRAINT valid_quota CHECK (CASE WHEN key_type = 'secret' THEN monthly_message_quota > 0 ELSE true END);
-
-ALTER TABLE public.api_keys
-ADD CONSTRAINT valid_retention CHECK (CASE WHEN key_type = 'secret' THEN message_retention_seconds > 0 ELSE true END);
-
 
 -- 4. REFOCUS: HASHED VS. PLAINTEXT KEYS
 ----------------------------------------------------------------------------------------------------
@@ -116,11 +94,4 @@ ADD CONSTRAINT required_key_data_check CHECK (
         publishable_key_plaintext IS NOT NULL AND 
         key_hash IS NULL
     )
-);
-
-ALTER TABLE public.api_keys
-ADD CONSTRAINT check_secret_key_tier
-CHECK (
-    (key_type = 'secret'::key_type AND tier IS NOT NULL)
-    OR (key_type = 'publishable'::key_type)
 );

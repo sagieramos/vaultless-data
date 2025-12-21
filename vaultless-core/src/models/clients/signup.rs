@@ -120,7 +120,7 @@ impl Client {
             platform_config_version: integrity_handler
                 .platform_config_version
                 .get(input.platform_data.platform()),
-            app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
+            app_tier: Some(app_resolved.sub_tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: Some(input.public_key.clone()),
         };
@@ -261,7 +261,7 @@ impl Client {
             platform_config_version: integrity_handler
                 .platform_config_version
                 .get(detected_platform),
-            app_tier: app_resolved.sk_tier.map(|tier| tier.to_string()),
+            app_tier: Some(app_resolved.sub_tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
             pubkey: Some(input.public_key.clone()),
         };

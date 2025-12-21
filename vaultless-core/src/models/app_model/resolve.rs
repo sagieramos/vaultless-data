@@ -16,12 +16,12 @@ impl Application {
     {
         let cache_key = publishable_key_resolution_cache_key(pk_plaintext);
 
-        // --- HOT PATH ---
+        // --- HOT PATH (Redis) ---
         if let Some(redis_pool) = &redis
             && let Ok(mut conn) = redis_pool.get().await
-            && let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await
+            && let Ok(Some(cached_str)) = conn.get::<_, Option<String>>(&cache_key).await
         {
-            let cached: CachedApplicationKeyView = serde_json::from_str(&cached)?;
+            let cached: CachedApplicationKeyView = serde_json::from_str(&cached_str)?;
 
             return Ok(Some(ApplicationKeyView {
                 app_id: cached.app_id,
@@ -34,10 +34,10 @@ impl Application {
                 app_app_meta: serde_json::json!({}),
                 sk_id: cached.sk_id,
                 sk_key_prefix: String::new(),
-                sk_tier: cached.sk_tier,
-                sk_monthly_message_quota: cached.sk_monthly_message_quota,
-                sk_message_retention_seconds: cached.sk_message_retention_seconds,
-                sk_rate_limit_per_minute: cached.sk_rate_limit_per_minute,
+                sub_tier: cached.sub_tier,
+                sub_monthly_message_quota: cached.sub_monthly_message_quota,
+                sub_message_retention_seconds: cached.sub_message_retention_seconds,
+                sub_rate_limit_per_minute: cached.sub_rate_limit_per_minute,
             }));
         }
 
@@ -49,7 +49,7 @@ impl Application {
         .fetch_optional(exec)
         .await?;
 
-        // Cache if full record exists
+        // Cache-Aside: Update Redis if found
         if let (Some(full), Some(redis_pool)) = (&auth, redis)
             && let Ok(mut conn) = redis_pool.get().await
         {
@@ -72,12 +72,12 @@ impl Application {
     {
         let cache_key = secret_key_resolution_cache_key(secret_hash_hex);
 
-        // --- HOT PATH ---
+        // --- HOT PATH (Redis) ---
         if let Some(redis_pool) = &redis
             && let Ok(mut conn) = redis_pool.get().await
-            && let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await
+            && let Ok(Some(cached_str)) = conn.get::<_, Option<String>>(&cache_key).await
         {
-            let cached: CachedApplicationKeyView = serde_json::from_str(&cached)?;
+            let cached: CachedApplicationKeyView = serde_json::from_str(&cached_str)?;
 
             return Ok(Some(ApplicationKeyView {
                 app_id: cached.app_id,
@@ -90,10 +90,11 @@ impl Application {
                 app_app_meta: serde_json::json!({}),
                 sk_id: cached.sk_id,
                 sk_key_prefix: String::new(),
-                sk_tier: cached.sk_tier,
-                sk_monthly_message_quota: cached.sk_monthly_message_quota,
-                sk_message_retention_seconds: cached.sk_message_retention_seconds,
-                sk_rate_limit_per_minute: cached.sk_rate_limit_per_minute,
+                // Map Subscription fields
+                sub_tier: cached.sub_tier,
+                sub_monthly_message_quota: cached.sub_monthly_message_quota,
+                sub_message_retention_seconds: cached.sub_message_retention_seconds,
+                sub_rate_limit_per_minute: cached.sub_rate_limit_per_minute,
             }));
         }
 
@@ -105,7 +106,6 @@ impl Application {
         .fetch_optional(exec)
         .await?;
 
-        // Cache if needed
         if let (Some(full), Some(redis_pool)) = (&auth, redis)
             && let Ok(mut conn) = redis_pool.get().await
         {
@@ -125,14 +125,12 @@ impl Application {
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let auth = sqlx::query_as::<_, ApplicationKeyView>(
+        Ok(sqlx::query_as::<_, ApplicationKeyView>(
             "SELECT * FROM fetch_auth_config_by_publishable_key($1)",
         )
         .bind(pk_plaintext)
         .fetch_optional(exec)
-        .await?;
-
-        Ok(auth)
+        .await?)
     }
 
     pub async fn fetch_full_auth_by_secret_hash<'c, E>(
@@ -142,13 +140,11 @@ impl Application {
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let auth = sqlx::query_as::<_, ApplicationKeyView>(
+        Ok(sqlx::query_as::<_, ApplicationKeyView>(
             "SELECT * FROM fetch_auth_config_by_secret_hash($1)",
         )
         .bind(secret_hash_hex)
         .fetch_optional(exec)
-        .await?;
-
-        Ok(auth)
+        .await?)
     }
 }

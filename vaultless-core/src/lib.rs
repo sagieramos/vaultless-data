@@ -118,8 +118,6 @@ pub use models::{
         AuthenticationChallenge, Client, LoginClientRequest, LoginClientResponse,
         SignupClientRequest, SignupClientResponse,
     },
-    // Dashboard
-    dashboard::get_live_usage,
     // Messages
     message::*,
     // Sessions
@@ -129,11 +127,9 @@ pub use models::{
     },
     // Usage & Metrics
     usage::{
-        FlusherMetrics, MetricCounters, MetricsConfig, get_aggregate_by_application_id,
+        DailyUsageSummary, FlusherMetrics, MetricCounters, MetricsConfig, MonthlyTotal,
+        UsageTrends, get_aggregate_by_application_id, get_realtime_usage, get_usage_trends,
         increment_rate_limit_hit_pool, start_redis_flusher,
-    },
-    usage_timescale::{
-        DailyUsageSummary, MonthlyTotal, UsageTrends, get_realtime_usage, get_usage_trends,
     },
 };
 

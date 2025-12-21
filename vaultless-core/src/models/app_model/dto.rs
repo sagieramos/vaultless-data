@@ -228,8 +228,9 @@ pub enum KeyGranularity {
     Secret,
 }
 
-#[derive(Debug, Clone, FromRow, Deserialize)]
+#[derive(Debug, Clone, FromRow, Deserialize, Serialize)]
 pub struct ApplicationKeyView {
+    // Application Fields
     pub app_id: Uuid,
     pub app_user_id: Uuid,
     pub app_name: String,
@@ -239,12 +240,14 @@ pub struct ApplicationKeyView {
     pub app_is_key_rotation_forced: bool,
     pub app_app_meta: serde_json::Value,
 
+    // Secret Key Fields (Prefix info only)
     pub sk_id: Uuid,
     pub sk_key_prefix: String,
-    pub sk_tier: Option<SubscriptionTier>,
-    pub sk_monthly_message_quota: Option<i32>,
-    pub sk_message_retention_seconds: Option<i32>,
-    pub sk_rate_limit_per_minute: Option<i32>,
+
+    pub sub_tier: SubscriptionTier,
+    pub sub_monthly_message_quota: i64,
+    pub sub_message_retention_seconds: i64,
+    pub sub_rate_limit_per_minute: i32,
 }
 
 impl ApplicationKeyView {
@@ -505,7 +508,6 @@ fn default_webhook_active() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ApplicationWithUsage {
-    // Application metadata
     pub application_id: Uuid,
     pub user_id: Uuid,
     pub name: String,
@@ -513,31 +515,27 @@ pub struct ApplicationWithUsage {
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub max_ttl_seconds: i32,
-    pub is_key_rotation_forced: bool,
-    pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub internal_notes: Option<String>,
     pub app_meta: Json<AppMetaData>,
 
-    // Secret key info
-    pub secret_key_id: Option<Uuid>,
+    // Subscription Pool (Shared)
+    pub subscription_id: Uuid,
     pub tier: Option<String>,
-    pub monthly_message_quota: Option<i64>,
-    pub rate_limit_per_minute: Option<i32>,
-    pub message_retention_seconds: Option<i32>,
+    pub monthly_message_quota: i64,
+    pub rate_limit_per_minute: i32,
+    pub message_retention_seconds: i64,
 
-    // Publishable keys
+    // Keys
+    pub secret_key_id: Option<Uuid>,
+    pub secret_key_prefix: Option<String>,
     pub publishable_key_count: i64,
     pub publishable_keys: Json<Vec<PublishableKey>>,
 
-    // Webhooks
+    // Webhooks & Clients
     pub webhook_count: i64,
     pub webhooks: Json<Vec<Webhook>>,
-
-    // Client count
     pub client_count: i64,
 
-    // Current month usage
+    // Monthly Metrics
     pub current_month_messages_sent: i64,
     pub current_month_messages_received: i64,
     pub current_month_proofs_verified: i64,
@@ -546,31 +544,12 @@ pub struct ApplicationWithUsage {
     pub current_month_bytes_received: i64,
     pub current_month_rate_limit_hits: i64,
     pub current_month_cost_cents: i64,
-    pub quota_usage_percentage: f64,
+    pub quota_usage_percentage: Decimal,
 
-    // Lifetime usage
+    // Totals
     pub lifetime_messages_sent: i64,
-    pub lifetime_messages_received: i64,
-    pub lifetime_proofs_verified: i64,
-    pub lifetime_bytes_stored: i64,
-    pub lifetime_bytes_sent: i64,
-    pub lifetime_bytes_received: i64,
-    pub lifetime_rate_limit_hits: i64,
     pub lifetime_cost_cents: i64,
-
-    // Trend usage (7d)
-    pub last_7d_messages_sent: i64,
-    pub last_7d_bytes_sent: i64,
-    pub last_7d_bytes_received: i64,
-    pub last_7d_cost_cents: i64,
-
-    // Trend usage (30d)
-    pub last_30d_messages_sent: i64,
-    pub last_30d_bytes_sent: i64,
-    pub last_30d_bytes_received: i64,
-    pub last_30d_cost_cents: i64,
 }
-
 #[derive(Debug, Clone, Serialize)]
 pub struct PaginatedApplicationsWithKeys {
     pub data: Vec<ApplicationWithKeysResponse>,
@@ -590,11 +569,13 @@ pub struct CachedApplicationKeyView {
     pub app_is_key_rotation_forced: bool,
 
     pub sk_id: Uuid,
-    pub sk_tier: Option<crate::types::SubscriptionTier>,
-    pub sk_monthly_message_quota: Option<i32>,
-    pub sk_message_retention_seconds: Option<i32>,
-    pub sk_rate_limit_per_minute: Option<i32>,
 
+    pub sub_tier: SubscriptionTier,
+    pub sub_monthly_message_quota: i64,
+    pub sub_message_retention_seconds: i64,
+    pub sub_rate_limit_per_minute: i32,
+
+    // Integrity/Security Metadata
     pub platform_fingerprint: PlatformConfigVersion,
 }
 
@@ -613,10 +594,11 @@ impl From<ApplicationKeyView> for CachedApplicationKeyView {
             app_is_key_rotation_forced: a.app_is_key_rotation_forced,
 
             sk_id: a.sk_id,
-            sk_tier: a.sk_tier,
-            sk_monthly_message_quota: a.sk_monthly_message_quota,
-            sk_message_retention_seconds: a.sk_message_retention_seconds,
-            sk_rate_limit_per_minute: a.sk_rate_limit_per_minute,
+
+            sub_tier: a.sub_tier,
+            sub_monthly_message_quota: a.sub_monthly_message_quota,
+            sub_message_retention_seconds: a.sub_message_retention_seconds,
+            sub_rate_limit_per_minute: a.sub_rate_limit_per_minute,
 
             platform_fingerprint,
         }
@@ -625,36 +607,26 @@ impl From<ApplicationKeyView> for CachedApplicationKeyView {
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
 pub struct QuotaWarning {
-    pub application_id: Option<Uuid>,
-    pub application_name: Option<String>,
+    pub application_id: Uuid,
+    pub application_name: String,
     #[schema(value_type = f64)]
-    pub quota_usage_percentage: Option<Decimal>,
-    pub current_month_messages_sent: Option<i64>,
-    pub monthly_message_quota: Option<i64>,
-    pub remaining_quota: Option<i64>,
+    pub quota_usage_percentage: Decimal,
+    // Note: detailed fields like remaining_quota are now calculated
+    // in the frontend or specialized detailed views to keep this summary fast.
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
 pub struct UserUsageSummary {
-    // Application counts
-    pub total_applications: Option<i32>,
-    pub active_applications: Option<i32>,
-
-    // Clients
-    pub total_clients: Option<i64>,
-
-    // Current month usage
-    pub total_messages_sent_current_month: Option<i64>,
-    pub total_messages_received_current_month: Option<i64>,
-    pub total_cost_cents_current_month: Option<i64>,
-
-    // Lifetime usage
-    pub total_lifetime_messages: Option<i64>,
-    pub total_lifetime_cost_cents: Option<i64>,
-
-    // Quota indicators
-    pub apps_over_80_percent_quota: Option<i32>,
-    pub apps_over_quota: Option<i32>,
+    /// Total number of applications owned by the user
+    pub total_apps: i32,
+    /// Total aggregated messages sent across all apps in the current billing cycle
+    pub total_monthly_messages: i64,
+    /// Total registered clients across the entire developer bundle
+    pub total_clients: i64,
+    /// Total estimated cost in cents for the current month
+    pub total_monthly_cost: i64,
+    /// Number of applications that have exceeded 90% of their shared quota
+    pub critical_quota_apps: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow, ToSchema)]
@@ -716,7 +688,9 @@ pub struct ApplicationSummary {
     pub publishable_key_count: i64,
     pub webhook_count: i64,
     pub client_count: i64,
-    pub quota_usage_percentage: f64,
+    // Using Decimal to maintain precision for billing calculations
+    #[schema(value_type = f64)]
+    pub quota_usage_percentage: Decimal,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -734,6 +708,16 @@ pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
 
 pub fn publishable_key_resolution_cache_key(pk_plaintext: &str) -> String {
     cache_key!("res", "pk", pk_plaintext)
+}
+
+/// Real-time quota status for an application
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuotaStatus {
+    pub limit: i64,
+    pub used: i64,
+    pub remaining: i64,
+    pub percentage_used: f64,
+    pub is_exceeded: bool,
 }
 
 // =============================================================================

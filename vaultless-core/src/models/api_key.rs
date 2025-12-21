@@ -408,38 +408,6 @@ impl ApiKey {
         })
     }
 
-    /// Validates active/expiry and checks quota against the database.
-    /// Only Secret keys require quota validation.
-    pub async fn validate<'c, E>(&self, _exec: E, redis_pool: Arc<RedisPool>) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // 1. Check if the key is explicitly deactivated
-        if !self.is_active {
-            return Err(VaultlessError::ApiKeyInactive);
-        }
-
-        // 2. Check for expiry date
-        if let Some(expires_at) = self.expires_at
-            && expires_at < Utc::now()
-        {
-            return Err(VaultlessError::ApiKeyExpired);
-        }
-
-        // 3. Perform Quota Check (ONLY for Secret Keys)
-        if self.key_type == KeyType::Secret {
-            let quota = self.monthly_message_quota as i64;
-            let is_quota_allowed = Self::check_quota(redis_pool, self.id, quota).await?;
-
-            if !is_quota_allowed {
-                return Err(VaultlessError::QuotaExceeded(
-                    "Monthly message quota exceeded.".to_string(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
 
     /// Updates tier.
     pub async fn update_tier<'c, E>(exec: E, id: Uuid, new_tier: SubscriptionTier) -> Result<ApiKey>
@@ -468,49 +436,6 @@ impl ApiKey {
         .fetch_one(exec)
         .await
         .map_err(VaultlessError::Database)
-    }
-
-    // ... (deactivate, reactivate, update_metadata, delete remain largely the same)
-
-    /// Quota check (Database only).
-    pub async fn check_quota(
-        redis_pool: Arc<RedisPool>,
-        api_key_id: Uuid,
-        quota: i64,
-    ) -> Result<bool> {
-        let count = Self::get_monthly_usage(redis_pool, api_key_id).await?;
-        Ok(count < quota)
-    }
-
-    /// Retrieves the current monthly usage count from Redis.
-    /// This count is based on real-time atomic increments performed on message send,
-    /// suitable for quota enforcement of ephemeral data.
-    pub async fn get_monthly_usage(redis_pool: Arc<RedisPool>, api_key_id: Uuid) -> Result<i64> // Assuming Result<i64> is defined
-    {
-        info!(api_key_id = %api_key_id, "Querying real-time monthly usage count from Redis");
-
-        let monthly_key = Self::quota_cache_key(api_key_id);
-
-        let count: i64 = match redis_pool.get().await {
-            Ok(mut conn) => {
-                // GET the counter value. If the key doesn't exist (e.g., first message of the month),
-                // Redis returns 0 (None in Rust context, handled by unwrap_or).
-                conn.get::<_, Option<i64>>(&monthly_key)
-                    .await
-                    .map_err(|e| VaultlessError::Internal(e.to_string()))?
-                    .unwrap_or(0)
-            }
-            Err(e) => {
-                tracing::error!("Redis connection error during quota check: {}", e);
-                // Fail the operation if Redis is unavailable, as usage cannot be reliably verified.
-                return Err(VaultlessError::Internal(format!(
-                    "Redis usage check failed: {}",
-                    e
-                )));
-            }
-        };
-
-        Ok(count)
     }
 
     /// Fetches the necessary key data (SK hash and PK plaintext) linked to an

@@ -1,4 +1,8 @@
-//vaultless-core/src/models/usage_timescale.rs
+//! TimescaleDB continuous aggregate queries for usage metrics.
+//!
+//! Queries against the `usage_metrics_daily` continuous aggregate
+//! for dashboard and billing purposes.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
@@ -6,10 +10,15 @@ use uuid::Uuid;
 
 use crate::error::Result;
 
-/// Daily usage summary (from continuous aggregate)
+// =============================================================================
+// Daily Usage Summary
+// =============================================================================
+
+/// Daily usage summary from the usage_metrics_daily continuous aggregate
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct DailyUsageSummary {
     pub application_id: Uuid,
+    pub subscription_id: Uuid,
     pub day: DateTime<Utc>,
     pub total_messages_sent: Option<i64>,
     pub total_messages_received: Option<i64>,
@@ -21,26 +30,11 @@ pub struct DailyUsageSummary {
     pub total_estimated_cost_cents: Option<i64>,
 }
 
-/// Weekly usage summary (from continuous aggregate)
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct WeeklyUsageSummary {
-    pub application_id: Uuid,
-    pub week_start: DateTime<Utc>,
-    pub total_messages_sent: Option<i64>,
-    pub total_messages_received: Option<i64>,
-    pub total_proofs_verified: Option<i64>,
-    pub total_bytes_stored: Option<i64>,
-    pub total_bytes_sent: Option<i64>,
-    pub total_bytes_received: Option<i64>,
-    pub total_rate_limit_hits: Option<i64>,
-    pub total_estimated_cost_cents: Option<i64>,
-}
-
 impl DailyUsageSummary {
-    /// Get daily usage for an API key over a date range
+    /// Get daily usage for an application over a date range
     pub async fn get_range(
         pool: &PgPool,
-        api_key_id: Uuid,
+        application_id: Uuid,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Self>> {
@@ -48,6 +42,7 @@ impl DailyUsageSummary {
             r#"
             SELECT
                 application_id,
+                subscription_id,
                 day,
                 total_messages_sent,
                 total_messages_received,
@@ -64,7 +59,7 @@ impl DailyUsageSummary {
             ORDER BY day DESC
             "#,
         )
-        .bind(api_key_id)
+        .bind(application_id)
         .bind(start)
         .bind(end)
         .fetch_all(pool)
@@ -73,12 +68,17 @@ impl DailyUsageSummary {
         Ok(summaries)
     }
 
-    /// Get last N days of usage
-    pub async fn get_last_n_days(pool: &PgPool, api_key_id: Uuid, days: i32) -> Result<Vec<Self>> {
+    /// Get last N days of usage for an application
+    pub async fn get_last_n_days(
+        pool: &PgPool,
+        application_id: Uuid,
+        days: i32,
+    ) -> Result<Vec<Self>> {
         let summaries = sqlx::query_as::<_, Self>(
             r#"
             SELECT
                 application_id,
+                subscription_id,
                 day,
                 total_messages_sent,
                 total_messages_received,
@@ -94,7 +94,7 @@ impl DailyUsageSummary {
             ORDER BY day DESC
             "#,
         )
-        .bind(api_key_id)
+        .bind(application_id)
         .bind(days)
         .fetch_all(pool)
         .await?;
@@ -102,27 +102,30 @@ impl DailyUsageSummary {
         Ok(summaries)
     }
 
-    /// Get current month's total usage
-    pub async fn get_current_month_total(pool: &PgPool, api_key_id: Uuid) -> Result<MonthlyTotal> {
+    /// Get current month's total usage for an application
+    pub async fn get_current_month_total(
+        pool: &PgPool,
+        application_id: Uuid,
+    ) -> Result<MonthlyTotal> {
         let total = sqlx::query_as::<_, MonthlyTotal>(
             r#"
             SELECT
-            $1 as application_id,
-            COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total_messages_sent,
-            COALESCE(SUM(total_messages_received)::BIGINT, 0) as total_messages_received,
-            COALESCE(SUM(total_proofs_verified)::BIGINT, 0) as total_proofs_verified,
-            COALESCE(SUM(total_bytes_stored)::BIGINT, 0) as total_bytes_stored,
-            COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
-            COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
-            COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
-            COALESCE(SUM(total_estimated_cost_cents)::BIGINT, 0) as total_estimated_cost_cents
+                $1 as application_id,
+                COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total_messages_sent,
+                COALESCE(SUM(total_messages_received)::BIGINT, 0) as total_messages_received,
+                COALESCE(SUM(total_proofs_verified)::BIGINT, 0) as total_proofs_verified,
+                COALESCE(SUM(total_bytes_stored)::BIGINT, 0) as total_bytes_stored,
+                COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
+                COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
+                COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
+                COALESCE(SUM(total_estimated_cost_cents)::BIGINT, 0) as total_estimated_cost_cents
             FROM usage_metrics_daily
             WHERE application_id = $1
                 AND day >= DATE_TRUNC('month', NOW())
                 AND day < DATE_TRUNC('month', NOW() + INTERVAL '1 month')
             "#,
         )
-        .bind(api_key_id)
+        .bind(application_id)
         .fetch_one(pool)
         .await?;
 
@@ -130,77 +133,11 @@ impl DailyUsageSummary {
     }
 }
 
-impl WeeklyUsageSummary {
-    /// Get weekly usage for an API key
-    pub async fn get_range(
-        pool: &PgPool,
-        api_key_id: Uuid,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    ) -> Result<Vec<Self>> {
-        let summaries = sqlx::query_as::<_, Self>(
-            r#"
-            SELECT
-                application_id,
-                week_start,
-                total_messages_sent,
-                total_messages_received,
-                total_proofs_verified,
-                total_bytes_stored,
-                total_bytes_sent,
-                total_bytes_received,
-                total_rate_limit_hits,
-                total_estimated_cost_cents
-            FROM usage_metrics_weekly
-            WHERE application_id = $1
-                AND week_start >= $2
-                AND week_start < $3
-            ORDER BY week_start DESC
-            "#,
-        )
-        .bind(api_key_id)
-        .bind(start)
-        .bind(end)
-        .fetch_all(pool)
-        .await?;
+// =============================================================================
+// Monthly Total
+// =============================================================================
 
-        Ok(summaries)
-    }
-
-    /// Get last N weeks of usage
-    pub async fn get_last_n_weeks(
-        pool: &PgPool,
-        api_key_id: Uuid,
-        weeks: i32,
-    ) -> Result<Vec<Self>> {
-        let summaries = sqlx::query_as::<_, Self>(
-            r#"
-            SELECT
-                application_id,
-                week_start,
-                total_messages_sent,
-                total_messages_received,
-                total_proofs_verified,
-                total_bytes_stored,
-                total_bytes_sent,
-                total_bytes_received,
-                total_rate_limit_hits,
-                total_estimated_cost_cents
-            FROM usage_metrics_weekly
-            WHERE application_id = $1
-                AND week_start >= NOW() - INTERVAL '7 days' * $2
-            ORDER BY week_start DESC
-            "#,
-        )
-        .bind(api_key_id)
-        .bind(weeks)
-        .fetch_all(pool)
-        .await?;
-
-        Ok(summaries)
-    }
-}
-
+/// Monthly usage totals
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct MonthlyTotal {
     pub application_id: Uuid,
@@ -214,10 +151,30 @@ pub struct MonthlyTotal {
     pub total_estimated_cost_cents: i64,
 }
 
-/// Get real-time usage statistics (from raw hypertable)
+impl Default for MonthlyTotal {
+    fn default() -> Self {
+        Self {
+            application_id: Uuid::nil(),
+            total_messages_sent: 0,
+            total_messages_received: 0,
+            total_proofs_verified: 0,
+            total_bytes_stored: 0,
+            total_bytes_sent: 0,
+            total_bytes_received: 0,
+            total_rate_limit_hits: 0,
+            total_estimated_cost_cents: 0,
+        }
+    }
+}
+
+// =============================================================================
+// Real-time Usage
+// =============================================================================
+
+/// Get real-time usage statistics from the raw hypertable
 pub async fn get_realtime_usage(
     pool: &PgPool,
-    api_key_id: Uuid,
+    application_id: Uuid,
     since: DateTime<Utc>,
 ) -> Result<MonthlyTotal> {
     let stats_opt = sqlx::query_as::<_, MonthlyTotal>(
@@ -232,66 +189,38 @@ pub async fn get_realtime_usage(
             COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
             COALESCE(SUM(rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
             COALESCE(SUM(COALESCE(estimated_cost_cents, 0))::BIGINT, 0) as total_estimated_cost_cents
-
         FROM usage_metrics
         WHERE application_id = $1
             AND period_start >= $2
         "#,
     )
-    .bind(api_key_id)
+    .bind(application_id)
     .bind(since)
-    .fetch_optional(pool) // CHANGED: Fetch zero or one row
+    .fetch_optional(pool)
     .await?;
 
-    // If stats_opt is None (meaning no usage data was found at all),
-    // return a default MonthlyTotal object with all counts set to 0.
-    let stats = stats_opt.unwrap_or(MonthlyTotal {
-        application_id: api_key_id,
-        total_messages_sent: 0,
-        total_messages_received: 0,
-        total_proofs_verified: 0,
-        total_bytes_stored: 0,
-        total_bytes_sent: 0,
-        total_bytes_received: 0,
-        total_rate_limit_hits: 0,
-        total_estimated_cost_cents: 0,
-    });
-
-    Ok(stats)
+    Ok(stats_opt.unwrap_or(MonthlyTotal {
+        application_id,
+        ..Default::default()
+    }))
 }
 
-/// Get usage trends (percentage change)
+// =============================================================================
+// Usage Trends
+// =============================================================================
+
+/// Usage trend statistics (week over week comparison)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageTrends {
     pub current_week: i64,
     pub previous_week: i64,
     pub change_percent: f64,
-    pub trend: String, // "up", "down", "stable"
+    /// "up", "down", or "stable"
+    pub trend: String,
 }
 
-pub async fn get_usage_trends(pool: &PgPool, api_key_id: Uuid) -> Result<UsageTrends> {
-    // First, get the application_id for the given api_key_id
-    let application_id: Option<Uuid> = sqlx::query_scalar(
-        r#"
-        SELECT application_id
-        FROM api_keys
-        WHERE id = $1
-        "#,
-    )
-    .bind(api_key_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| crate::error::VaultlessError::Internal(e.to_string()))?;
-
-    let application_id = match application_id {
-        Some(id) => id,
-        None => {
-            return Err(crate::error::VaultlessError::NotFound(
-                "API key not found".to_string(),
-            ));
-        }
-    };
-
+/// Get usage trends for an application (percentage change week over week)
+pub async fn get_usage_trends(pool: &PgPool, application_id: Uuid) -> Result<UsageTrends> {
     let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
         r#"
         WITH current_week AS (
