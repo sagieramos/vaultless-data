@@ -420,20 +420,20 @@ impl WebhookEventType {
     /// Returns event types grouped by category
     pub fn by_category() -> &'static [(&'static str, &'static [WebhookEventType])] {
         &[
-            ("Client Events", &[
-                Self::ClientSignup,
-                Self::ClientSignin,
-                Self::ClientRevoked,
-                Self::ClientAttestationChanged,
-            ]),
-            ("Security Events", &[
-                Self::SecurityRateLimited,
-                Self::SecuritySuspiciousActivity,
-            ]),
-            ("Quota Events", &[
-                Self::QuotaWarning,
-                Self::QuotaExceeded,
-            ]),
+            (
+                "Client Events",
+                &[
+                    Self::ClientSignup,
+                    Self::ClientSignin,
+                    Self::ClientRevoked,
+                    Self::ClientAttestationChanged,
+                ],
+            ),
+            (
+                "Security Events",
+                &[Self::SecurityRateLimited, Self::SecuritySuspiciousActivity],
+            ),
+            ("Quota Events", &[Self::QuotaWarning, Self::QuotaExceeded]),
         ]
     }
 }
@@ -457,9 +457,14 @@ impl std::str::FromStr for WebhookEventType {
             "security.suspicious_activity" => Ok(Self::SecuritySuspiciousActivity),
             "quota.warning" => Ok(Self::QuotaWarning),
             "quota.exceeded" => Ok(Self::QuotaExceeded),
-            _ => Err(format!("Unknown webhook event type: '{}'. Valid types are: {}",
+            _ => Err(format!(
+                "Unknown webhook event type: '{}'. Valid types are: {}",
                 s,
-                Self::all().iter().map(|e| e.as_str()).collect::<Vec<_>>().join(", ")
+                Self::all()
+                    .iter()
+                    .map(|e| e.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
     }
@@ -631,18 +636,23 @@ pub struct QuotaWarning {
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
 pub struct UserUsageSummary {
-    // i32 fields corrected earlier
+    // Application counts
     pub total_applications: Option<i32>,
     pub active_applications: Option<i32>,
 
-    // i64 fields need correction now
+    // Clients
+    pub total_clients: Option<i64>,
+
+    // Current month usage
     pub total_messages_sent_current_month: Option<i64>,
     pub total_messages_received_current_month: Option<i64>,
     pub total_cost_cents_current_month: Option<i64>,
+
+    // Lifetime usage
     pub total_lifetime_messages: Option<i64>,
     pub total_lifetime_cost_cents: Option<i64>,
 
-    // Remaining i32 fields corrected earlier
+    // Quota indicators
     pub apps_over_80_percent_quota: Option<i32>,
     pub apps_over_quota: Option<i32>,
 }

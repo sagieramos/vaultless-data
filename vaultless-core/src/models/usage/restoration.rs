@@ -35,9 +35,10 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             LOOKBACK_HOUR
         );
 
+        // First, get all usage metrics for the lookback period
         let rows = sqlx::query(
             r#"
-            SELECT api_key_id, period_start,
+            SELECT application_id, period_start,
                    COALESCE(messages_sent,0) as messages_sent,
                    COALESCE(messages_received,0) as messages_received,
                    COALESCE(proofs_verified,0) as proofs_verified,
@@ -53,54 +54,72 @@ pub async fn restore_recent_or_missing_periods_from_pg(
         .await
         .map_err(VaultlessError::from)?;
 
+        // For each usage metric row, we need to find the associated API keys for that application
         for r in &rows {
-            let api_key_id: Uuid = r
-                .try_get("api_key_id")
+            let application_id: Uuid = r
+                .try_get("application_id")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
             let period_start: DateTime<Utc> = r
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-            let metric_key = MetricKey::new(api_key_id, period_start, MetricGranularity::Hour)?;
-            let key_str = metric_key.as_str();
 
-            let mut pipe = redis::pipe();
-            pipe.atomic()
-                .hset(
-                    key_str,
-                    "messages_sent",
-                    r.try_get::<i64, _>("messages_sent").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "messages_received",
-                    r.try_get::<i64, _>("messages_received").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "proofs_verified",
-                    r.try_get::<i64, _>("proofs_verified").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "total_bytes_sent",
-                    r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "total_bytes_received",
-                    r.try_get::<i64, _>("total_bytes_received").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "rate_limit_hits",
-                    r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0),
-                )
-                .sadd(ACTIVE_KEYS_SET.as_str(), key_str)
-                .expire(key_str, LOOKBACK_HOUR);
-            let _: () = pipe
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+            // Get all API keys associated with this application
+            let api_keys = sqlx::query_scalar::<_, Uuid>(
+                r#"
+                SELECT id
+                FROM api_keys
+                WHERE application_id = $1
+                "#,
+            )
+            .bind(application_id)
+            .fetch_all(pg.as_ref())
+            .await
+            .map_err(VaultlessError::from)?;
+
+            // Create Redis entries for each API key associated with this application
+            for api_key_id in api_keys {
+                let metric_key = MetricKey::new(api_key_id, period_start, MetricGranularity::Hour)?;
+                let key_str = metric_key.as_str();
+
+                let mut pipe = redis::pipe();
+                pipe.atomic()
+                    .hset(
+                        key_str,
+                        "messages_sent",
+                        r.try_get::<i64, _>("messages_sent").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "messages_received",
+                        r.try_get::<i64, _>("messages_received").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "proofs_verified",
+                        r.try_get::<i64, _>("proofs_verified").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "total_bytes_sent",
+                        r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "total_bytes_received",
+                        r.try_get::<i64, _>("total_bytes_received").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "rate_limit_hits",
+                        r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0),
+                    )
+                    .sadd(ACTIVE_KEYS_SET.as_str(), key_str)
+                    .expire(key_str, LOOKBACK_HOUR);
+                let _: () = pipe
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+            }
         }
 
         tracing::info!("Restored {} usage keys into Redis (fallback)", rows.len());
@@ -124,72 +143,87 @@ pub async fn restore_recent_or_missing_periods_from_pg(
         }
     }
     for (api_key_id, last_period) in last_period_per_key {
-        let rows = sqlx::query(
+        // Get the application_id for this api_key_id
+        let application_id: Option<Uuid> = sqlx::query_scalar(
             r#"
-            SELECT api_key_id, period_start,
-                   COALESCE(messages_sent,0) as messages_sent,
-                   COALESCE(messages_received,0) as messages_received,
-                   COALESCE(proofs_verified,0) as proofs_verified,
-                   COALESCE(total_bytes_sent,0) as total_bytes_sent,
-                   COALESCE(total_bytes_received,0) as total_bytes_received,
-                   COALESCE(rate_limit_hits,0) as rate_limit_hits
-            FROM usage_metrics
-            WHERE api_key_id = $1
-              AND period_start > $2
+            SELECT application_id
+            FROM api_keys
+            WHERE id = $1
             "#,
         )
         .bind(api_key_id)
-        .bind(last_period)
-        .fetch_all(pg.as_ref())
+        .fetch_optional(pg.as_ref())
         .await
         .map_err(VaultlessError::from)?;
 
-        for r in rows {
-            let period_start: DateTime<Utc> = r
-                .try_get("period_start")
-                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-            let metric_key = MetricKey::new(api_key_id, period_start, MetricGranularity::Hour)?;
+        if let Some(application_id) = application_id {
+            let rows = sqlx::query(
+                r#"
+                SELECT application_id, period_start,
+                       COALESCE(messages_sent,0) as messages_sent,
+                       COALESCE(messages_received,0) as messages_received,
+                       COALESCE(proofs_verified,0) as proofs_verified,
+                       COALESCE(total_bytes_sent,0) as total_bytes_sent,
+                       COALESCE(total_bytes_received,0) as total_bytes_received,
+                       COALESCE(rate_limit_hits,0) as rate_limit_hits
+                FROM usage_metrics
+                WHERE application_id = $1
+                  AND period_start > $2
+                "#,
+            )
+            .bind(application_id)
+            .bind(last_period)
+            .fetch_all(pg.as_ref())
+            .await
+            .map_err(VaultlessError::from)?;
 
-            let key_str = metric_key.as_str();
+            for r in rows {
+                let period_start: DateTime<Utc> = r
+                    .try_get("period_start")
+                    .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+                let metric_key = MetricKey::new(api_key_id, period_start, MetricGranularity::Hour)?;
 
-            let mut pipe = redis::pipe();
-            pipe.atomic()
-                .hset(
-                    key_str,
-                    "messages_sent",
-                    r.try_get::<i64, _>("messages_sent").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "messages_received",
-                    r.try_get::<i64, _>("messages_received").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "proofs_verified",
-                    r.try_get::<i64, _>("proofs_verified").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "total_bytes_sent",
-                    r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "total_bytes_received",
-                    r.try_get::<i64, _>("total_bytes_received").unwrap_or(0),
-                )
-                .hset(
-                    key_str,
-                    "rate_limit_hits",
-                    r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0),
-                )
-                .sadd(ACTIVE_KEYS_SET.as_str(), key_str)
-                .expire(key_str, LOOKBACK_HOUR);
-            let _: () = pipe
-                .query_async(&mut *conn)
-                .await
-                .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+                let key_str = metric_key.as_str();
+
+                let mut pipe = redis::pipe();
+                pipe.atomic()
+                    .hset(
+                        key_str,
+                        "messages_sent",
+                        r.try_get::<i64, _>("messages_sent").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "messages_received",
+                        r.try_get::<i64, _>("messages_received").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "proofs_verified",
+                        r.try_get::<i64, _>("proofs_verified").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "total_bytes_sent",
+                        r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "total_bytes_received",
+                        r.try_get::<i64, _>("total_bytes_received").unwrap_or(0),
+                    )
+                    .hset(
+                        key_str,
+                        "rate_limit_hits",
+                        r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0),
+                    )
+                    .sadd(ACTIVE_KEYS_SET.as_str(), key_str)
+                    .expire(key_str, LOOKBACK_HOUR);
+                let _: () = pipe
+                    .query_async(&mut *conn)
+                    .await
+                    .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+            }
         }
     }
 

@@ -510,11 +510,9 @@ where
             COALESCE(SUM(um.rate_limit_hits), 0) AS total_rate_limit_hits,
             COALESCE(SUM(um.estimated_cost_cents), 0) AS total_estimated_cost_cents
         FROM
-            applications app
-        LEFT JOIN
-            usage_metrics um ON app.secret_key_id = um.api_key_id
+            usage_metrics um
         WHERE
-            app.id = $1
+            um.application_id = $1
         "#,
     )
     .bind(application_id)
@@ -870,6 +868,53 @@ async fn flush_redis_to_pg(
     Ok(())
 }
 
+async fn get_application_ids_batch<'c, E>(
+    exec: E,
+    api_key_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Uuid>>
+where
+    E: Executor<'c, Database = Postgres>,
+{
+    if api_key_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Create a comma-separated list of placeholders for the query
+    let placeholders: Vec<String> = (1..=api_key_ids.len())
+        .map(|i| format!("${}", i))
+        .collect();
+    let placeholder_str = placeholders.join(",");
+
+    let query = format!(
+        r#"
+        SELECT id, application_id
+        FROM api_keys
+        WHERE id = ANY(ARRAY[{}])
+        "#,
+        placeholder_str
+    );
+
+    let mut query_builder = sqlx::QueryBuilder::new(&query);
+    for api_key_id in api_key_ids {
+        query_builder.push_bind(api_key_id);
+    }
+
+    let rows = query_builder
+        .build_query_as::<(Uuid, Option<Uuid>)>()
+        .fetch_all(exec)
+        .await
+        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
+
+    let mut result = HashMap::new();
+    for (api_key_id, application_id_opt) in rows {
+        if let Some(application_id) = application_id_opt {
+            result.insert(api_key_id, application_id);
+        }
+    }
+
+    Ok(result)
+}
+
 async fn flush_batch_to_pg(
     pg: &PgPool,
     mut batch: Vec<BatchEntry>,
@@ -898,27 +943,52 @@ async fn flush_batch_to_pg(
             continue;
         }
 
+        // Extract unique API key IDs for batch lookup
+        let api_key_ids: Vec<Uuid> = non_zero_chunk
+            .iter()
+            .map(|((api_key_id, _), _, _)| *api_key_id)
+            .collect();
+
+        // Batch lookup of application IDs
+        let app_id_map = get_application_ids_batch(pg, &api_key_ids).await?;
+
+        // Resolve application IDs and prepare data for insertion
+        let mut resolved_data = Vec::new();
+        for ((api_key_id, period_start), counters, key) in non_zero_chunk {
+            if let Some(application_id) = app_id_map.get(&api_key_id) {
+                resolved_data.push(((*application_id, period_start), counters, key));
+            } else {
+                // Skip entries where we can't find the application ID
+                error!("Could not find application_id for api_key_id: {}", api_key_id);
+                continue;
+            }
+        }
+
+        if resolved_data.is_empty() {
+            continue; // Skip if no valid entries after resolution
+        }
+
         let mut tx = pg.begin().await?;
 
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
             r#"
             INSERT INTO usage_metrics (
-                api_key_id, period_start, period_end,
+                application_id, period_start, period_end,
                 messages_sent, messages_received, proofs_verified,
                 total_bytes_stored, total_bytes_sent, total_bytes_received,
                 rate_limit_hits, estimated_cost_cents
-            ) 
+            )
             "#,
         );
 
         qb.push_values(
-            non_zero_chunk.iter(),
-            |mut b, ((api_key_id, period_start), counters, _)| {
+            resolved_data.iter(),
+            |mut b, ((application_id, period_start), counters, _)| {
                 let period_end = *period_start + ChronoDuration::hours(1);
                 let total_bytes_stored = counters.total_bytes_sent + counters.total_bytes_received;
                 let estimated_cost = counters.estimate_cost_cents();
 
-                b.push_bind(*api_key_id)
+                b.push_bind(*application_id)
                     .push_bind(*period_start)
                     .push_bind(period_end)
                     .push_bind(counters.messages_sent)
@@ -934,7 +1004,7 @@ async fn flush_batch_to_pg(
 
         qb.push(
             r#"
-            ON CONFLICT (api_key_id, period_start)
+            ON CONFLICT (application_id, period_start)
             DO UPDATE SET
                 messages_sent = usage_metrics.messages_sent + EXCLUDED.messages_sent,
                 messages_received = usage_metrics.messages_received + EXCLUDED.messages_received,
@@ -951,7 +1021,7 @@ async fn flush_batch_to_pg(
         query.execute(&mut *tx).await?;
         tx.commit().await?;
 
-        flushed_count += non_zero_chunk.len();
+        flushed_count += resolved_data.len();
         if let Some(metrics) = metrics {
             metrics.batches_processed.fetch_add(1, Ordering::SeqCst);
         }

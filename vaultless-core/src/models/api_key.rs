@@ -482,14 +482,6 @@ impl ApiKey {
         Ok(count < quota)
     }
 
-    /// Generates the dedicated Redis key for real-time monthly quota tracking.
-    /// This key relies on its TTL for monthly expiry.
-    pub fn quota_cache_key(api_key_id: Uuid) -> String {
-        // e.g., "quota:monthly:a854...-e49c"
-        // This is the key that is atomically INCR'd in usage_metrics.rs
-        cache_key!("quota", "monthly", api_key_id)
-    }
-
     /// Retrieves the current monthly usage count from Redis.
     /// This count is based on real-time atomic increments performed on message send,
     /// suitable for quota enforcement of ephemeral data.

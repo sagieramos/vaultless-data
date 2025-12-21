@@ -1,0 +1,5 @@
+[sqlfluff]
+dialect = postgres
+templater = raw
+exclude_rules = L009
+

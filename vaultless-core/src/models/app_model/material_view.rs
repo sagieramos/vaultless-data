@@ -253,12 +253,13 @@ impl Application {
         db: &sqlx::PgPool,
         user_id: Uuid,
     ) -> Result<UserUsageSummary> {
-        let app = sqlx::query_as!(
+        let summary = sqlx::query_as!(
             UserUsageSummary,
-        r#"
+            r#"
         SELECT
             total_applications,
             active_applications,
+            total_clients,
             total_messages_sent_current_month,
             total_messages_received_current_month,
             total_cost_cents_current_month,
@@ -273,7 +274,7 @@ impl Application {
         .fetch_one(db)
         .await?;
 
-        Ok(app)
+        Ok(summary)
     }
 
     pub async fn get_application_with_keys(
@@ -283,33 +284,34 @@ impl Application {
     ) -> crate::error::Result<ApplicationWithKeys> {
         let app = sqlx::query_as::<_, ApplicationWithKeys>(
             r#"
-        SELECT
-            application_id,
-            user_id,
-            name,
-            description,
-            is_active,
-            created_at,
-            updated_at,
-            max_ttl_seconds,
-            is_key_rotation_forced,
-            deletion_requested_at,
-            internal_notes,
-            app_meta,
-            a.publishable_key_count,
-            a.publishable_keys,
-            a.webhook_count,
-            a.webhooks,
-            a.client_count,
-            secret_key_id
-        FROM mv_applications_with_usage
-        WHERE application_id = $1 AND user_id = $2
-        "#,
+            SELECT
+                application_id,
+                user_id,
+                name,
+                description,
+                is_active,
+                created_at,
+                updated_at,
+                max_ttl_seconds,
+                is_key_rotation_forced,
+                deletion_requested_at,
+                internal_notes,
+                app_meta,
+                publishable_key_count,
+                publishable_keys,
+                webhook_count,
+                webhooks,
+                client_count,
+                secret_key_id
+            FROM mv_applications_with_usage
+            WHERE application_id = $1
+            AND user_id = $2
+            "#,
         )
         .bind(application_id)
         .bind(user_id)
         .fetch_one(db)
-        .await?; 
+        .await?;
 
         Ok(app)
     }

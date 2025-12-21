@@ -9,7 +9,7 @@ use crate::error::Result;
 /// Daily usage summary (from continuous aggregate)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct DailyUsageSummary {
-    pub api_key_id: Uuid,
+    pub application_id: Uuid,
     pub day: DateTime<Utc>,
     pub total_messages_sent: Option<i64>,
     pub total_messages_received: Option<i64>,
@@ -24,7 +24,7 @@ pub struct DailyUsageSummary {
 /// Weekly usage summary (from continuous aggregate)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct WeeklyUsageSummary {
-    pub api_key_id: Uuid,
+    pub application_id: Uuid,
     pub week_start: DateTime<Utc>,
     pub total_messages_sent: Option<i64>,
     pub total_messages_received: Option<i64>,
@@ -46,8 +46,8 @@ impl DailyUsageSummary {
     ) -> Result<Vec<Self>> {
         let summaries = sqlx::query_as::<_, Self>(
             r#"
-            SELECT 
-                api_key_id,
+            SELECT
+                application_id,
                 day,
                 total_messages_sent,
                 total_messages_received,
@@ -58,7 +58,7 @@ impl DailyUsageSummary {
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_daily
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND day >= $2
                 AND day < $3
             ORDER BY day DESC
@@ -77,8 +77,8 @@ impl DailyUsageSummary {
     pub async fn get_last_n_days(pool: &PgPool, api_key_id: Uuid, days: i32) -> Result<Vec<Self>> {
         let summaries = sqlx::query_as::<_, Self>(
             r#"
-            SELECT 
-                api_key_id,
+            SELECT
+                application_id,
                 day,
                 total_messages_sent,
                 total_messages_received,
@@ -89,7 +89,7 @@ impl DailyUsageSummary {
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_daily
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND day >= NOW() - INTERVAL '1 day' * $2
             ORDER BY day DESC
             "#,
@@ -106,8 +106,8 @@ impl DailyUsageSummary {
     pub async fn get_current_month_total(pool: &PgPool, api_key_id: Uuid) -> Result<MonthlyTotal> {
         let total = sqlx::query_as::<_, MonthlyTotal>(
             r#"
-            SELECT 
-            $1 as api_key_id,
+            SELECT
+            $1 as application_id,
             COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total_messages_sent,
             COALESCE(SUM(total_messages_received)::BIGINT, 0) as total_messages_received,
             COALESCE(SUM(total_proofs_verified)::BIGINT, 0) as total_proofs_verified,
@@ -117,7 +117,7 @@ impl DailyUsageSummary {
             COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
             COALESCE(SUM(total_estimated_cost_cents)::BIGINT, 0) as total_estimated_cost_cents
             FROM usage_metrics_daily
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND day >= DATE_TRUNC('month', NOW())
                 AND day < DATE_TRUNC('month', NOW() + INTERVAL '1 month')
             "#,
@@ -140,8 +140,8 @@ impl WeeklyUsageSummary {
     ) -> Result<Vec<Self>> {
         let summaries = sqlx::query_as::<_, Self>(
             r#"
-            SELECT 
-                api_key_id,
+            SELECT
+                application_id,
                 week_start,
                 total_messages_sent,
                 total_messages_received,
@@ -152,7 +152,7 @@ impl WeeklyUsageSummary {
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_weekly
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND week_start >= $2
                 AND week_start < $3
             ORDER BY week_start DESC
@@ -175,8 +175,8 @@ impl WeeklyUsageSummary {
     ) -> Result<Vec<Self>> {
         let summaries = sqlx::query_as::<_, Self>(
             r#"
-            SELECT 
-                api_key_id,
+            SELECT
+                application_id,
                 week_start,
                 total_messages_sent,
                 total_messages_received,
@@ -187,7 +187,7 @@ impl WeeklyUsageSummary {
                 total_rate_limit_hits,
                 total_estimated_cost_cents
             FROM usage_metrics_weekly
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND week_start >= NOW() - INTERVAL '7 days' * $2
             ORDER BY week_start DESC
             "#,
@@ -203,7 +203,7 @@ impl WeeklyUsageSummary {
 
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct MonthlyTotal {
-    pub api_key_id: Uuid,
+    pub application_id: Uuid,
     pub total_messages_sent: i64,
     pub total_messages_received: i64,
     pub total_proofs_verified: i64,
@@ -222,8 +222,8 @@ pub async fn get_realtime_usage(
 ) -> Result<MonthlyTotal> {
     let stats_opt = sqlx::query_as::<_, MonthlyTotal>(
         r#"
-        SELECT 
-            $1 as api_key_id,
+        SELECT
+            $1 as application_id,
             COALESCE(SUM(messages_sent)::BIGINT, 0) as total_messages_sent,
             COALESCE(SUM(messages_received)::BIGINT, 0) as total_messages_received,
             COALESCE(SUM(proofs_verified)::BIGINT, 0) as total_proofs_verified,
@@ -234,7 +234,7 @@ pub async fn get_realtime_usage(
             COALESCE(SUM(COALESCE(estimated_cost_cents, 0))::BIGINT, 0) as total_estimated_cost_cents
 
         FROM usage_metrics
-        WHERE api_key_id = $1
+        WHERE application_id = $1
             AND period_start >= $2
         "#,
     )
@@ -246,7 +246,7 @@ pub async fn get_realtime_usage(
     // If stats_opt is None (meaning no usage data was found at all),
     // return a default MonthlyTotal object with all counts set to 0.
     let stats = stats_opt.unwrap_or(MonthlyTotal {
-        api_key_id,
+        application_id: api_key_id,
         total_messages_sent: 0,
         total_messages_received: 0,
         total_proofs_verified: 0,
@@ -270,28 +270,50 @@ pub struct UsageTrends {
 }
 
 pub async fn get_usage_trends(pool: &PgPool, api_key_id: Uuid) -> Result<UsageTrends> {
+    // First, get the application_id for the given api_key_id
+    let application_id: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT application_id
+        FROM api_keys
+        WHERE id = $1
+        "#,
+    )
+    .bind(api_key_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| crate::error::VaultlessError::Internal(e.to_string()))?;
+
+    let application_id = match application_id {
+        Some(id) => id,
+        None => {
+            return Err(crate::error::VaultlessError::NotFound(
+                "API key not found".to_string(),
+            ));
+        }
+    };
+
     let row = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
         r#"
         WITH current_week AS (
             SELECT COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total
             FROM usage_metrics_daily
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND day >= DATE_TRUNC('week', NOW())
         ),
         previous_week AS (
             SELECT COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total
             FROM usage_metrics_daily
-            WHERE api_key_id = $1
+            WHERE application_id = $1
                 AND day >= DATE_TRUNC('week', NOW() - INTERVAL '7 days')
                 AND day < DATE_TRUNC('week', NOW())
         )
-        SELECT 
+        SELECT
             current_week.total as current,
             previous_week.total as previous
         FROM current_week, previous_week
         "#,
     )
-    .bind(api_key_id)
+    .bind(application_id)
     .fetch_one(pool)
     .await?;
 

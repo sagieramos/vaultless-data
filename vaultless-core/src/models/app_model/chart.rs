@@ -246,7 +246,7 @@ impl Application {
                 AND k.key_type = 'secret'
                 AND k.is_active = true
             -- LEFT JOIN to metrics view to allow for applications with no usage data
-            LEFT JOIN {table_name} m ON m.api_key_id = k.id
+            LEFT JOIN {table_name} m ON m.application_id = a.id
                 -- Range Bounding: Only join metrics within the time range
                 AND m.{time_column} >= $1
                 AND m.{time_column} <= $2
