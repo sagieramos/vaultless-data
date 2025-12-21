@@ -53,6 +53,23 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
             get(analytics::get_application_cost_breakdown),
         )
         .route("/{id}/trends", get(analytics::get_application_trends))
+        // Key rotation routes
+        .route(
+            "/{id}/keys/secret/rotate",
+            post(application::rotate_secret_key),
+        )
+        .route(
+            "/{id}/keys/publishable/rotate",
+            post(application::rotate_publishable_key),
+        )
+        .route(
+            "/{id}/keys/publishable",
+            post(application::add_publishable_key),
+        )
+        .route(
+            "/{id}/keys/publishable/{key_id}",
+            delete(application::deactivate_publishable_key),
+        )
         .layer(middleware::from_fn(reject_all_query))
         .layer(middleware::from_fn_with_state(state.clone(), user_auth));
 

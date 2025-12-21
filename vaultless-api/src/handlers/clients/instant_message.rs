@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,7 +15,7 @@ use validator::Validate;
 use chrono;
 use utoipa::ToSchema;
 use vaultless_core::Client;
-use vaultless_core::models::message::dto::{HealthStatus, Message, ReadReceipt};
+use vaultless_core::models::message::dto::{HealthStatus, Message, MessageResponse, ReadReceipt};
 
 // =============================================================================
 // Request Types (UPDATED)
@@ -62,9 +62,28 @@ pub struct SendMessageResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FetchMessagesResponse {
     pub success: bool,
-    #[schema(value_type = Vec<Object>)]
-    pub messages: Vec<Message>,
+    pub messages: Vec<MessageResponse>,
     pub count: usize,
+}
+
+/// Grouped inbox entry - last message from a sender
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InboxEntry {
+    /// Sender's public key
+    pub sender_pubkey: String,
+    /// The last message from this sender
+    pub last_message: MessageResponse,
+    /// Total unread count from this sender (optional, for future use)
+    pub unread_count: usize,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GroupedInboxResponse {
+    pub success: bool,
+    /// Messages grouped by sender public key, with only the last message per sender
+    pub inbox: Vec<InboxEntry>,
+    /// Total number of unique senders
+    pub sender_count: usize,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -88,6 +107,39 @@ pub struct HealthStatusResponse {
     #[schema(value_type = Object)]
     pub status: HealthStatus,
     pub websocket_connections: usize,
+}
+
+/// Pagination query parameters for fetching messages by sender
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PaginationQuery {
+    /// Number of messages to skip (default: 0)
+    #[serde(default)]
+    pub offset: usize,
+    /// Maximum number of messages to return (default: 20, max: 100)
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+fn default_limit() -> usize {
+    20
+}
+
+/// Response for paginated messages from a specific sender
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SenderMessagesResponse {
+    pub success: bool,
+    /// Sender's public key
+    pub sender_pubkey: String,
+    /// Messages from this sender (sorted by created_at descending)
+    pub messages: Vec<MessageResponse>,
+    /// Number of messages returned
+    pub count: usize,
+    /// Total messages available from this sender
+    pub total: usize,
+    /// Current offset
+    pub offset: usize,
+    /// Whether there are more messages
+    pub has_more: bool,
 }
 
 // =============================================================================
@@ -160,6 +212,8 @@ pub async fn send_message(
     );
 
     // --- 6. Send message (now with signature verification at send time) ---
+    // Use app.app_id (application_id) instead of sk_id for metrics tracking
+    // Application ID is stable across API key rotations
     let message_id = state
         .instant_message
         .send_instant_message(
@@ -168,7 +222,7 @@ pub async fn send_message(
             input.ciphertext.clone(),
             input.nonce,
             content_size_bytes,
-            app.sk_id,
+            app.app_id,
             input.signature.clone(),
             sender_pubkey,
             input.require_proof_verification,
@@ -217,53 +271,145 @@ pub async fn send_message(
     }))
 }
 
-/// Fetch messages for current user (inbox) - UPDATED
+/// Fetch messages for current user (inbox) - grouped by sender
 /// GET /api/messages/inbox
+///
+/// Returns messages grouped by sender public key, with only the last message
+/// from each sender. Messages are sorted by created_at in descending order.
+/// This is a read-only peek operation with no side effects.
 #[utoipa::path(
     get,
     path = "/api/messages/inbox",
     tag = "Instant Messaging",
     security(("bearer_auth" = [])),
     responses(
-        (status = 200, description = "Messages fetched successfully", body = FetchMessagesResponse),
+        (status = 200, description = "Inbox fetched successfully", body = GroupedInboxResponse),
         (status = 401, description = "Unauthorized")
     )
 )]
 pub async fn fetch_inbox(
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
-) -> Result<Json<FetchMessagesResponse>, ApiError> {
+) -> Result<Json<GroupedInboxResponse>, ApiError> {
     tracing::debug!(
         recipient = %client_info.client_id,
-        "Fetching inbox"
+        "Fetching grouped inbox"
     );
 
-    // Fetch messages (now with atomic delivery counting & signature verification)
-    let messages = state
+    // Peek inbox (read-only, no side effects like delivery counting or deletion)
+    let grouped_inbox = state
         .instant_message
-        .fetch_messages_for_recipient(client_info.client_id)
+        .peek_inbox_grouped(client_info.client_id)
         .await
         .map_err(|e| {
             tracing::error!(
                 recipient = %client_info.client_id,
                 error = %e,
-                "Failed to fetch messages"
+                "Failed to peek inbox"
             );
             ApiError::from(e)
         })?;
 
-    let count = messages.len();
+    // Convert core InboxEntry to API InboxEntry with MessageResponse
+    let inbox: Vec<InboxEntry> = grouped_inbox
+        .entries
+        .into_iter()
+        .map(|entry| InboxEntry {
+            sender_pubkey: entry.sender_pubkey,
+            last_message: MessageResponse::from(entry.last_message),
+            unread_count: entry.message_count,
+        })
+        .collect();
+
+    let sender_count = grouped_inbox.sender_count;
 
     tracing::info!(
         recipient = %client_info.client_id,
-        count,
-        "Fetched messages successfully"
+        sender_count,
+        total_messages = grouped_inbox.total_messages,
+        "Fetched grouped inbox successfully"
     );
 
-    Ok(Json(FetchMessagesResponse {
+    Ok(Json(GroupedInboxResponse {
         success: true,
-        messages,
+        inbox,
+        sender_count,
+    }))
+}
+
+/// Fetch messages from a specific sender with pagination
+/// GET /api/messages/sender/{sender_pubkey}
+///
+/// Returns paginated messages from a specific sender, sorted by created_at descending.
+/// This is a read-only peek operation with no side effects.
+#[utoipa::path(
+    get,
+    path = "/api/messages/sender/{sender_pubkey}",
+    tag = "Instant Messaging",
+    security(("bearer_auth" = [])),
+    params(
+        ("sender_pubkey" = String, Path, description = "Sender's public key"),
+        ("offset" = Option<usize>, Query, description = "Number of messages to skip (default: 0)"),
+        ("limit" = Option<usize>, Query, description = "Maximum messages to return (default: 20, max: 100)")
+    ),
+    responses(
+        (status = 200, description = "Messages fetched successfully", body = SenderMessagesResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Sender not found")
+    )
+)]
+pub async fn fetch_messages_by_sender(
+    State(state): State<AppState>,
+    SessionDataClientExt(client_info): SessionDataClientExt,
+    Path(sender_pubkey): Path<String>,
+    Query(pagination): Query<PaginationQuery>,
+) -> Result<Json<SenderMessagesResponse>, ApiError> {
+    // Validate and cap limit
+    let limit = pagination.limit.min(100);
+    let offset = pagination.offset;
+
+    tracing::debug!(
+        recipient = %client_info.client_id,
+        sender_pubkey = %sender_pubkey,
+        offset,
+        limit,
+        "Fetching messages by sender"
+    );
+
+    // Fetch paginated messages from this sender
+    let sender_messages = state
+        .instant_message
+        .fetch_messages_by_sender(client_info.client_id, &sender_pubkey, offset, limit)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                recipient = %client_info.client_id,
+                sender_pubkey = %sender_pubkey,
+                error = %e,
+                "Failed to fetch messages by sender"
+            );
+            ApiError::from(e)
+        })?;
+
+    let count = sender_messages.messages.len();
+
+    tracing::info!(
+        recipient = %client_info.client_id,
+        sender_pubkey = %sender_pubkey,
         count,
+        total = sender_messages.total,
+        has_more = sender_messages.has_more,
+        "Fetched messages by sender successfully"
+    );
+
+    Ok(Json(SenderMessagesResponse {
+        success: true,
+        sender_pubkey: sender_messages.sender_pubkey,
+        messages: MessageResponse::from_vec(sender_messages.messages),
+        count,
+        total: sender_messages.total,
+        offset: sender_messages.offset,
+        has_more: sender_messages.has_more,
     }))
 }
 

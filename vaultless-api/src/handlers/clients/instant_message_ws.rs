@@ -32,8 +32,7 @@ pub async fn websocket_handler(
 ) -> Response {
     tracing::info!(
         client_id = %client_info.client_id,
-        api_key_id = %app.sk_id,
-        app_id = %app.app_id,
+        application_id = %app.app_id,
         "WebSocket upgrade request (quota already validated)"
     );
 
@@ -50,7 +49,8 @@ async fn handle_socket(
     app: Arc<vaultless_core::ApplicationKeyView>,
 ) {
     let client_id = client_info.client_id;
-    let api_key_id = app.sk_id;
+    // Use application_id (stable across API key rotations) for metrics tracking
+    let application_id = app.app_id;
     let sender_pubkey = client_info.pubkey.clone();
 
     // Register connection
@@ -170,7 +170,7 @@ async fn handle_socket(
                         handle_inbound_message(
                             &text.to_string(),
                             client_id,
-                            api_key_id,
+                            application_id,
                             sender_pubkey.clone(),
                             &instant_message,
                             &ws_manager,
@@ -183,7 +183,7 @@ async fn handle_socket(
                     Err(e) => {
                         tracing::warn!(
                             client_id = %client_id,
-                            api_key_id = %api_key_id,
+                            application_id = %application_id,
                             error = %e,
                             "Quota validation failed for WebSocket message"
                         );
@@ -218,7 +218,7 @@ async fn handle_socket(
             Ok(WsMessage::Close(_)) => {
                 tracing::info!(
                     client_id = %client_id,
-                    api_key_id = %api_key_id,
+                    application_id = %application_id,
                     "WebSocket close received"
                 );
                 break;
@@ -226,7 +226,7 @@ async fn handle_socket(
             Err(e) => {
                 tracing::warn!(
                     client_id = %client_id,
-                    api_key_id = %api_key_id,
+                    application_id = %application_id,
                     error = %e,
                     "WebSocket error"
                 );
@@ -243,7 +243,7 @@ async fn handle_socket(
 
     tracing::info!(
         client_id = %client_id,
-        api_key_id = %api_key_id,
+        application_id = %application_id,
         "WebSocket connection closed"
     );
 }
@@ -265,7 +265,7 @@ async fn send_ws_response<S>(
 async fn handle_inbound_message<S>(
     text: &str,
     client_id: Uuid,
-    api_key_id: Uuid,
+    application_id: Uuid,
     sender_pubkey: Option<String>,
     instant_message: &Arc<InstantMessage>,
     ws_manager: &Arc<WsManager>,
@@ -281,7 +281,7 @@ async fn handle_inbound_message<S>(
         Err(e) => {
             tracing::warn!(
                 client_id = %client_id,
-                api_key_id = %api_key_id,
+                application_id = %application_id,
                 error = %e,
                 "Failed to parse WebSocket message"
             );
@@ -298,7 +298,7 @@ async fn handle_inbound_message<S>(
             if sub_id != client_id {
                 tracing::warn!(
                     client_id = %client_id,
-                    api_key_id = %api_key_id,
+                    application_id = %application_id,
                     attempted_sub = %sub_id,
                     "Client attempted to subscribe to another client's messages"
                 );
@@ -311,7 +311,7 @@ async fn handle_inbound_message<S>(
 
             tracing::debug!(
                 client_id = %client_id,
-                api_key_id = %api_key_id,
+                application_id = %application_id,
                 "Client subscribed to messages"
             );
         }
@@ -329,7 +329,7 @@ async fn handle_inbound_message<S>(
 
             tracing::trace!(
                 client_id = %client_id,
-                api_key_id = %api_key_id,
+                application_id = %application_id,
                 recipient_id = %recipient_id,
                 is_typing = is_typing,
                 "Typing indicator sent"
@@ -343,7 +343,7 @@ async fn handle_inbound_message<S>(
             {
                 tracing::error!(
                     client_id = %client_id,
-                    api_key_id = %api_key_id,
+                    application_id = %application_id,
                     message_id = %message_id,
                     error = %e,
                     "Failed to mark message as read via WebSocket"
@@ -355,7 +355,7 @@ async fn handle_inbound_message<S>(
             } else {
                 tracing::debug!(
                     client_id = %client_id,
-                    api_key_id = %api_key_id,
+                    application_id = %application_id,
                     message_id = %message_id,
                     "Message marked as read via WebSocket"
                 );
@@ -365,7 +365,7 @@ async fn handle_inbound_message<S>(
         WsInboundMessage::Pong => {
             tracing::trace!(
                 client_id = %client_id,
-                api_key_id = %api_key_id,
+                application_id = %application_id,
                 "Heartbeat pong received"
             );
         }
@@ -455,7 +455,7 @@ async fn handle_inbound_message<S>(
                     ciphertext.clone(),
                     nonce,
                     content_size_bytes,
-                    api_key_id,
+                    application_id,
                     signature.clone(),
                     envelope_pubkey,
                     require_proof_verification,

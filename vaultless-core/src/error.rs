@@ -75,6 +75,9 @@ pub enum VaultlessError {
     #[error("Message access limit reached")]
     MessageAccessLimitReached,
 
+    #[error("Device offline: {0}")]
+    DeviceOffline(String),
+
     // =========================================================================
     // Cryptography errors
     // =========================================================================

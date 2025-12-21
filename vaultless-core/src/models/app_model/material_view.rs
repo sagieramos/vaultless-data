@@ -28,6 +28,7 @@ struct ApplicationSummaryFromView {
     pub monthly_message_quota: Option<i64>,
     pub publishable_key_count: i64,
     pub webhook_count: i64,
+    pub client_count: i64,
     pub quota_usage_percentage: f64,
     pub total_count: i64,
 }
@@ -66,6 +67,7 @@ impl Application {
                 a.publishable_keys,
                 a.webhook_count,
                 a.webhooks,
+                a.client_count,
                 a.current_month_messages_sent,
                 a.current_month_messages_received,
                 a.current_month_proofs_verified,
@@ -131,6 +133,7 @@ impl Application {
                 monthly_message_quota,
                 publishable_key_count,
                 webhook_count,
+                client_count,
                 COALESCE(quota_usage_percentage, 0.0) AS "quota_usage_percentage!",
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
@@ -171,6 +174,7 @@ impl Application {
                 monthly_message_quota: r.monthly_message_quota,
                 publishable_key_count: r.publishable_key_count,
                 webhook_count: r.webhook_count,
+                client_count: r.client_count,
                 quota_usage_percentage: r.quota_usage_percentage,
             })
             .collect();
@@ -290,11 +294,13 @@ impl Application {
             max_ttl_seconds,
             is_key_rotation_forced,
             deletion_requested_at,
+            internal_notes,
             app_meta,
             a.publishable_key_count,
             a.publishable_keys,
             a.webhook_count,
             a.webhooks,
+            a.client_count,
             secret_key_id
         FROM mv_applications_with_usage
         WHERE application_id = $1 AND user_id = $2

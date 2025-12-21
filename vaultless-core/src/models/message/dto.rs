@@ -3,6 +3,7 @@ use crate::models::usage::MetricsConfig;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use sqlx::{FromRow, PgPool};
 use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
@@ -15,7 +16,7 @@ pub struct Envelope<'a> {
     pub id: &'a Uuid,
     pub sender_client_id: &'a Uuid,
     pub recipient_client_id: &'a Uuid,
-    pub api_key_id: &'a Uuid, // Aligned: non-optional per schema
+    pub application_id: &'a Uuid,
     pub is_group_message: bool,
     pub content_size_bytes: i64,
     pub created_at: &'a DateTime<Utc>,
@@ -32,7 +33,7 @@ pub struct Message {
     pub nonce: Uuid,
     pub content_type: Option<String>,
     pub content_size_bytes: i64,
-    pub api_key_id: Uuid,
+    pub application_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub accessed_at: Option<DateTime<Utc>>,
@@ -50,6 +51,54 @@ pub struct Message {
     pub envelope_public_key: String,
     pub file_id: Option<Uuid>,
 }
+
+/// Message response DTO - contains only fields suitable for API responses.
+/// Excludes internal fields like application_id, access_count, signature, etc.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MessageResponse {
+    /// Unique message identifier
+    pub id: Uuid,
+    /// Encrypted message content (base64 or hex encoded)
+    pub ciphertext: String,
+    /// Nonce used for encryption
+    pub nonce: Uuid,
+    /// MIME content type (e.g., "text/plain", "application/octet-stream")
+    pub content_type: Option<String>,
+    /// Size of the encrypted content in bytes
+    pub content_size_bytes: i64,
+    /// When the message was created
+    pub created_at: DateTime<Utc>,
+    /// Whether this is a group message
+    pub is_group_message: bool,
+    /// Group ID (if this is a group message)
+    pub group_id: Option<Uuid>,
+    /// Associated file ID (if message has an attachment)
+    pub file_id: Option<Uuid>,
+}
+
+impl From<Message> for MessageResponse {
+    fn from(msg: Message) -> Self {
+        Self {
+            id: msg.id,
+            ciphertext: msg.ciphertext,
+            nonce: msg.nonce,
+            content_type: msg.content_type,
+            content_size_bytes: msg.content_size_bytes,
+            created_at: msg.created_at,
+            is_group_message: msg.is_group_message,
+            group_id: msg.group_id,
+            file_id: msg.file_id,
+        }
+    }
+}
+
+impl MessageResponse {
+    /// Convert a vector of Messages to MessageResponses
+    pub fn from_vec(messages: Vec<Message>) -> Vec<Self> {
+        messages.into_iter().map(Self::from).collect()
+    }
+}
+
 /// P2P file attachment.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct P2PFile {
@@ -203,4 +252,41 @@ pub struct InboxStatus {
     pub newest_unread_at: Option<DateTime<Utc>>,
     /// Total size of pending messages in bytes
     pub total_size_bytes: i64,
+}
+
+/// Grouped inbox entry - last message from a unique sender
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxEntry {
+    /// Sender's public key
+    pub sender_pubkey: String,
+    /// The last (most recent) message from this sender
+    pub last_message: Message,
+    /// Total message count from this sender in the inbox
+    pub message_count: usize,
+}
+
+/// Grouped inbox response - messages grouped by sender
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupedInbox {
+    /// List of inbox entries, sorted by last message time (descending)
+    pub entries: Vec<InboxEntry>,
+    /// Total number of unique senders
+    pub sender_count: usize,
+    /// Total number of messages across all senders
+    pub total_messages: usize,
+}
+
+/// Paginated messages from a specific sender
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SenderMessages {
+    /// Sender's public key
+    pub sender_pubkey: String,
+    /// Messages from this sender (sorted by created_at descending)
+    pub messages: Vec<Message>,
+    /// Total messages available from this sender
+    pub total: usize,
+    /// Current offset
+    pub offset: usize,
+    /// Whether there are more messages available
+    pub has_more: bool,
 }

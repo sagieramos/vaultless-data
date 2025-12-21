@@ -1,13 +1,9 @@
-use super::{dto::*, helper::*};
-use crate::crypto::verify_signature;
+//! Inbox management - rebuild and trim operations.
+
+use super::dto::*;
+use super::helper::*;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::increment_message_received_pool;
-use crate::models::usage::increment_proof_verified_pool;
-use chrono::Utc;
 use redis::AsyncCommands;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -20,8 +16,13 @@ if redis.call('SET', counted_key, '1', 'NX', 'EX', 86400) then
 end
 return 0
 "#;
+
 impl InstantMessage {
-    /// Rebuild inbox with pagination to avoid memory spikes
+    // =========================================================================
+    // Inbox Rebuild Operations
+    // =========================================================================
+
+    /// Rebuild inbox with pagination to avoid memory spikes.
     async fn rebuild_inbox_paginated(
         &self,
         conn: &mut impl AsyncCommands,
@@ -66,7 +67,6 @@ impl InstantMessage {
             let id_strs: Vec<String> = page.iter().map(|id| id.to_string()).collect();
 
             if !id_strs.is_empty() {
-                // Use pipeline for efficiency
                 let mut pipe = redis::pipe();
                 for id_str in &id_strs {
                     pipe.rpush(&queue_key, id_str);
@@ -115,7 +115,7 @@ impl InstantMessage {
         Ok(())
     }
 
-    /// Enhanced rebuild_inbox_safe using paginated approach
+    /// Enhanced rebuild_inbox_safe using paginated approach with distributed lock.
     pub async fn rebuild_inbox_safe(
         &self,
         conn: &mut impl AsyncCommands,
@@ -169,92 +169,7 @@ impl InstantMessage {
         result.map(|_| true)
     }
 
-    // -------------------------------------------------------------------------
-    // Soft envelope verification (logs, returns bool) - conditional on require_proof_verification
-    // -------------------------------------------------------------------------
-    /// Soft-verifies message envelope signature; logs errors, returns bool.
-    pub async fn verify_envelope_soft(&self, msg: &Message) -> bool {
-        if !msg.require_proof_verification {
-            info!(msg_id = %msg.id, "Proof verification not required - skipping signature check");
-            return true;
-        }
-        let envelope = Envelope {
-            id: &msg.id,
-            sender_client_id: &msg.sender_client_id,
-            recipient_client_id: &msg.recipient_client_id,
-            api_key_id: &msg.api_key_id,
-            is_group_message: msg.is_group_message,
-            content_size_bytes: msg.content_size_bytes as i64,
-            created_at: &msg.created_at,
-            require_proof_verification: msg.require_proof_verification,
-        };
-        let Some(signature_str) = msg.signature.as_deref() else {
-            error!("Message signature is missing but required for verification.");
-            return false;
-        };
-        match serde_json::to_vec(&envelope) {
-            Ok(bytes) => match verify_signature(&bytes, signature_str, &msg.envelope_public_key) {
-                Ok(()) => {
-                    if let Err(e) = increment_proof_verified_pool(
-                        &self.redis_pool,
-                        msg.api_key_id,
-                        &self.config,
-                    )
-                    .await
-                    {
-                        // Log the error but allow the operation (signature verification) to succeed
-                        error!(
-                            msg_id = %msg.id,
-                            api_key_id = %msg.api_key_id,
-                            error = %e,
-                            "Failed to increment proof verified metrics"
-                        );
-                    }
-                    // Verification succeeded, return true for the outer block
-                    true
-                }
-                Err(e) => {
-                    error!(
-                        msg_id = %msg.id,
-                        error = ?e,
-                        "Envelope verification failed"
-                    );
-                    false
-                }
-            },
-            Err(e) => {
-                error!(
-                    msg_id = %msg.id,
-                    error = %e,
-                    "Envelope serialization failed"
-                );
-                false
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Atomic delivery counting using Lua script
-    // -------------------------------------------------------------------------
-    /// Atomically checks/sets delivery flag via Lua; returns true if newly set.
-    pub async fn count_delivery_once_atomic(
-        &self,
-        conn: &mut impl AsyncCommands,
-        msg_id: Uuid,
-    ) -> Result<bool> {
-        let counted_key = instant_delivered_counted_key(msg_id);
-        let result: i32 = redis::Script::new(ATOMIC_DELIVERY_COUNT_SCRIPT)
-            .key(&counted_key)
-            .invoke_async(conn)
-            .await
-            .map_err(|e| VaultlessError::Internal(format!("Atomic count failed: {}", e)))?;
-        Ok(result == 1)
-    }
-
-    // -------------------------------------------------------------------------
-    // rebuild_inbox (extracted)
-    // -------------------------------------------------------------------------
-    /// Rebuilds inbox queue from undelivered DB messages.
+    /// Rebuilds inbox queue from undelivered DB messages (non-paginated).
     pub async fn rebuild_inbox(
         &self,
         conn: &mut impl AsyncCommands,
@@ -282,12 +197,14 @@ impl InstantMessage {
             );
             VaultlessError::Internal(e.to_string())
         })?;
+
         if undelivered.is_empty() {
             return Ok(());
         }
+
         let queue_key = instant_inbox_key(recipient_client_id);
 
-        // Prepare Lua script: push all IDs and set TTL atomically
+        // Lua script: push all IDs and set TTL atomically
         let lua_script = r#"
             local ttl = tonumber(ARGV[#ARGV])
             for i = 1, #ARGV - 1 do
@@ -297,14 +214,12 @@ impl InstantMessage {
             return #ARGV - 1
         "#;
 
-        // Prepare arguments: undelivered IDs + TTL as last argument
         let mut args: Vec<String> = undelivered.iter().map(|id| id.to_string()).collect();
-        args.push(CACHE_TTL_SECS.to_string()); // last arg = TTL
+        args.push(CACHE_TTL_SECS.to_string());
 
-        // Execute Lua script atomically
         let _: i32 = redis::cmd("EVAL")
             .arg(lua_script)
-            .arg(1) // one key: queue_key
+            .arg(1)
             .arg(&queue_key)
             .arg(args)
             .query_async(conn)
@@ -319,39 +234,11 @@ impl InstantMessage {
         Ok(())
     }
 
-    // FIX #3: Proper error handling for invalid message deletion
-    pub async fn delete_invalid_message(&self, msg_id: Uuid, is_group: bool) -> Result<()> {
-        let mut retries = 3;
+    // =========================================================================
+    // Inbox Trim Operations
+    // =========================================================================
 
-        while retries > 0 {
-            match self.redis_pool.get().await {
-                Ok(mut conn) => match conn.del::<_, usize>(instant_message_key(msg_id)).await {
-                    Ok(_) => {
-                        self.queue_delete(msg_id, is_group).await;
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        error!(msg_id = %msg_id, error = %e, "Redis delete failed");
-                        retries -= 1;
-                    }
-                },
-                Err(e) => {
-                    error!(msg_id = %msg_id, error = %e, "Redis connection failed");
-                    retries -= 1;
-                }
-            }
-
-            if retries > 0 {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-
-        Err(VaultlessError::Internal(
-            "Failed to delete invalid message".into(),
-        ))
-    }
-
-    /// Efficient batch inbox trimming using Lua script
+    /// Efficient batch inbox trimming using Lua script with atomic RENAME.
     pub async fn trim_inbox_batch(
         &self,
         msg_ids: &[Uuid],
@@ -370,19 +257,21 @@ impl InstantMessage {
         let queue_key = instant_inbox_key(recipient_client_id);
         let id_strs: Vec<String> = msg_ids.iter().map(|id| id.to_string()).collect();
 
-        // Strategy: Build a set of IDs to remove, then filter the list
+        // Use RENAME for atomic replacement to avoid race condition
         let lua_script = r#"
             local queue_key = KEYS[1]
+            local temp_key = KEYS[2]
+            local ttl = tonumber(ARGV[#ARGV])
             local to_remove = {}
-            
+
             -- Build hash set of IDs to remove (O(N))
-            for i = 1, #ARGV do
+            for i = 1, #ARGV - 1 do
                 to_remove[ARGV[i]] = true
             end
-            
+
             -- Get entire list
             local items = redis.call("LRANGE", queue_key, 0, -1)
-            
+
             -- Filter out items to remove (O(N))
             local filtered = {}
             for _, item in ipairs(items) do
@@ -390,25 +279,31 @@ impl InstantMessage {
                     table.insert(filtered, item)
                 end
             end
-            
-            -- Replace list atomically
-            redis.call("DEL", queue_key)
+
+            -- Atomic replacement using temp key + RENAME
             if #filtered > 0 then
-                redis.call("RPUSH", queue_key, unpack(filtered))
-                redis.call("EXPIRE", queue_key, ARGV[#ARGV])
+                redis.call("DEL", temp_key)
+                redis.call("RPUSH", temp_key, unpack(filtered))
+                redis.call("RENAME", temp_key, queue_key)
+                redis.call("EXPIRE", queue_key, ttl)
+            else
+                -- No items left, just delete the queue
+                redis.call("DEL", queue_key)
             end
-            
+
             return #items - #filtered
         "#;
 
-        // Add TTL as last argument
         let mut args = id_strs;
         args.push(CACHE_TTL_SECS.to_string());
 
+        let temp_key = format!("{}:trim_temp", queue_key);
+
         let removed: i32 = redis::cmd("EVAL")
             .arg(lua_script)
-            .arg(1)
+            .arg(2)
             .arg(&queue_key)
+            .arg(&temp_key)
             .arg(args)
             .query_async(&mut conn)
             .await
@@ -431,7 +326,7 @@ impl InstantMessage {
         Ok(())
     }
 
-    // Alternative: For very large inboxes (>1000 items), use pagination
+    /// Alternative for very large inboxes (>1000 items) using set membership.
     pub async fn trim_inbox_batch_large(
         &self,
         msg_ids: &[Uuid],
@@ -444,7 +339,6 @@ impl InstantMessage {
         let mut conn = self.redis_pool.get().await?;
         let queue_key = instant_inbox_key(recipient_client_id);
 
-        // For very large lists, use a temporary sorted set
         let temp_key = format!("{}:trim_temp", queue_key);
         let id_strs: Vec<String> = msg_ids.iter().map(|id| id.to_string()).collect();
 
@@ -453,33 +347,33 @@ impl InstantMessage {
             local queue_key = KEYS[1]
             local temp_key = KEYS[2]
             local ttl = tonumber(ARGV[#ARGV])
-            
+
             -- Add all IDs to remove into a temporary set
             for i = 1, #ARGV - 1 do
                 redis.call("SADD", temp_key, ARGV[i])
             end
-            
+
             -- Get entire list
             local items = redis.call("LRANGE", queue_key, 0, -1)
             local filtered = {}
-            
+
             -- Filter using set membership check (O(1) per check)
             for _, item in ipairs(items) do
                 if redis.call("SISMEMBER", temp_key, item) == 0 then
                     table.insert(filtered, item)
                 end
             end
-            
+
             -- Clean up temp set
             redis.call("DEL", temp_key)
-            
+
             -- Replace list
             redis.call("DEL", queue_key)
             if #filtered > 0 then
                 redis.call("RPUSH", queue_key, unpack(filtered))
                 redis.call("EXPIRE", queue_key, ttl)
             end
-            
+
             return #items - #filtered
         "#;
 
@@ -488,7 +382,7 @@ impl InstantMessage {
 
         let removed: i32 = redis::cmd("EVAL")
             .arg(lua_script)
-            .arg(2) // Two keys: queue_key and temp_key
+            .arg(2)
             .arg(&queue_key)
             .arg(&temp_key)
             .arg(args)
@@ -505,141 +399,54 @@ impl InstantMessage {
         Ok(())
     }
 
-    /// Enhanced queue_delete with better error handling
-    pub async fn queue_delete(&self, msg_id: Uuid, is_group_message: bool) {
-        let task = DeleteTask {
-            msg_id,
-            is_group_message,
-        };
+    // =========================================================================
+    // Atomic Delivery Counting
+    // =========================================================================
 
-        match self.delete_sender.try_send(task) {
-            Ok(_) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!(msg_id = %msg_id, "Delete channel full; attempting fallback");
-
-                // Try to get strong reference to pool
-                if let Some(db_pool) = self.weak_db_pool.upgrade() {
-                    let msg_id_clone = msg_id;
-                    tokio::spawn(async move {
-                        if let Err(e) = sqlx::query(
-                            "DELETE FROM messages WHERE id = $1 AND is_group_message = false",
-                        )
-                        .bind(msg_id_clone)
-                        .execute(db_pool.as_ref())
-                        .await
-                        {
-                            error!(
-                                msg_id = %msg_id_clone,
-                                error = %e,
-                                "Immediate delete failed - sending to DLQ"
-                            );
-                        }
-                    });
-                } else {
-                    // DB pool is dropped - log critical error
-                    error!(
-                        msg_id = %msg_id,
-                        "CRITICAL: DB pool dropped, message cannot be deleted"
-                    );
-                    self.metrics
-                        .db_pool_dropped_deletes
-                        .fetch_add(1, Ordering::Relaxed);
-
-                    // Send to DLQ for manual recovery
-                    let _ = self.dlq_sender.try_send(DlqEntry {
-                        msg_id,
-                        reason: DlqReason::DatabaseWriteFailed,
-                        timestamp: Utc::now(),
-                        retry_count: 0,
-                        original_data: None,
-                    });
-                }
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                error!(
-                    msg_id = %msg_id,
-                    "CRITICAL: Delete channel closed"
-                );
-            }
-        }
+    /// Atomically checks/sets delivery flag via Lua; returns true if newly set.
+    pub async fn count_delivery_once_atomic(
+        &self,
+        conn: &mut impl AsyncCommands,
+        msg_id: Uuid,
+    ) -> Result<bool> {
+        let counted_key = instant_delivered_counted_key(msg_id);
+        let result: i32 = redis::Script::new(ATOMIC_DELIVERY_COUNT_SCRIPT)
+            .key(&counted_key)
+            .invoke_async(conn)
+            .await
+            .map_err(|e| VaultlessError::Internal(format!("Atomic count failed: {}", e)))?;
+        Ok(result == 1)
     }
 
-    // Helper: Retry wrapper for delivery counting
+    /// Retry wrapper for delivery counting with exponential backoff.
     pub async fn count_delivery_once_with_retry(&self, msg_id: Uuid) -> Result<bool> {
-        let mut retries = 3;
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 50;
+
         let mut last_error = None;
 
-        while retries > 0 {
+        for attempt in 0..MAX_RETRIES {
             match self.redis_pool.get().await {
                 Ok(mut conn) => match self.count_delivery_once_atomic(&mut conn, msg_id).await {
                     Ok(counted) => return Ok(counted),
                     Err(e) => {
                         last_error = Some(e);
-                        retries -= 1;
                     }
                 },
                 Err(e) => {
                     last_error = Some(e.into());
-                    retries -= 1;
                 }
             }
 
-            if retries > 0 {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            if attempt < MAX_RETRIES - 1 {
+                use rand::Rng;
+                let delay = BASE_DELAY_MS * (1 << attempt);
+                let jitter = rand::rng().random_range(0..delay / 2);
+                tokio::time::sleep(std::time::Duration::from_millis(delay + jitter)).await;
             }
         }
 
         Err(last_error
             .unwrap_or_else(|| VaultlessError::Internal("Delivery counting failed".into())))
-    }
-
-    // Helper: Retry wrapper for metrics increment
-    pub async fn increment_received_metrics_with_retry(
-        &self,
-        api_key_id: Uuid,
-        bytes: i64,
-    ) -> Result<()> {
-        let mut retries = 3;
-
-        while retries > 0 {
-            match increment_message_received_pool(&self.redis_pool, api_key_id, bytes, &self.config)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(_) => {
-                    retries -= 1;
-                    if retries > 0 {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                }
-            }
-        }
-
-        Err(VaultlessError::MetricsIncrementFailed(
-            "Failed after retries".into(),
-        ))
-    }
-
-    /// Enhanced health status with more details
-    pub fn get_health_status(&self) -> HealthStatus {
-        let metrics = self.metrics.get_snapshot();
-
-        HealthStatus {
-            flusher_channel_capacity: self.sender.capacity(),
-            flusher_channel_available: self.sender.max_capacity() - self.sender.capacity(),
-            deleter_channel_capacity: self.delete_sender.capacity(),
-            deleter_channel_available: self.delete_sender.max_capacity()
-                - self.delete_sender.capacity(),
-            dlq_channel_capacity: self.dlq_sender.capacity(),
-            dlq_channel_available: self.dlq_sender.max_capacity() - self.dlq_sender.capacity(),
-            failed_verifications: metrics.failed_verifications,
-            failed_metrics_increments: metrics.failed_metrics_increments,
-            emergency_writes: metrics.emergency_writes,
-            dlq_entries: metrics.dlq_entries,
-            db_pool_dropped_deletes: metrics.db_pool_dropped_deletes,
-            db_pool_available: self.weak_db_pool.upgrade().is_some(),
-            redis_circuit_state: format!("{:?}", self.redis_breaker.get_state()),
-            db_circuit_state: format!("{:?}", self.db_breaker.get_state()),
-        }
     }
 }

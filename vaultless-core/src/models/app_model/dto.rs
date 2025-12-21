@@ -279,7 +279,8 @@ pub struct ApplicationWithKeysFromView {
     pub webhook_count: i64,
     pub webhooks: Json<Vec<Webhook>>,
 
-    pub total_count: i64,
+    // Client count
+    pub client_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -304,6 +305,9 @@ pub struct ApplicationWithKeysResponse {
     // Webhooks
     pub webhook_count: i64,
     pub webhooks: Json<Vec<Webhook>>,
+
+    // Client count
+    pub client_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -525,6 +529,9 @@ pub struct ApplicationWithUsage {
     pub webhook_count: i64,
     pub webhooks: Json<Vec<Webhook>>,
 
+    // Client count
+    pub client_count: i64,
+
     // Current month usage
     pub current_month_messages_sent: i64,
     pub current_month_messages_received: i64,
@@ -672,6 +679,9 @@ pub struct ApplicationWithKeys {
 
     #[schema(value_type = Vec<Webhook>)]
     pub webhooks: Json<Vec<Webhook>>,
+
+    // Client count
+    pub client_count: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -695,6 +705,7 @@ pub struct ApplicationSummary {
     pub monthly_message_quota: Option<i64>,
     pub publishable_key_count: i64,
     pub webhook_count: i64,
+    pub client_count: i64,
     pub quota_usage_percentage: f64,
 }
 
@@ -713,4 +724,53 @@ pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
 
 pub fn publishable_key_resolution_cache_key(pk_plaintext: &str) -> String {
     cache_key!("res", "pk", pk_plaintext)
+}
+
+// =============================================================================
+// Key Rotation DTOs
+// =============================================================================
+
+/// Response returned when rotating a secret key
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RotateSecretKeyResponse {
+    /// The application ID
+    pub application_id: Uuid,
+    /// The new secret key (only shown once, store securely!)
+    pub new_secret_key: String,
+    /// Prefix of the new key for identification
+    pub key_prefix: String,
+    /// When the new key was created
+    pub created_at: DateTime<Utc>,
+    /// ID of the old key that was deactivated (for audit purposes)
+    pub old_key_id: Uuid,
+}
+
+/// Response returned when rotating a publishable key
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RotatePublishableKeyResponse {
+    /// The application ID
+    pub application_id: Uuid,
+    /// The new publishable key
+    pub new_publishable_key: String,
+    /// Prefix of the new key for identification
+    pub key_prefix: String,
+    /// When the new key was created
+    pub created_at: DateTime<Utc>,
+    /// ID of the old key that was deactivated (for audit purposes)
+    pub old_key_id: Uuid,
+}
+
+/// Response returned when adding an additional publishable key
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AddPublishableKeyResponse {
+    /// The application ID
+    pub application_id: Uuid,
+    /// The new publishable key
+    pub new_publishable_key: String,
+    /// Prefix of the new key for identification
+    pub key_prefix: String,
+    /// When the new key was created
+    pub created_at: DateTime<Utc>,
+    /// Total number of active publishable keys for this application
+    pub total_active_publishable_keys: i64,
 }

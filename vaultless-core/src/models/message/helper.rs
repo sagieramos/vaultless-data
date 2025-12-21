@@ -59,6 +59,34 @@ pub fn instant_delivered_counted_key(msg_id: Uuid) -> String {
 }
 
 // =============================================================================
+// IoT Redis Keys - optimized for hot paths
+// =============================================================================
+/// IoT client presence key - tracks if device is online (short TTL, heartbeat refresh)
+pub fn iot_presence_key(client_id: Uuid) -> String {
+    cache_key!("iot", "presence", client_id)
+}
+
+/// IoT telemetry key - stores latest telemetry from device (replaces previous)
+pub fn iot_telemetry_key(device_client_id: Uuid) -> String {
+    cache_key!("iot", "telemetry", device_client_id)
+}
+
+/// IoT command key - stores pending command for device (only if online)
+pub fn iot_command_key(device_client_id: Uuid) -> String {
+    cache_key!("iot", "command", device_client_id)
+}
+
+/// IoT command lock key - prevents duplicate command delivery
+pub fn iot_command_lock_key(device_client_id: Uuid) -> String {
+    cache_key!("iot", "cmd_lock", device_client_id)
+}
+
+// IoT TTL constants
+pub const IOT_PRESENCE_TTL_SECS: u64 = 30; // Device must heartbeat within 30s
+pub const IOT_TELEMETRY_TTL_SECS: u64 = 300; // Telemetry expires after 5 min
+pub const IOT_COMMAND_TTL_SECS: u64 = 60; // Commands expire after 1 min if not fetched
+
+// =============================================================================
 // Static soft verify (for parallel fallback) - conditional on require_proof_verification
 // =============================================================================
 /// Static envelope verification for SQL fallback (no self access).
@@ -81,7 +109,7 @@ pub async fn verify_envelope_soft_static(
         id: &msg.id,
         sender_client_id: &msg.sender_client_id,
         recipient_client_id: &msg.recipient_client_id,
-        api_key_id: &msg.api_key_id,
+        application_id: &msg.application_id,
         is_group_message: msg.is_group_message,
         content_size_bytes: msg.content_size_bytes as i64,
         created_at: &msg.created_at,
@@ -91,12 +119,13 @@ pub async fn verify_envelope_soft_static(
     if let Ok(bytes) = serde_json::to_vec(&envelope) {
         if verify_signature(&bytes, signature_str, &msg.envelope_public_key).is_ok() {
             // Signature SUCCESSFUL. Call the proof verified metrics function.
-            if let Err(e) = increment_proof_verified_pool(redis_pool, msg.api_key_id, config).await
+            if let Err(e) =
+                increment_proof_verified_pool(redis_pool, msg.application_id, config).await
             {
                 // Log the metrics failure, but the core verification is still valid.
                 error!(
                     msg_id = %msg.id,
-                    api_key_id = %msg.api_key_id,
+                    application_id = %msg.application_id,
                     error = %e,
                     "Failed to increment proof verified metrics during static verification"
                 );
@@ -139,7 +168,7 @@ pub async fn emergency_write_message(db_pool: &PgPool, msg: &Message) -> Result<
         r#"
         INSERT INTO messages (
           id, ciphertext, nonce, content_type, content_size_bytes,
-          api_key_id, created_at, expires_at, access_count,
+          application_id, created_at, expires_at, access_count,
           is_delivered, delivered_at, max_access_count,
           require_proof_verification, sender_client_id, recipient_client_id,
           group_id, is_group_message
@@ -154,7 +183,7 @@ pub async fn emergency_write_message(db_pool: &PgPool, msg: &Message) -> Result<
     .bind(msg.nonce)
     .bind(msg.content_type.as_ref()) // Defaults in SQL if None
     .bind(msg.content_size_bytes)
-    .bind(msg.api_key_id)
+    .bind(msg.application_id)
     .bind(msg.created_at)
     .bind(msg.expires_at)
     .bind(msg.access_count)
@@ -189,7 +218,7 @@ pub async fn flush_batch(
         r#"
         INSERT INTO messages (
           id, ciphertext, nonce, content_type, content_size_bytes,
-          api_key_id, created_at, expires_at, access_count,
+          application_id, created_at, expires_at, access_count,
           is_delivered, delivered_at, max_access_count,
           require_proof_verification, sender_client_id, recipient_client_id,
           group_id, is_group_message
@@ -206,7 +235,7 @@ pub async fn flush_batch(
             .push_bind(msg.nonce)
             .push_bind(content_type_str) // Default
             .push_bind(msg.content_size_bytes)
-            .push_bind(msg.api_key_id)
+            .push_bind(msg.application_id)
             .push_bind(msg.created_at)
             .push_bind(msg.expires_at)
             .push_bind(msg.access_count)
