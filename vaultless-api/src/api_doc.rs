@@ -1,4 +1,4 @@
-use crate::handlers::developer::application_dashboard::ApplicationResponse;
+use crate::handlers::developer::application::dto::ApplicationDashboardResponse;
 use utoipa::{OpenApi, Modify};
 use utoipa::openapi::security::SecurityScheme;
 
@@ -6,20 +6,25 @@ use utoipa::openapi::security::SecurityScheme;
 #[openapi(
     paths(
         // Application handlers
-        crate::handlers::developer::application_dashboard::get_application_with_keys_handler,
-        crate::handlers::developer::application::create_application,
-        crate::handlers::developer::application::list_applications,
-        crate::handlers::developer::application::update_application,
-        crate::handlers::developer::application::deactivate_application,
-        crate::handlers::developer::application::get_chart_data,
-        crate::handlers::developer::application::get_user_usage_summary,
-        crate::handlers::developer::application::get_quota_warnings,
-        crate::handlers::developer::application::get_application_with_keys_handler,
+        crate::handlers::developer::application::handlers::get_application_analytics,
+        crate::handlers::developer::application::handlers::create_application,
+        crate::handlers::developer::application::handlers::list_applications,
+        crate::handlers::developer::application::handlers::update_application,
+        crate::handlers::developer::application::handlers::deactivate_application,
+        crate::handlers::developer::application::charts::get_chart_data,
+        crate::handlers::developer::application::handlers::get_user_usage_summary,
+        crate::handlers::developer::application::handlers::get_quota_warnings,
+        crate::handlers::developer::application::handlers::get_application_with_keys,
+        // Key rotation handlers
+        crate::handlers::developer::application::keys::rotate_secret_key,
+        crate::handlers::developer::application::keys::rotate_publishable_key,
+        crate::handlers::developer::application::keys::add_publishable_key,
+        crate::handlers::developer::application::keys::deactivate_publishable_key,
         // Analytics handlers
-        // crate::handlers::developer::analytics::get_application_quota_status,
-        // crate::handlers::developer::analytics::get_application_cost_breakdown,
+        crate::handlers::developer::analytics::get_application_quota_status,
+        crate::handlers::developer::analytics::get_application_cost_breakdown,
         crate::handlers::developer::analytics::export_application_usage,
-        // crate::handlers::developer::analytics::get_application_trends,
+        crate::handlers::developer::analytics::get_application_trends,
         // User auth handlers
         crate::handlers::developer::user_auth::register,
         crate::handlers::developer::user_auth::login,
@@ -48,7 +53,7 @@ use utoipa::openapi::security::SecurityScheme;
     ),
     components(
         schemas(
-            ApplicationResponse,
+            ApplicationDashboardResponse,
             // User auth schemas
             crate::handlers::developer::dto::RegisterRequest,
             crate::handlers::developer::dto::RegisterResponse,
@@ -77,14 +82,20 @@ use utoipa::openapi::security::SecurityScheme;
             crate::handlers::developer::google_oauth::TestTokenRequest,
             crate::handlers::developer::google_oauth::TestTokenResponse,
             // Application schemas
-            crate::handlers::developer::application::CreateApplicationRequest,
-            crate::handlers::developer::application::CreateApplicationResponse,
-            crate::handlers::developer::application::RealTimeUsageResponse,
-            crate::handlers::developer::application::UpdateTierRequest,
-            crate::handlers::developer::application::ApplicationResponse,
-            crate::handlers::developer::application::QuotaWarningsQuery,
-            crate::handlers::developer::application::PaginationParams,
-            crate::handlers::developer::application::ChartQueryParams,
+            crate::handlers::developer::application::dto::CreateApplicationRequest,
+            crate::handlers::developer::application::dto::CreateApplicationResponse,
+            crate::handlers::developer::application::dto::RealTimeUsageResponse,
+            crate::handlers::developer::application::dto::ApplicationResponse,
+            crate::handlers::developer::application::dto::QuotaWarningsQuery,
+            crate::handlers::developer::application::dto::PaginationParams,
+            crate::handlers::developer::application::dto::ChartQueryParams,
+            crate::handlers::developer::application::dto::UsageStats,
+            crate::handlers::developer::application::dto::LifetimeStats,
+            // Key rotation schemas
+            crate::handlers::developer::application::keys::RotateSecretKeyResponse,
+            crate::handlers::developer::application::keys::RotatePublishableKeyResponse,
+            crate::handlers::developer::application::keys::RotatePublishableKeyRequest,
+            crate::handlers::developer::application::keys::AddPublishableKeyResponse,
             vaultless_core::models::app_model::dto::PaginatedApplicationsSummary,
             vaultless_core::models::app_model::dto::ApplicationSummary,
             // Notification schemas

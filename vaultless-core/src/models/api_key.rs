@@ -3,9 +3,8 @@
 //! Database-only model for API Key management.
 //! Includes tier-based defaults and message quota checks directly against the database.
 
-use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::types::{KeyType, SubscriptionTier}; // Import KeyType
+use crate::types::KeyType;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
@@ -26,8 +25,8 @@ use crate::models::usage::{
 // Constants
 // =============================================================================
 
-// Added key_type, application_id, publishable_key_plaintext
-const PROJECTION: &str = "id, user_id, key_prefix, key_hash, tier, monthly_message_quota, message_retention_seconds, description, scopes, is_active, created_at, expires_at, last_used_at, rate_limit_per_minute, application_id, key_type, publishable_key_plaintext";
+// Matches api_keys table schema
+const PROJECTION: &str = "id, user_id, key_hash, key_prefix, description, scopes, is_active, created_at, expires_at, last_used_at, application_id, key_type, publishable_key_plaintext";
 
 // =============================================================================
 // Models
@@ -36,40 +35,30 @@ const PROJECTION: &str = "id, user_id, key_prefix, key_hash, tier, monthly_messa
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ApiKey {
     pub id: Uuid,
-    pub user_id: Uuid,
-    pub key_prefix: String,
+    pub user_id: Option<Uuid>,
     #[serde(skip_serializing)]
     pub key_hash: Option<String>,
-    pub tier: Option<SubscriptionTier>,
-    pub monthly_message_quota: i64,
-    pub message_retention_seconds: i64,
+    pub key_prefix: String,
     pub description: Option<String>,
     pub scopes: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
-    pub rate_limit_per_minute: i32,
-    // New fields
     pub application_id: Option<Uuid>,
     pub key_type: KeyType,
+    #[serde(skip_serializing)]
     pub publishable_key_plaintext: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedApiKey {
     pub id: Uuid,
-    pub user_id: Uuid,
-    // key_prefix, key_hash, publishable_key_plaintext are omitted
-    pub tier: Option<SubscriptionTier>,
-    pub monthly_message_quota: i64,
-    pub message_retention_seconds: i64,
-    // description and scopes are omitted
+    pub user_id: Option<Uuid>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
-    pub rate_limit_per_minute: i32,
     pub application_id: Option<Uuid>,
     pub key_type: KeyType,
 }
@@ -79,16 +68,10 @@ impl From<&ApiKey> for CachedApiKey {
         Self {
             id: key.id,
             user_id: key.user_id,
-            // key_prefix, key_hash, and publishable_key_plaintext are omitted
-            tier: key.tier,
-            monthly_message_quota: key.monthly_message_quota,
-            message_retention_seconds: key.message_retention_seconds,
-            // description and scopes are omitted
             is_active: key.is_active,
             created_at: key.created_at,
             expires_at: key.expires_at,
             last_used_at: key.last_used_at,
-            rate_limit_per_minute: key.rate_limit_per_minute,
             application_id: key.application_id,
             key_type: key.key_type,
         }
@@ -106,16 +89,13 @@ pub struct PaginatedApiKeys {
 
 #[derive(Debug, Clone, Validate, Deserialize)]
 pub struct CreateApiKey {
-    pub user_id: Uuid,
+    pub user_id: Option<Uuid>,
 
     // Made optional for Publishable keys
     pub key_hash: Option<String>,
 
     // Key prefix is mandatory for both
     pub key_prefix: String,
-
-    // Made optional for Publishable keys
-    pub tier: Option<SubscriptionTier>,
 
     #[validate(length(max = 255))]
     pub description: Option<String>,
@@ -125,7 +105,6 @@ pub struct CreateApiKey {
 
     pub expires_at: Option<DateTime<Utc>>,
 
-    // New fields
     pub application_id: Option<Uuid>,
     pub key_type: KeyType,
     pub publishable_key_plaintext: Option<String>,
@@ -142,7 +121,7 @@ struct LinkedKeyData {
 // =============================================================================
 
 impl ApiKey {
-    /// Creates a new API key with tier defaults (if Secret key).
+    /// Creates a new API key.
     pub async fn create<'c, E>(executor: E, input: CreateApiKey) -> Result<ApiKey>
     where
         E: Executor<'c, Database = Postgres>,
@@ -151,30 +130,12 @@ impl ApiKey {
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
-        // Determine defaults based on key type
-        let tier = input.tier.unwrap_or(SubscriptionTier::Free);
-
-        let (monthly_quota, retention_seconds, rate_limit) = match input.key_type {
-            KeyType::Secret => (
-                tier.default_monthly_quota(),
-                tier.default_retention_seconds(),
-                tier.default_rate_limit(),
-            ),
-            // Publishable keys don't enforce these limits, use defaults/zeros
-            // that satisfy the 'valid_quota' check constraint (which is conditional)
-            KeyType::Publishable => (
-                1000,   // Safe default that satisfies > 0 check if key_type changes
-                604800, // Safe default that satisfies > 0 check if key_type changes
-                60,
-            ),
-        };
-
-        // Ensure Secret keys have hash/tier and Publishable keys have plaintext
+        // Ensure Secret keys have hash and Publishable keys have plaintext
         match input.key_type {
             KeyType::Secret => {
-                if input.key_hash.is_none() || input.tier.is_none() {
+                if input.key_hash.is_none() {
                     return Err(VaultlessError::Validation(
-                        "Secret key must provide hash and tier".to_string(),
+                        "Secret key must provide hash".to_string(),
                     ));
                 }
                 if input.publishable_key_plaintext.is_some() {
@@ -203,32 +164,24 @@ impl ApiKey {
                     user_id,
                     key_hash,
                     key_prefix,
-                    tier,
-                    monthly_message_quota,
-                    message_retention_seconds,
                     description,
                     scopes,
-                    rate_limit_per_minute,
                     expires_at,
                     is_active,
-                    application_id, 
-                    key_type,       
-                    publishable_key_plaintext 
+                    application_id,
+                    key_type,
+                    publishable_key_plaintext
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12, $13)
+                VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8, $9)
                 RETURNING {}
                 "#,
             PROJECTION
         ))
         .bind(input.user_id)
-        .bind(&input.key_hash) // Now Option<String>
+        .bind(&input.key_hash)
         .bind(&input.key_prefix)
-        .bind(input.tier) // Now Option<SubscriptionTier>
-        .bind(monthly_quota)
-        .bind(retention_seconds)
         .bind(&input.description)
         .bind(&input.scopes)
-        .bind(rate_limit)
         .bind(input.expires_at)
         .bind(input.application_id)
         .bind(input.key_type)
@@ -408,36 +361,6 @@ impl ApiKey {
         })
     }
 
-
-    /// Updates tier.
-    pub async fn update_tier<'c, E>(exec: E, id: Uuid, new_tier: SubscriptionTier) -> Result<ApiKey>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
-        // Perform the UPDATE (Tier update is restricted to Secret keys implicitly by the DB check)
-        sqlx::query_as::<_, ApiKey>(&format!(
-            r#"
-                UPDATE api_keys 
-                SET 
-                    tier = $2,
-                    monthly_message_quota = $3,
-                    message_retention_seconds = $4,
-                    rate_limit_per_minute = $5
-                WHERE id = $1 AND key_type = 'secret'
-                RETURNING {}
-                "#,
-            PROJECTION
-        ))
-        .bind(id)
-        .bind(new_tier)
-        .bind(new_tier.default_monthly_quota())
-        .bind(new_tier.default_retention_seconds())
-        .bind(new_tier.default_rate_limit())
-        .fetch_one(exec)
-        .await
-        .map_err(VaultlessError::Database)
-    }
-
     /// Fetches the necessary key data (SK hash and PK plaintext) linked to an
     /// application ID for the sole purpose of invalidating Redis cache keys.
     pub async fn get_linked_key_data_for_cache_invalidation<'c, E>(
@@ -594,14 +517,3 @@ impl ApiKey {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tier_defaults() {
-        assert_eq!(SubscriptionTier::Free.default_monthly_quota(), 1_000);
-        assert_eq!(SubscriptionTier::Pro.default_rate_limit(), 1_000);
-        assert_eq!(SubscriptionTier::Starter.monthly_price_cents(), Some(2_900));
-    }
-}

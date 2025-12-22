@@ -102,6 +102,7 @@ impl ChartGranularity {
 
 /// A single point in a usage chart
 #[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageChartPoint {
     #[serde(skip_serializing)]
     pub application_name: String,
@@ -140,6 +141,7 @@ pub struct UsageChartPoint {
 
 /// Aggregated chart data for a single application
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplicationChartData {
     #[schema(value_type = String)]
     pub application_id: Uuid,

@@ -20,6 +20,7 @@ use validator::Validate;
 pub struct Application {
     pub id: Uuid,
     pub user_id: Uuid,
+    pub subscription_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub is_active: bool,
@@ -33,6 +34,7 @@ pub struct Application {
 }
 
 #[derive(Debug, Clone, Validate, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateApplication {
     pub user_id: Uuid,
 
@@ -49,89 +51,90 @@ pub struct CreateApplication {
 }
 
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[schema(example = json!({
     "name": "My Application",
     "description": "Updated application description",
-    "is_active": true,
-    "max_ttl_seconds": 3600,
-    "is_key_rotation_forced": false,
-    "internal_notes": "Some internal notes",
+    "isActive": true,
+    "maxTtlSeconds": 3600,
+    "isKeyRotationForced": false,
+    "internalNotes": "Some internal notes",
     "webhooks": [
         {
             "id": null,
             "url": "https://example.com/webhooks/vaultless",
-            "event_type": "message.created",
-            "is_active": true
+            "eventType": "client.signup",
+            "isActive": true
         },
         {
             "id": "550e8400-e29b-41d4-a716-446655440000",
             "url": "https://example.com/webhooks/delivered",
-            "event_type": "message.delivered",
-            "is_active": true
+            "eventType": "client.signin",
+            "isActive": true
         }
     ],
-    "integrity_config": {
-        "allow_unauthenticated": false,
+    "integrityConfig": {
+        "allowUnauthenticated": false,
         "browser": {
-            "authorized_origins": ["https://example.com", "https://app.example.com"],
-            "reattestation_days": 30,
-            "require_origin_header": true,
-            "require_referer_header": true,
-            "cors_strict_mode": true,
-            "require_captcha_on_registration": true,
-            "captcha_provider": "turnstile",
-            "captcha_site_key": "0x4AAAAAAAA...",
-            "bind_client_to_origin": true,
-            "track_origin_changes": true,
-            "max_origin_changes_per_client": 3,
-            "max_clients_per_ip": 50,
-            "max_registrations_per_ip_per_hour": 5,
-            "max_requests_per_ip_per_hour": 300,
-            "alert_on_usage_spike": true,
-            "usage_spike_threshold": 3.0,
-            "usage_baseline_hours": 24
+            "authorizedOrigins": ["https://example.com", "https://app.example.com"],
+            "reattestationDays": 30,
+            "requireOriginHeader": true,
+            "requireRefererHeader": true,
+            "corsStrictMode": true,
+            "requireCaptchaOnRegistration": true,
+            "captchaProvider": "turnstile",
+            "captchaSiteKey": "0x4AAAAAAAA...",
+            "bindClientToOrigin": true,
+            "trackOriginChanges": true,
+            "maxOriginChangesPerClient": 3,
+            "maxClientsPerIp": 50,
+            "maxRegistrationsPerIpPerHour": 5,
+            "maxRequestsPerIpPerHour": 300,
+            "alertOnUsageSpike": true,
+            "usageSpikeThreshold": 3.0,
+            "usageBaselineHours": 24
         },
         "ios": {
-            "reattestation_days": 30,
-            "apple_team_id": "ABCD123456",
-            "allowed_bundle_ids": ["com.example.app"],
-            "allowed_certificate_hashes": ["abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234"],
-            "min_version_code": 100,
-            "reject_untrusted_device": true
+            "reattestationDays": 30,
+            "appleTeamId": "ABCD123456",
+            "allowedBundleIds": ["com.example.app"],
+            "allowedCertificateHashes": ["abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234"],
+            "minVersionCode": 100,
+            "rejectUntrustedDevice": true
         },
         "android": {
-            "reattestation_days": 30,
-            "allowed_certificate_sha256": ["abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234"],
-            "allowed_package_names": ["com.example.app"],
-            "min_version_code": 100,
-            "reject_untrusted_device": true,
-            "reject_unrecognized_version": true,
-            "reject_unlicensed_app": false,
-            "google_cloud_project": "my-project-12345",
-            "google_api_key": "AIza...",
-            "max_token_age_seconds": 60
+            "reattestationDays": 30,
+            "allowedCertificateSha256": ["abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234"],
+            "allowedPackageNames": ["com.example.app"],
+            "minVersionCode": 100,
+            "rejectUntrustedDevice": true,
+            "rejectUnrecognizedVersion": true,
+            "rejectUnlicensedApp": false,
+            "googleCloudProject": "my-project-12345",
+            "googleApiKey": "AIza...",
+            "maxTokenAgeSeconds": 60
         },
         "iot": {
-            "reattestation_days": 7,
-            "allowed_certificate_authorities": ["CN=MyRootCA,O=Example Inc"],
-            "require_valid_certificate_expiry": true,
-            "reject_future_certificates": true,
-            "require_cn_match": true,
-            "required_san_fields": ["DNS:device.example.com"],
-            "allowed_models": ["ESP32-S3", "Raspberry-Pi-4"],
-            "allowed_hardware_revisions": ["v1.2", "v2.0"],
-            "allowed_manufacturers": ["Espressif", "Raspberry Pi Foundation"],
-            "min_firmware_version": 1000,
-            "allowed_secure_element_ids": ["SE050-001", "SE050-002"],
-            "max_device_idle_seconds": 86400,
-            "require_challenge_signature": true,
-            "strict_mode": true
+            "reattestationDays": 7,
+            "allowedCertificateAuthorities": ["CN=MyRootCA,O=Example Inc"],
+            "requireValidCertificateExpiry": true,
+            "rejectFutureCertificates": true,
+            "requireCnMatch": true,
+            "requiredSanFields": ["DNS:device.example.com"],
+            "allowedModels": ["ESP32-S3", "Raspberry-Pi-4"],
+            "allowedHardwareRevisions": ["v1.2", "v2.0"],
+            "allowedManufacturers": ["Espressif", "Raspberry Pi Foundation"],
+            "minFirmwareVersion": 1000,
+            "allowedSecureElementIds": ["SE050-001", "SE050-002"],
+            "maxDeviceIdleSeconds": 86400,
+            "requireChallengeSignature": true,
+            "strictMode": true
         },
-        "rate_limits": {
-            "max_attestations_per_user_per_hour": 50,
-            "max_failed_attempts_before_lockout": 5
+        "rateLimits": {
+            "maxAttestationsPerUserPerHour": 50,
+            "maxFailedAttemptsBeforeLockout": 5
         },
-        "allowed_platforms": {
+        "allowedPlatforms": {
             "browser": true,
             "ios": true,
             "android": true,
@@ -213,6 +216,7 @@ fn validate_webhooks(webhooks: &Vec<WebhookInput>) -> Result<(), validator::Vali
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateApplicationResponse {
     pub application: Application,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -260,58 +264,6 @@ impl ApplicationKeyView {
 /* auth_config.integrity().requires_attestation(Platform::IOS);
 application.integrity().get_app_meta()?; */
 
-#[derive(Debug, Clone, FromRow)]
-pub struct ApplicationWithKeysFromView {
-    pub application_id: Uuid,
-    pub user_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub max_ttl_seconds: i32,
-    pub is_key_rotation_forced: bool,
-    pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub app_meta: Json<AppMetaData>,
-
-    // Publishable keys
-    pub publishable_key_count: i64,
-    pub publishable_keys: Json<Vec<PublishableKey>>,
-
-    // Webhooks
-    pub webhook_count: i64,
-    pub webhooks: Json<Vec<Webhook>>,
-
-    // Client count
-    pub client_count: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ApplicationWithKeysResponse {
-    pub id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub max_ttl_seconds: i32,
-    pub is_key_rotation_forced: bool,
-    pub deletion_requested_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub internal_notes: Option<String>,
-    pub app_meta: serde_json::Value,
-
-    // Publishable keys
-    pub publishable_key_count: i64,
-    pub publishable_keys: Json<Vec<PublishableKey>>,
-
-    // Webhooks
-    pub webhook_count: i64,
-    pub webhooks: Json<Vec<Webhook>>,
-
-    // Client count
-    pub client_count: i64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PublishableKey {
@@ -479,11 +431,12 @@ impl std::str::FromStr for WebhookEventType {
 /// - If `id` is `Some(uuid)`, the existing webhook will be updated.
 /// - Webhooks not included in the update list will be deleted.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[schema(example = json!({
     "id": null,
     "url": "https://example.com/webhooks/vaultless",
-    "event_type": "client.signup",
-    "is_active": true
+    "eventType": "client.signup",
+    "isActive": true
 }))]
 pub struct WebhookInput {
     /// Webhook ID. If provided, updates existing webhook. If null/omitted, creates new webhook.
@@ -506,18 +459,22 @@ fn default_webhook_active() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplicationWithUsage {
     pub application_id: Uuid,
+    #[serde(skip_serializing)]
     pub user_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[schema(value_type = AppMetaData)]
     pub app_meta: Json<AppMetaData>,
 
     // Subscription Pool (Shared)
+    #[serde(skip_serializing)]
     pub subscription_id: Uuid,
     pub tier: Option<String>,
     pub monthly_message_quota: i64,
@@ -525,13 +482,16 @@ pub struct ApplicationWithUsage {
     pub message_retention_seconds: i64,
 
     // Keys
+    #[serde(skip_serializing)]
     pub secret_key_id: Option<Uuid>,
     pub secret_key_prefix: Option<String>,
     pub publishable_key_count: i64,
+    #[schema(value_type = Vec<PublishableKey>)]
     pub publishable_keys: Json<Vec<PublishableKey>>,
 
     // Webhooks & Clients
     pub webhook_count: i64,
+    #[schema(value_type = Vec<Webhook>)]
     pub webhooks: Json<Vec<Webhook>>,
     pub client_count: i64,
 
@@ -544,20 +504,14 @@ pub struct ApplicationWithUsage {
     pub current_month_bytes_received: i64,
     pub current_month_rate_limit_hits: i64,
     pub current_month_cost_cents: i64,
+    #[schema(value_type = f64)]
     pub quota_usage_percentage: Decimal,
 
     // Totals
     pub lifetime_messages_sent: i64,
     pub lifetime_cost_cents: i64,
 }
-#[derive(Debug, Clone, Serialize)]
-pub struct PaginatedApplicationsWithKeys {
-    pub data: Vec<ApplicationWithKeysResponse>,
-    pub total_count: i64,
-    pub page: i64,
-    pub page_size: i64,
-    pub total_pages: i64,
-}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedApplicationKeyView {
@@ -606,6 +560,7 @@ impl From<ApplicationKeyView> for CachedApplicationKeyView {
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct QuotaWarning {
     pub application_id: Uuid,
     pub application_name: String,
@@ -616,6 +571,7 @@ pub struct QuotaWarning {
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserUsageSummary {
     /// Total number of applications owned by the user
     pub total_apps: i32,
@@ -629,44 +585,8 @@ pub struct UserUsageSummary {
     pub critical_quota_apps: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, FromRow, ToSchema)]
-pub struct ApplicationWithKeys {
-    pub application_id: Uuid,
-    #[serde(skip_serializing)]
-    pub user_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub max_ttl_seconds: i32,
-    pub is_key_rotation_forced: bool,
-    pub deletion_requested_at: Option<DateTime<Utc>>,
-    pub internal_notes: Option<String>,
-
-    #[schema(value_type = AppMetaData)]
-    pub app_meta: Json<AppMetaData>,
-
-    #[serde(skip_serializing)]
-    pub secret_key_id: Option<Uuid>,
-
-    // Publishable keys
-    pub publishable_key_count: i64,
-
-    #[schema(value_type = Vec<PublishableKey>)]
-    pub publishable_keys: Json<Vec<PublishableKey>>,
-
-    // Webhooks
-    pub webhook_count: i64,
-
-    #[schema(value_type = Vec<Webhook>)]
-    pub webhooks: Json<Vec<Webhook>>,
-
-    // Client count
-    pub client_count: i64,
-}
-
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PaginatedApplicationsSummary {
     pub data: Vec<ApplicationSummary>,
     pub total_count: i64,
@@ -676,6 +596,7 @@ pub struct PaginatedApplicationsSummary {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplicationSummary {
     pub application_id: Uuid,
     pub name: String,
@@ -694,6 +615,7 @@ pub struct ApplicationSummary {
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PaginatedQuotaWarnings {
     pub data: Vec<QuotaWarning>,
     pub total_count: i64,

@@ -1,6 +1,5 @@
 use super::dto::*;
 use super::integrity::integrity_handler::IntegrityConfigHandler;
-use crate::SubscriptionTier;
 use crate::cache_key;
 use crate::crypto;
 use crate::error::{Result, VaultlessError};
@@ -12,10 +11,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-const PROJECTION: &str = "id, user_id, name, 
-    description, is_active, created_at, 
-    updated_at, max_ttl_seconds, is_key_rotation_forced, 
-    deletion_requested_at, 
+const PROJECTION: &str = "id, user_id, subscription_id, name,
+    description, is_active, created_at,
+    updated_at, max_ttl_seconds, is_key_rotation_forced,
+    deletion_requested_at,
     internal_notes, app_meta";
 
 impl Application {
@@ -66,10 +65,9 @@ impl Application {
         let _created_secret_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
-                user_id: input.user_id,
+                user_id: Some(input.user_id),
                 key_hash: Some(secret_key_hash),
                 key_prefix: secret_key_prefix,
-                tier: Some(SubscriptionTier::Free),
                 description: Some(format!("Secret key for {}", input.name)),
                 scopes: None,
                 expires_at: None,
@@ -89,10 +87,9 @@ impl Application {
         let _created_publishable_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
-                user_id: input.user_id,
+                user_id: Some(input.user_id),
                 key_hash: None,
                 key_prefix: pk_prefix,
-                tier: None,
                 description: Some(format!("Publishable key for {}", input.name)),
                 scopes: None,
                 expires_at: None,

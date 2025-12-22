@@ -47,7 +47,7 @@ impl Application {
         // 1. Verify application exists and belongs to user
         let app = sqlx::query_as::<_, Application>(
             r#"
-            SELECT id, user_id, name, description, is_active, created_at,
+            SELECT id, user_id, subscription_id, name, description, is_active, created_at,
                    updated_at, max_ttl_seconds, is_key_rotation_forced,
                    deletion_requested_at, internal_notes, app_meta
             FROM applications
@@ -71,10 +71,9 @@ impl Application {
         // 2. Find the current active secret key
         let old_key: ApiKey = sqlx::query_as(
             r#"
-            SELECT id, user_id, key_prefix, key_hash, tier, monthly_message_quota,
-                   message_retention_seconds, description, scopes, is_active,
-                   created_at, expires_at, last_used_at, rate_limit_per_minute,
-                   application_id, key_type, publishable_key_plaintext
+            SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
+                   created_at, expires_at, last_used_at, application_id, key_type,
+                   publishable_key_plaintext
             FROM api_keys
             WHERE application_id = $1
               AND key_type = 'secret'
@@ -109,10 +108,9 @@ impl Application {
         let created_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
-                user_id,
+                user_id: Some(user_id),
                 key_hash: Some(new_key_hash),
                 key_prefix: new_key_prefix.clone(),
-                tier: old_key.tier,
                 description: Some(format!("Secret key for {} (rotated)", app.name)),
                 scopes: old_key.scopes.clone(),
                 expires_at: None,
@@ -188,7 +186,7 @@ impl Application {
         // 1. Verify application exists and belongs to user
         let app = sqlx::query_as::<_, Application>(
             r#"
-            SELECT id, user_id, name, description, is_active, created_at,
+            SELECT id, user_id, subscription_id, name, description, is_active, created_at,
                    updated_at, max_ttl_seconds, is_key_rotation_forced,
                    deletion_requested_at, internal_notes, app_meta
             FROM applications
@@ -214,10 +212,9 @@ impl Application {
             // Specific key requested
             sqlx::query_as(
                 r#"
-                SELECT id, user_id, key_prefix, key_hash, tier, monthly_message_quota,
-                       message_retention_seconds, description, scopes, is_active,
-                       created_at, expires_at, last_used_at, rate_limit_per_minute,
-                       application_id, key_type, publishable_key_plaintext
+                SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
+                       created_at, expires_at, last_used_at, application_id, key_type,
+                       publishable_key_plaintext
                 FROM api_keys
                 WHERE id = $1
                   AND application_id = $2
@@ -238,10 +235,9 @@ impl Application {
             // Find the oldest active publishable key
             sqlx::query_as(
                 r#"
-                SELECT id, user_id, key_prefix, key_hash, tier, monthly_message_quota,
-                       message_retention_seconds, description, scopes, is_active,
-                       created_at, expires_at, last_used_at, rate_limit_per_minute,
-                       application_id, key_type, publishable_key_plaintext
+                SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
+                       created_at, expires_at, last_used_at, application_id, key_type,
+                       publishable_key_plaintext
                 FROM api_keys
                 WHERE application_id = $1
                   AND key_type = 'publishable'
@@ -279,10 +275,9 @@ impl Application {
         let created_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
-                user_id,
+                user_id: Some(user_id),
                 key_hash: None,
                 key_prefix: new_key_prefix.clone(),
-                tier: None,
                 description: Some(format!("Publishable key for {} (rotated)", app.name)),
                 scopes: None,
                 expires_at: None,
@@ -357,7 +352,7 @@ impl Application {
         // 1. Verify application exists and belongs to user
         let app = sqlx::query_as::<_, Application>(
             r#"
-            SELECT id, user_id, name, description, is_active, created_at,
+            SELECT id, user_id, subscription_id, name, description, is_active, created_at,
                    updated_at, max_ttl_seconds, is_key_rotation_forced,
                    deletion_requested_at, internal_notes, app_meta
             FROM applications
@@ -405,10 +400,9 @@ impl Application {
         let created_key = ApiKey::create(
             &mut *tx,
             CreateApiKey {
-                user_id,
+                user_id: Some(user_id),
                 key_hash: None,
                 key_prefix: new_key_prefix.clone(),
-                tier: None,
                 description: Some(format!("Publishable key for {} (additional)", app.name)),
                 scopes: None,
                 expires_at: None,
@@ -503,10 +497,9 @@ impl Application {
         // 3. Fetch the key to deactivate (and get plaintext for cache invalidation)
         let key: ApiKey = sqlx::query_as(
             r#"
-            SELECT id, user_id, key_prefix, key_hash, tier, monthly_message_quota,
-                   message_retention_seconds, description, scopes, is_active,
-                   created_at, expires_at, last_used_at, rate_limit_per_minute,
-                   application_id, key_type, publishable_key_plaintext
+            SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
+                   created_at, expires_at, last_used_at, application_id, key_type,
+                   publishable_key_plaintext
             FROM api_keys
             WHERE id = $1
               AND application_id = $2

@@ -4,7 +4,7 @@ use axum::{
 };
 
 use crate::{
-    handlers::developer::{analytics, application, application_dashboard},
+    handlers::developer::{analytics, application},
     middleware::{etag::mv_etag_middleware, global::reject_all_query, user::user_auth},
     state::AppState,
 };
@@ -28,11 +28,11 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
     let mv_cached_no_query_routes = Router::new()
         .route(
             "/{id}/with_keys",
-            get(application::get_application_with_keys_handler),
+            get(application::get_application_with_keys),
         )
         .route(
             "/{id}/analytics",
-            get(application_dashboard::get_application_with_keys_handler),
+            get(application::get_application_analytics),
         )
         .route("/usage-summary", get(application::get_user_usage_summary))
         .layer(middleware::from_fn_with_state(state.clone(), mv_etag_middleware))

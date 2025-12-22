@@ -2,7 +2,6 @@ use super::dto::*;
 use crate::cache_key;
 use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
-use crate::models::ApiKey;
 use crate::models::notification::NotificationEventTracker;
 use crate::models::usage::{
     MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool,

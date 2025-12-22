@@ -105,7 +105,7 @@ pub use models::{
     app_model::{
         dto::{
             Application, ApplicationKeyView, CreateApplication, CreateApplicationResponse,
-            PaginatedApplicationsWithKeys, UpdateApplication,
+            UpdateApplication,
         },
         material_view_helper::get_global_mv_etag,
     },

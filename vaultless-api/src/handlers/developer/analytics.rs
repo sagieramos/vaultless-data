@@ -1,3 +1,11 @@
+//! Analytics handlers for applications.
+//!
+//! Provides endpoints for:
+//! - Quota status monitoring
+//! - Cost breakdown analysis
+//! - Usage trends
+//! - Data export (JSON/CSV)
+
 use crate::{
     middleware::{error::ApiError, user::SessionDataUserExt},
     state::AppState,
@@ -10,7 +18,6 @@ use axum::{
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use hyper::header;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
 use vaultless_core::{models::app_model::dto::*, types::SubscriptionTier};
@@ -20,21 +27,22 @@ use vaultless_core::{models::app_model::dto::*, types::SubscriptionTier};
 // ============================================================================
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TrendsResponse {
     pub daily_average_messages: i64,
-    pub weekly_average_messages: i64,
-    pub growth_percentage_7d: f64,
     pub projected_monthly_cost_cents: i64,
     pub quota_trend: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CostBreakdownResponse {
     pub total_cost_cents: i64,
     pub breakdown: Vec<CostItem>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CostItem {
     pub category: String,
     pub amount_cents: i64,
@@ -42,11 +50,8 @@ pub struct CostItem {
     pub quantity: i64,
 }
 
-fn default_interval() -> String {
-    "day".to_string()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpgradeOption {
     pub tier: String,
     pub monthly_price_cents: Option<i32>,
@@ -61,11 +66,13 @@ pub enum ExportFormat {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportQuery {
     pub format: ExportFormat,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AnalyticsResponse<T: ToSchema> {
     pub success: bool,
     pub data: T,
@@ -74,6 +81,7 @@ pub struct AnalyticsResponse<T: ToSchema> {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct QuotaStatusResponse {
     pub application_id: Uuid,
     pub messages_used: i64,
@@ -93,25 +101,12 @@ pub struct QuotaStatusResponse {
         ("application_id" = Uuid, Path, description = "Application ID")
     ),
     responses(
-        (status = 200, description = "Quota status retrieved successfully", body = QuotaStatusResponse,
-            example = json!({
-                "application_id": "550e8400-e29b-41d4-a716-446655440000",
-                "messages_used": 8500,
-                "messages_limit": 10000,
-                "usage_percentage": 85.0,
-                "is_over_quota": false,
-                "overage_count": 0,
-                "resets_at": "2025-02-01T00:00:00Z",
-                "alert_level": "warning"
-            })
-        ),
+        (status = 200, description = "Quota status retrieved successfully", body = QuotaStatusResponse),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Application not found"),
         (status = 500, description = "Internal server error")
     ),
-    security(
-        ("bearer_auth" = [])
-    ),
+    security(("bearer_auth" = [])),
     tag = "analytics"
 )]
 pub async fn get_application_quota_status(
@@ -119,18 +114,19 @@ pub async fn get_application_quota_status(
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<QuotaStatusResponse>, ApiError> {
-    // Get application with usage data
     let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
 
     // Calculate quota status
-    let usage_percentage = app.quota_usage_percentage;
-    let is_over_quota = app
-        .monthly_message_quota
-        .map(|quota| app.current_month_messages_sent > quota)
-        .unwrap_or(false);
+    let usage_percentage = app
+        .quota_usage_percentage
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or(0.0);
+
+    let is_over_quota = app.current_month_messages_sent > app.monthly_message_quota;
 
     let overage_count = if is_over_quota {
-        app.current_month_messages_sent - app.monthly_message_quota.unwrap_or(0) as i64
+        app.current_month_messages_sent - app.monthly_message_quota
     } else {
         0
     };
@@ -168,7 +164,7 @@ pub async fn get_application_quota_status(
     Ok(Json(QuotaStatusResponse {
         application_id: app.application_id,
         messages_used: app.current_month_messages_sent,
-        messages_limit: app.monthly_message_quota.unwrap_or(0),
+        messages_limit: app.monthly_message_quota,
         usage_percentage,
         is_over_quota,
         overage_count,
@@ -185,24 +181,12 @@ pub async fn get_application_quota_status(
         ("application_id" = Uuid, Path, description = "Application ID")
     ),
     responses(
-        (status = 200, description = "Cost breakdown retrieved successfully", body = CostBreakdownResponse,
-            example = json!({
-                "total_cost_cents": 1250,
-                "breakdown": [
-                    {"category": "Messages", "amount_cents": 850, "unit": "per 1000 messages", "quantity": 85000},
-                    {"category": "Bandwidth", "amount_cents": 200, "unit": "per GB", "quantity": 2},
-                    {"category": "Storage", "amount_cents": 150, "unit": "per GB/month", "quantity": 3},
-                    {"category": "Proofs", "amount_cents": 50, "unit": "per 1000 proofs", "quantity": 10000}
-                ]
-            })
-        ),
+        (status = 200, description = "Cost breakdown retrieved successfully", body = CostBreakdownResponse),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Application not found"),
         (status = 500, description = "Internal server error")
     ),
-    security(
-        ("bearer_auth" = [])
-    ),
+    security(("bearer_auth" = [])),
     tag = "analytics"
 )]
 pub async fn get_application_cost_breakdown(
@@ -266,9 +250,7 @@ pub async fn get_application_cost_breakdown(
         (status = 404, description = "Application not found"),
         (status = 500, description = "Internal server error")
     ),
-    security(
-        ("bearer_auth" = [])
-    ),
+    security(("bearer_auth" = [])),
     tag = "analytics"
 )]
 pub async fn export_application_usage(
@@ -280,7 +262,7 @@ pub async fn export_application_usage(
     let app = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id).await?;
 
     match query.format {
-        ExportFormat::Json => Ok(Json(app).into_response()),
+        ExportFormat::Json => Ok(Json(&app).into_response()),
         ExportFormat::Csv => {
             let csv_data = generate_usage_csv(&app)?;
 
@@ -304,7 +286,7 @@ pub async fn export_application_usage(
     }
 }
 
-/// Get usage trends and growth rates for an application
+/// Get usage trends for an application
 #[utoipa::path(
     get,
     path = "/dev/applications/{application_id}/trends",
@@ -312,22 +294,12 @@ pub async fn export_application_usage(
         ("application_id" = Uuid, Path, description = "Application ID")
     ),
     responses(
-        (status = 200, description = "Trends retrieved successfully", body = TrendsResponse,
-            example = json!({
-                "daily_average_messages": 2833,
-                "weekly_average_messages": 3000,
-                "growth_percentage_7d": 5.9,
-                "projected_monthly_cost_cents": 4500,
-                "quota_trend": "increasing"
-            })
-        ),
+        (status = 200, description = "Trends retrieved successfully", body = TrendsResponse),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Application not found"),
         (status = 500, description = "Internal server error")
     ),
-    security(
-        ("bearer_auth" = [])
-    ),
+    security(("bearer_auth" = [])),
     tag = "analytics"
 )]
 pub async fn get_application_trends(
@@ -337,90 +309,76 @@ pub async fn get_application_trends(
 ) -> Result<Json<TrendsResponse>, ApiError> {
     let app = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id).await?;
 
-    // Calculate trends
-    let daily_average = app.last_30d_messages_sent as f64 / 30.0;
-    let weekly_average = app.last_7d_messages_sent as f64 / 7.0;
-
-    // Simple growth calculation (7d vs previous 7d approximation)
-    // For more accurate, you'd query the previous period from the DB
-    let growth_7d = if app.last_7d_messages_sent > 0 {
-        ((weekly_average - daily_average) / daily_average * 100.0).round()
-    } else {
-        0.0
-    };
-
-    let cost_trend = if app.last_30d_cost_cents > 0 {
-        let daily_cost = app.last_30d_cost_cents as f64 / 30.0;
-        let projected_monthly = daily_cost * 30.0;
-        projected_monthly.round() as i64
+    // Calculate trends based on current month data
+    // Note: For more accurate trends, you'd query from usage_metrics_daily
+    let now = Utc::now();
+    let days_in_month = now.day() as f64;
+    let daily_average = if days_in_month > 0.0 {
+        (app.current_month_messages_sent as f64 / days_in_month).round() as i64
     } else {
         0
     };
 
+    let projected_monthly = daily_average * 30;
+
+    let usage_percentage = app
+        .quota_usage_percentage
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or(0.0);
+
+    let quota_trend = if usage_percentage > 80.0 {
+        "critical"
+    } else if usage_percentage > 50.0 {
+        "increasing"
+    } else {
+        "stable"
+    };
+
     Ok(Json(TrendsResponse {
-        daily_average_messages: daily_average.round() as i64,
-        weekly_average_messages: weekly_average.round() as i64,
-        growth_percentage_7d: growth_7d,
-        projected_monthly_cost_cents: cost_trend,
-        quota_trend: if app.quota_usage_percentage > 0.0 {
-            "increasing".to_string()
-        } else {
-            "stable".to_string()
-        },
+        daily_average_messages: daily_average,
+        projected_monthly_cost_cents: projected_monthly,
+        quota_trend: quota_trend.to_string(),
     }))
 }
 
 // ============================================================================
-// HELPER FUNCTIONS (UNMODIFIED)
+// HELPER FUNCTIONS
 // ============================================================================
 
 fn generate_usage_csv(app: &ApplicationWithUsage) -> Result<String, ApiError> {
-    let mut csv = String::from("metric,current_month,last_7d,last_30d,lifetime\n");
+    let mut csv = String::from("metric,current_month,lifetime\n");
 
     csv.push_str(&format!(
-        "messages_sent,{},{},{},{}\n",
-        app.current_month_messages_sent,
-        app.last_7d_messages_sent,
-        app.last_30d_messages_sent,
-        app.lifetime_messages_sent
+        "messages_sent,{},{}\n",
+        app.current_month_messages_sent, app.lifetime_messages_sent
     ));
 
     csv.push_str(&format!(
-        "messages_received,{},{},{},{}\n",
-        app.current_month_messages_received,
-        0, // Not tracked in 7d
-        0, // Not tracked in 30d
-        app.lifetime_messages_received
+        "messages_received,{},n/a\n",
+        app.current_month_messages_received
     ));
 
     csv.push_str(&format!(
-        "bytes_sent,{},{},{},{}\n",
-        app.current_month_bytes_sent,
-        app.last_7d_bytes_sent,
-        app.last_30d_bytes_sent,
-        app.lifetime_bytes_sent
+        "bytes_sent,{},n/a\n",
+        app.current_month_bytes_sent
     ));
 
     csv.push_str(&format!(
-        "bytes_received,{},{},{},{}\n",
-        app.current_month_bytes_received,
-        app.last_7d_bytes_received,
-        app.last_30d_bytes_received,
-        app.lifetime_bytes_received
+        "bytes_received,{},n/a\n",
+        app.current_month_bytes_received
     ));
 
     csv.push_str(&format!(
-        "cost_cents,{},{},{},{}\n",
-        app.current_month_cost_cents,
-        app.last_7d_cost_cents,
-        app.last_30d_cost_cents,
-        app.lifetime_cost_cents
+        "cost_cents,{},{}\n",
+        app.current_month_cost_cents, app.lifetime_cost_cents
     ));
 
     Ok(csv)
 }
 
 /// Get upgrade recommendations based on current tier
+#[allow(dead_code)]
 fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOption> {
     match current_tier {
         SubscriptionTier::Free => vec![

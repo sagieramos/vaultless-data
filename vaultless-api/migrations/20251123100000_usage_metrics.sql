@@ -56,6 +56,11 @@ CREATE UNIQUE INDEX idx_usage_unique_key_period
 ON usage_metrics(api_key_id, application_id, subscription_id, period_start) 
 WHERE api_key_id IS NOT NULL;
 
+-- App-level usage (publishable / system)
+CREATE UNIQUE INDEX idx_usage_app_period
+ON usage_metrics (application_id, subscription_id, period_start)
+WHERE api_key_id IS NULL;
+
 -- Compression configuration
 -- Segmenting by subscription and application makes cross-app billing queries very fast
 ALTER TABLE usage_metrics SET (
