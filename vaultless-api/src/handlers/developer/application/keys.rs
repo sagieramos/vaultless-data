@@ -22,6 +22,7 @@ use crate::{
 
 /// Response for secret key rotation
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RotateSecretKeyResponse {
     /// The application ID
     #[schema(value_type = String)]
@@ -39,12 +40,22 @@ pub struct RotateSecretKeyResponse {
     #[schema(value_type = String)]
     pub old_key_id: Uuid,
     /// Important message about saving the new key
-    #[schema(example = "IMPORTANT: Save your new secret key now. You won't be able to see it again!")]
+    #[schema(
+        example = "IMPORTANT: Save your new secret key now. You won't be able to see it again!"
+    )]
     pub message: String,
 }
 
 /// Response for publishable key rotation
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "applicationId": "550e8400-e29b-41d4-a716-446655440000",
+    "newPublishableKey": "pk_live_def456uvw789xyz123abc456def789uvw123xyz456abc789def012uvw345",
+    "keyPrefix": "pk_live_def456uvw7",
+    "createdAt": "2025-01-15T10:30:00Z",
+    "oldKeyId": "770e8400-e29b-41d4-a716-446655440002"
+}))]
 pub struct RotatePublishableKeyResponse {
     /// The application ID
     #[schema(value_type = String)]
@@ -65,6 +76,7 @@ pub struct RotatePublishableKeyResponse {
 
 /// Response for adding a publishable key
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AddPublishableKeyResponse {
     /// The application ID
     #[schema(value_type = String)]
@@ -89,10 +101,26 @@ pub struct AddPublishableKeyResponse {
 
 /// Request to rotate a specific publishable key
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "publishableKey": "pk_live_abc123xyz789def456uvw123xyz456abc789def012uvw345xyz678abc901"
+}))]
 pub struct RotatePublishableKeyRequest {
-    /// Optional: specific key ID to rotate. If not provided, rotates the oldest active key.
-    #[schema(value_type = Option<String>)]
-    pub key_id: Option<Uuid>,
+    /// Optional: specific publishable key to rotate. If not provided, rotates the oldest active key.
+    #[schema(example = "pk_live_abc123xyz...")]
+    pub publishable_key: Option<String>,
+}
+
+/// Request to deactivate a specific publishable key
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(example = json!({
+    "publishableKey": "pk_live_abc123xyz789def456uvw123xyz456abc789def012uvw345xyz678abc901"
+}))]
+pub struct DeactivatePublishableKeyRequest {
+    /// The publishable key to deactivate
+    #[schema(example = "pk_live_abc123xyz...")]
+    pub publishable_key: String,
 }
 
 // =============================================================================
@@ -110,11 +138,11 @@ pub struct RotatePublishableKeyRequest {
     responses(
         (status = 200, description = "Secret key rotated successfully", body = RotateSecretKeyResponse,
             example = json!({
-                "application_id": "550e8400-e29b-41d4-a716-446655440000",
-                "new_secret_key": "sk_live_abc123xyz...",
-                "key_prefix": "sk_live_",
-                "created_at": "2025-01-15T10:30:00Z",
-                "old_key_id": "660e8400-e29b-41d4-a716-446655440001",
+                "applicationId": "550e8400-e29b-41d4-a716-446655440000",
+                "newSecretKey": "sk_live_abc123xyz...",
+                "keyPrefix": "sk_live_",
+                "createdAt": "2025-01-15T10:30:00Z",
+                "oldKeyId": "660e8400-e29b-41d4-a716-446655440001",
                 "message": "IMPORTANT: Save your new secret key now. You won't be able to see it again!"
             })
         ),
@@ -132,14 +160,10 @@ pub async fn rotate_secret_key(
     SessionDataUserExt(session): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
 ) -> Result<Json<RotateSecretKeyResponse>, ApiError> {
-    let result = Application::rotate_secret_key(
-        state.db,
-        Some(state.redis_pool),
-        app_id,
-        session.user_id,
-    )
-    .await
-    .map_err(ApiError::from)?;
+    let result =
+        Application::rotate_secret_key(state.db, Some(state.redis_pool), app_id, session.user_id)
+            .await
+            .map_err(ApiError::from)?;
 
     tracing::info!(
         user_id = %session.user_id,
@@ -171,11 +195,11 @@ pub async fn rotate_secret_key(
     responses(
         (status = 200, description = "Publishable key rotated successfully", body = RotatePublishableKeyResponse,
             example = json!({
-                "application_id": "550e8400-e29b-41d4-a716-446655440000",
-                "new_publishable_key": "pk_live_def456uvw...",
-                "key_prefix": "pk_live_def456uvw",
-                "created_at": "2025-01-15T10:30:00Z",
-                "old_key_id": "770e8400-e29b-41d4-a716-446655440002"
+                "applicationId": "550e8400-e29b-41d4-a716-446655440000",
+                "newPublishableKey": "pk_live_def456uvw789xyz123abc456def789uvw123xyz456abc789def012uvw345",
+                "keyPrefix": "pk_live_def456uvw7",
+                "createdAt": "2025-01-15T10:30:00Z",
+                "oldKeyId": "770e8400-e29b-41d4-a716-446655440002"
             })
         ),
         (status = 400, description = "Bad request - application inactive"),
@@ -198,7 +222,7 @@ pub async fn rotate_publishable_key(
         Some(state.redis_pool),
         app_id,
         session.user_id,
-        req.key_id,
+        req.publishable_key.as_deref(),
     )
     .await
     .map_err(ApiError::from)?;
@@ -231,11 +255,11 @@ pub async fn rotate_publishable_key(
     responses(
         (status = 200, description = "Publishable key added successfully", body = AddPublishableKeyResponse,
             example = json!({
-                "application_id": "550e8400-e29b-41d4-a716-446655440000",
-                "new_publishable_key": "pk_live_ghi789rst...",
-                "key_prefix": "pk_live_ghi789rst",
-                "created_at": "2025-01-15T10:30:00Z",
-                "total_active_publishable_keys": 2
+                "applicationId": "550e8400-e29b-41d4-a716-446655440000",
+                "newPublishableKey": "pk_live_ghi789rst...",
+                "keyPrefix": "pk_live_ghi789rst",
+                "createdAt": "2025-01-15T10:30:00Z",
+                "totalActivePublishableKeys": 2
             })
         ),
         (status = 400, description = "Bad request - maximum keys reached or application inactive"),
@@ -283,12 +307,10 @@ pub async fn add_publishable_key(
 /// Deactivates the specified publishable key without creating a new one.
 /// Cannot deactivate the last active publishable key - use rotate instead.
 #[utoipa::path(
-    delete,
-    path = "/dev/applications/{app_id}/keys/publishable/{key_id}",
-    params(
-        ("app_id" = Uuid, Path, description = "Application ID"),
-        ("key_id" = Uuid, Path, description = "Publishable key ID to deactivate")
-    ),
+    post,
+    path = "/dev/applications/{app_id}/keys/publishable/deactivate",
+    params(("app_id" = Uuid, Path, description = "Application ID")),
+    request_body(content = DeactivatePublishableKeyRequest, description = "Publishable key to deactivate"),
     responses(
         (status = 204, description = "Publishable key deactivated successfully"),
         (status = 400, description = "Bad request - cannot deactivate last key"),
@@ -303,14 +325,15 @@ pub async fn add_publishable_key(
 pub async fn deactivate_publishable_key(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
-    Path((app_id, key_id)): Path<(Uuid, Uuid)>,
+    Path(app_id): Path<Uuid>,
+    Json(req): Json<DeactivatePublishableKeyRequest>,
 ) -> Result<StatusCode, ApiError> {
     Application::deactivate_publishable_key(
         state.db,
         Some(state.redis_pool),
         app_id,
         session.user_id,
-        key_id,
+        &req.publishable_key,
     )
     .await
     .map_err(ApiError::from)?;
@@ -318,7 +341,6 @@ pub async fn deactivate_publishable_key(
     tracing::info!(
         user_id = %session.user_id,
         application_id = %app_id,
-        deactivated_key_id = %key_id,
         "Publishable key deactivated"
     );
 

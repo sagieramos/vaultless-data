@@ -170,7 +170,7 @@ impl Application {
     /// * `redis` - Optional Redis pool for cache invalidation
     /// * `app_id` - The application ID
     /// * `user_id` - The user ID (for authorization)
-    /// * `old_key_id` - Optional specific key ID to rotate (deactivates oldest if None)
+    /// * `old_publishable_key` - Optional specific publishable key to rotate (deactivates oldest if None)
     ///
     /// # Returns
     /// * `RotatePublishableKeyResponse` containing the new publishable key
@@ -179,7 +179,7 @@ impl Application {
         redis: Option<Arc<RedisPool>>,
         app_id: Uuid,
         user_id: Uuid,
-        old_key_id: Option<Uuid>,
+        old_publishable_key: Option<&str>,
     ) -> Result<RotatePublishableKeyResponse> {
         let mut tx = db_pool.begin().await?;
 
@@ -208,21 +208,21 @@ impl Application {
         }
 
         // 2. Find the publishable key to deactivate
-        let old_key: ApiKey = if let Some(key_id) = old_key_id {
-            // Specific key requested
+        let old_key: ApiKey = if let Some(pk) = old_publishable_key {
+            // Specific publishable key requested
             sqlx::query_as(
                 r#"
                 SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
                        created_at, expires_at, last_used_at, application_id, key_type,
                        publishable_key_plaintext
                 FROM api_keys
-                WHERE id = $1
+                WHERE publishable_key_plaintext = $1
                   AND application_id = $2
                   AND key_type = 'publishable'
                   AND is_active = true
                 "#,
             )
-            .bind(key_id)
+            .bind(pk)
             .bind(app_id)
             .fetch_optional(&mut *tx)
             .await?
@@ -439,7 +439,7 @@ impl Application {
         })
     }
 
-    /// Deactivate a specific publishable key.
+    /// Deactivate a specific publishable key by its plaintext value.
     ///
     /// This allows selectively removing a publishable key without creating a new one.
     /// Useful when cleaning up old keys after rotation.
@@ -449,7 +449,7 @@ impl Application {
     /// * `redis` - Optional Redis pool for cache invalidation
     /// * `app_id` - The application ID
     /// * `user_id` - The user ID (for authorization)
-    /// * `key_id` - The specific publishable key ID to deactivate
+    /// * `publishable_key` - The publishable key plaintext to deactivate
     ///
     /// # Returns
     /// * `Ok(())` on success
@@ -458,7 +458,7 @@ impl Application {
         redis: Option<Arc<RedisPool>>,
         app_id: Uuid,
         user_id: Uuid,
-        key_id: Uuid,
+        publishable_key: &str,
     ) -> Result<()> {
         let mut tx = db_pool.begin().await?;
 
@@ -494,20 +494,20 @@ impl Application {
             ));
         }
 
-        // 3. Fetch the key to deactivate (and get plaintext for cache invalidation)
+        // 3. Fetch the key to deactivate by publishable_key_plaintext
         let key: ApiKey = sqlx::query_as(
             r#"
             SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
                    created_at, expires_at, last_used_at, application_id, key_type,
                    publishable_key_plaintext
             FROM api_keys
-            WHERE id = $1
+            WHERE publishable_key_plaintext = $1
               AND application_id = $2
               AND key_type = 'publishable'
               AND is_active = true
             "#,
         )
-        .bind(key_id)
+        .bind(publishable_key)
         .bind(app_id)
         .fetch_optional(&mut *tx)
         .await?
@@ -525,7 +525,7 @@ impl Application {
             WHERE id = $1
             "#,
         )
-        .bind(key_id)
+        .bind(key.id)
         .execute(&mut *tx)
         .await?;
 
@@ -534,13 +534,11 @@ impl Application {
 
         // 6. Invalidate cache (background task)
         if let Some(redis_pool) = redis.clone() {
-            let pk_plaintext = key.publishable_key_plaintext.clone();
+            let pk_plaintext = publishable_key.to_string();
             tokio::spawn(async move {
-                if let Some(pk) = pk_plaintext {
-                    if let Ok(mut conn) = redis_pool.get().await {
-                        let cache_key = publishable_key_resolution_cache_key(&pk);
-                        let _: std::result::Result<(), _> = conn.del(&cache_key).await;
-                    }
+                if let Ok(mut conn) = redis_pool.get().await {
+                    let cache_key = publishable_key_resolution_cache_key(&pk_plaintext);
+                    let _: std::result::Result<(), _> = conn.del(&cache_key).await;
                 }
             });
         }
@@ -552,7 +550,7 @@ impl Application {
 
         tracing::info!(
             application_id = %app_id,
-            deactivated_key_id = %key_id,
+            deactivated_key_id = %key.id,
             "Publishable key deactivated"
         );
 

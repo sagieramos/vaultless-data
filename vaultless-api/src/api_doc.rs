@@ -95,6 +95,7 @@ use utoipa::openapi::security::SecurityScheme;
             crate::handlers::developer::application::keys::RotateSecretKeyResponse,
             crate::handlers::developer::application::keys::RotatePublishableKeyResponse,
             crate::handlers::developer::application::keys::RotatePublishableKeyRequest,
+            crate::handlers::developer::application::keys::DeactivatePublishableKeyRequest,
             crate::handlers::developer::application::keys::AddPublishableKeyResponse,
             vaultless_core::models::app_model::dto::PaginatedApplicationsSummary,
             vaultless_core::models::app_model::dto::ApplicationSummary,

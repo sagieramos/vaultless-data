@@ -67,8 +67,8 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
             post(application::add_publishable_key),
         )
         .route(
-            "/{id}/keys/publishable/{key_id}",
-            delete(application::deactivate_publishable_key),
+            "/{id}/keys/publishable/deactivate",
+            post(application::deactivate_publishable_key),
         )
         .layer(middleware::from_fn(reject_all_query))
         .layer(middleware::from_fn_with_state(state.clone(), user_auth));

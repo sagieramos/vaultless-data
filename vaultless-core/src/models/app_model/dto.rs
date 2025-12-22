@@ -266,6 +266,7 @@ application.integrity().get_app_meta()?; */
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PublishableKey {
     pub id: Uuid,
     pub key_prefix: String,
@@ -279,6 +280,7 @@ pub struct PublishableKey {
 
 /// Webhook response object returned from the API
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Webhook {
     pub id: Uuid,
     pub url: String,
