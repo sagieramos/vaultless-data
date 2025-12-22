@@ -42,6 +42,7 @@ pub struct LoginRequest {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -51,6 +52,7 @@ pub struct LoginResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserInfo {
     pub email: String,
     pub name: Option<String>,
@@ -63,11 +65,13 @@ pub struct UserInfo {
 // ============================================================================
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RefreshTokenResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -112,6 +116,7 @@ pub struct RequestPasswordResetResponse {
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ResetPasswordRequest {
     pub token: String,
 
@@ -148,6 +153,7 @@ pub struct CurrentUserResponse {
 
 /// Query parameters for initiating Google OAuth flow
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleAuthQuery {
     /// Optional URL to redirect to after successful authentication
     pub redirect_after: Option<String>,
@@ -155,6 +161,7 @@ pub struct GoogleAuthQuery {
 
 /// Response when initiating Google OAuth flow
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleAuthInitResponse {
     /// URL to redirect the user to for Google authentication
     pub auth_url: String,
@@ -164,6 +171,7 @@ pub struct GoogleAuthInitResponse {
 
 /// Query parameters received in Google OAuth callback
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleCallbackQuery {
     /// Authorization code from Google (exchanged for tokens)
     pub code: String,
@@ -177,6 +185,7 @@ pub struct GoogleCallbackQuery {
 
 /// Response from successful Google OAuth callback
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleAuthResponse {
     /// JWT access token for API authentication
     pub access_token: String,
@@ -196,6 +205,7 @@ pub struct GoogleAuthResponse {
 
 /// Google user profile information (returned for debugging/linking)
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleUserProfile {
     /// Google's unique user identifier
     pub google_id: String,
@@ -220,6 +230,7 @@ pub struct LinkGoogleAccountRequest {
 
 /// Response after linking Google account
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LinkGoogleAccountResponse {
     pub message: String,
     pub google_profile: GoogleUserProfile,
@@ -227,6 +238,7 @@ pub struct LinkGoogleAccountResponse {
 
 /// Error response for OAuth failures
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleAuthError {
     pub error: String,
     pub error_description: Option<String>,
