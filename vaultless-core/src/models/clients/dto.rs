@@ -25,7 +25,7 @@ pub const MINIMAL_CLIENT_FIELDS: &str = "
     id,
     identifier,
     client_identifier_hash,
-    public_key,
+    signing_key,
     last_jti,
     allow_anonymous_messages,
     require_proof_verification,
@@ -50,7 +50,7 @@ pub struct Client {
     #[serde(skip_serializing)]
     pub client_identifier_hash: Option<String>,
 
-    pub public_key: Option<String>,
+    pub signing_key: Option<String>,  // ADD: Ed25519
 
     /// Stores the JTI (Unique Token ID) of the last issued PASETO token.
     /// Used to revoke the previous session when a new one is created.
@@ -91,8 +91,9 @@ pub struct SignupClientRequest {
     #[validate(length(min = 32, max = 1024))]
     pub client_identifier: Option<String>,
 
+    /// Ed25519 public key for signature verification (base64-encoded, 32 bytes)
     #[validate(length(min = 32, max = 1024))]
-    pub public_key: String,
+    pub signing_key: String,
 
     #[validate(length(min = 3, max = 64))]
     pub identifier: Option<String>,
@@ -100,6 +101,7 @@ pub struct SignupClientRequest {
     #[validate(length(min = 32, max = 64))]
     pub challenge: String,
 
+    /// Challenge signed with Ed25519 private key
     pub challenge_signed: String,
 
     pub platform_data: PlatformIntegrityData,
@@ -122,13 +124,13 @@ pub struct LoginClientRequest {
     /// One of these three identifiers must be provided
     pub client_identifier_hash: Option<String>,
     pub identifier: Option<String>,
-    pub public_key: Option<String>,
+    pub signing_key: Option<String>,  // Ed25519 public key for lookup
 
     /// The original Base64-encoded challenge string received from the server
     #[validate(length(min = 32))]
     pub challenge: String,
 
-    /// The Base64-encoded signature of the `challenge`
+    /// The Base64-encoded signature of the `challenge` (signed with Ed25519 private key)
     #[validate(length(min = 32))]
     pub challenge_signature: String,
 
@@ -192,10 +194,10 @@ impl Client {
                 .arg(ttl_secs)
                 .arg(&serialized);
 
-            // Alias: public_key
-            if let Some(ref pk) = client.public_key {
+            // Alias: signing_key
+            if let Some(ref sk) = client.signing_key {
                 pipe.cmd("SETEX")
-                    .arg(cache_key!("client", "alias", "public_key", pk))
+                    .arg(cache_key!("client", "alias", "signing_key", sk))
                     .arg(ttl_secs)
                     .arg(client.id.to_string());
             }
@@ -231,13 +233,13 @@ impl Client {
         Ok(())
     }
 
-    /// Verify a signature using the client's public key
+    /// Verify a signature using the client's Ed25519 signing key
     pub fn verify_signature(&self, message: &str, signature: &str) -> Result<bool> {
-        let public_key = self.public_key.as_ref().ok_or_else(|| {
-            VaultlessError::Validation("Client does not have a public key".into())
+        let signing_key = self.signing_key.as_ref().ok_or_else(|| {
+            VaultlessError::Validation("Client does not have a signing key".into())
         })?;
 
-        crate::crypto::verify_signature(message.as_bytes(), signature, public_key)
+        crate::crypto::verify_signature(message.as_bytes(), signature, signing_key)
             .map(|_| true)
             .or_else(|_| Ok(false))
     }

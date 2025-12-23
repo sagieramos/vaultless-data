@@ -34,10 +34,10 @@ impl Client {
         // Step 1: Verify challenge
         Self::verify_and_consume_challenge(&redis, &input.challenge).await?;
 
-        // Step 2: Verify challenge signature
-        let public_key = input.public_key.clone();
+        // Step 2: Verify challenge signature using Ed25519 signing key
+        let signing_key = input.signing_key.clone();
         Self::verify_signup_challenge_signature(
-            &public_key,
+            &signing_key,
             &input.challenge,
             &input.challenge_signed,
         )?;
@@ -92,7 +92,7 @@ impl Client {
         .bind(client_id)
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
-        .bind(&input.public_key)
+        .bind(&input.signing_key)    // Ed25519 public key
         .bind(&None::<String>) // last_jti starts as None
         .bind(false) // allow_anonymous_messages
         .bind(false) // require_proof_verification
@@ -122,7 +122,7 @@ impl Client {
                 .get(input.platform_data.platform()),
             app_tier: Some(app_resolved.sub_tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
-            pubkey: Some(input.public_key.clone()),
+            pubkey: Some(input.signing_key.clone()),  // Store signing key in session
         };
 
         let session_token =
@@ -175,10 +175,10 @@ impl Client {
         // Step 1: Verify challenge
         Self::verify_and_consume_challenge(&redis, &input.challenge).await?;
 
-        // Step 2: Verify challenge signature
-        let public_key = input.public_key.clone();
+        // Step 2: Verify challenge signature using Ed25519 signing key
+        let signing_key = input.signing_key.clone();
         Self::verify_signup_challenge_signature(
-            &public_key,
+            &signing_key,
             &input.challenge,
             &input.challenge_signed,
         )?;
@@ -233,7 +233,7 @@ impl Client {
         .bind(client_id)
         .bind(&input.identifier)
         .bind(&client_identifier_hash)
-        .bind(&input.public_key)
+        .bind(&input.signing_key)    // Ed25519 public key
         .bind(&None::<String>) // last_jti starts as None
         .bind(false) // allow_anonymous_messages
         .bind(false) // require_proof_verification
@@ -263,7 +263,7 @@ impl Client {
                 .get(detected_platform),
             app_tier: Some(app_resolved.sub_tier.to_string()),
             application_secret_api_key_id: Some(app_resolved.sk_id),
-            pubkey: Some(input.public_key.clone()),
+            pubkey: Some(input.signing_key.clone()),  // Store signing key in session
         };
 
         let session_token =
@@ -300,14 +300,14 @@ impl Client {
         })
     }
 
-    /// Verify the signup challenge signature
+    /// Verify the signup challenge signature using Ed25519
     fn verify_signup_challenge_signature(
-        public_key: &str,
+        signing_key: &str,
         challenge: &str,
         challenge_signature: &str,
     ) -> Result<()> {
         let is_valid =
-            crate::crypto::verify_signature(challenge.as_bytes(), challenge_signature, public_key)
+            crate::crypto::verify_signature(challenge.as_bytes(), challenge_signature, signing_key)
                 .is_ok();
         if !is_valid {
             return Err(VaultlessError::Unauthorized(

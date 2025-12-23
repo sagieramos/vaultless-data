@@ -4,7 +4,7 @@ use super::dto::*;
 use super::helper::*;
 use crate::crypto::verify_signature;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::increment_proof_verified_pool;
+use crate::models::usage::{record_proof_verified, RecordProofVerifiedInput};
 use chrono::Utc;
 use redis::AsyncCommands;
 use std::sync::atomic::Ordering;
@@ -121,10 +121,14 @@ impl InstantMessage {
         match serde_json::to_vec(&envelope) {
             Ok(bytes) => match verify_signature(&bytes, signature_str, &msg.envelope_public_key) {
                 Ok(()) => {
-                    if let Err(e) = increment_proof_verified_pool(
+                    if let Err(e) = record_proof_verified(
                         &self.redis_pool,
-                        msg.application_id,
-                        &self.config,
+                        RecordProofVerifiedInput::new(
+                            msg.id,
+                            msg.application_id,
+                            String::new(), // Empty session_id for app-only metrics
+                        ),
+                        None,
                     )
                     .await
                     {

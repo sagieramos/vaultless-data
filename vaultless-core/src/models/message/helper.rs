@@ -2,7 +2,7 @@ use super::dto::*;
 use crate::cache_key;
 use crate::crypto::verify_signature;
 use crate::error::Result;
-use crate::models::usage::{MetricsConfig, increment_proof_verified_pool};
+use crate::models::usage::{MetricsConfig, record_proof_verified, RecordProofVerifiedInput};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use redis::RedisResult;
@@ -89,12 +89,44 @@ pub const IOT_COMMAND_TTL_SECS: u64 = 60; // Commands expire after 1 min if not 
 // =============================================================================
 // Static soft verify (for parallel fallback) - conditional on require_proof_verification
 // =============================================================================
+/// Static envelope verification without metrics recording.
+/// Used when metrics will be recorded later in Lua script.
+pub fn verify_envelope_without_metrics(msg: &Message) -> bool {
+    // Check if verification is required
+    let Some(signature_str) = msg.signature.as_deref() else {
+        error!("Message signature is missing but required for verification.");
+        return false;
+    };
+    if !msg.require_proof_verification || signature_str.is_empty() {
+        return true;
+    }
+
+    // Build the envelope struct for serialization
+    let envelope = Envelope {
+        id: &msg.id,
+        sender_client_id: &msg.sender_client_id,
+        recipient_client_id: &msg.recipient_client_id,
+        application_id: &msg.application_id,
+        is_group_message: msg.is_group_message,
+        content_size_bytes: msg.content_size_bytes as i64,
+        created_at: &msg.created_at,
+        require_proof_verification: msg.require_proof_verification,
+    };
+
+    // Serialize and verify the signature
+    if let Ok(bytes) = serde_json::to_vec(&envelope) {
+        verify_signature(&bytes, signature_str, &msg.envelope_public_key).is_ok()
+    } else {
+        false
+    }
+}
+
 /// Static envelope verification for SQL fallback (no self access).
 /// NOTE: This is an async function to allow for the metrics increment call.
 pub async fn verify_envelope_soft_static(
     msg: &Message,
     redis_pool: &RedisPool, // Passed in for metrics connection
-    config: &MetricsConfig, // Passed in for metrics configuration
+    _config: &MetricsConfig, // Passed in for metrics configuration
 ) -> bool {
     // 1. Check if verification is required
     let Some(signature_str) = msg.signature.as_deref() else {
@@ -120,7 +152,16 @@ pub async fn verify_envelope_soft_static(
         if verify_signature(&bytes, signature_str, &msg.envelope_public_key).is_ok() {
             // Signature SUCCESSFUL. Call the proof verified metrics function.
             if let Err(e) =
-                increment_proof_verified_pool(redis_pool, msg.application_id, config).await
+                record_proof_verified(
+                    redis_pool,
+                    RecordProofVerifiedInput::new(
+                        msg.id,
+                        msg.application_id,
+                        String::new(), // Empty session_id for app-only metrics
+                    ),
+                    None,
+                )
+                .await
             {
                 // Log the metrics failure, but the core verification is still valid.
                 error!(

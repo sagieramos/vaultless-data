@@ -198,8 +198,8 @@ impl Client {
             keys_to_delete.push(cache_key!("client", "id", client.id));
 
             // Alias keys (if they exist)
-            if let Some(ref pk) = client.public_key {
-                keys_to_delete.push(cache_key!("client", "alias", "public_key", pk));
+            if let Some(ref sk) = client.signing_key {
+                keys_to_delete.push(cache_key!("client", "alias", "signing_key", sk));
             }
             if let Some(ref idf) = client.identifier {
                 keys_to_delete.push(cache_key!("client", "alias", "identifier", idf));
@@ -266,8 +266,8 @@ impl Client {
             keys_to_delete.push(cache_key!("client", "id", client.id));
 
             // Alias keys (if they exist)
-            if let Some(ref pk) = client.public_key {
-                keys_to_delete.push(cache_key!("client", "alias", "public_key", pk));
+            if let Some(ref sk) = client.signing_key {
+                keys_to_delete.push(cache_key!("client", "alias", "signing_key", sk));
             }
             if let Some(ref idf) = client.identifier {
                 keys_to_delete.push(cache_key!("client", "alias", "identifier", idf));
@@ -321,16 +321,16 @@ impl Client {
     pub async fn resolve_client<'c, E>(
         exec: E,
         redis: Option<Arc<RedisPool>>,
-        public_key: Option<&str>,
+        signing_key: Option<&str>,
         identifier: Option<&str>,
         client_identifier: Option<&str>,
     ) -> Result<Option<Client>>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        if public_key.is_none() && identifier.is_none() && client_identifier.is_none() {
+        if signing_key.is_none() && identifier.is_none() && client_identifier.is_none() {
             return Err(VaultlessError::Validation(
-                "At least one of public_key, identifier, or client_identifier must be provided"
+                "At least one of signing_key, identifier, or client_identifier must be provided"
                     .into(),
             ));
         }
@@ -342,7 +342,7 @@ impl Client {
         if let Some(redis_pool) = &redis {
             let mut conn = redis_pool.get().await?;
             let alias_keys = vec![
-                public_key.map(|pk| cache_key!("client", "alias", "public_key", pk)),
+                signing_key.map(|sk| cache_key!("client", "alias", "signing_key", sk)),
                 identifier.map(|idf| cache_key!("client", "alias", "identifier", idf)),
                 client_identifier_hash
                     .as_ref()
@@ -368,12 +368,12 @@ impl Client {
         }
 
         // --- 2. Database Lookup (minimal fields) ---
-        let client = if let Some(pk) = public_key {
+        let client = if let Some(sk) = signing_key {
             sqlx::query_as::<_, Client>(&format!(
-                "SELECT {} FROM clients WHERE public_key = $1 AND is_active = TRUE",
+                "SELECT {} FROM clients WHERE signing_key = $1 AND is_active = TRUE",
                 MINIMAL_CLIENT_FIELDS
             ))
-            .bind(pk)
+            .bind(sk)
             .fetch_optional(exec)
             .await?
         } else if let Some(idf) = identifier {

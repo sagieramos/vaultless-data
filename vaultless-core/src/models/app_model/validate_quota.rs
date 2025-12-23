@@ -4,7 +4,7 @@ use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
 use crate::models::notification::NotificationEventTracker;
 use crate::models::usage::{
-    MetricGranularity, MetricKey, MetricsConfig, increment_rate_limit_hit_pool,
+    MetricGranularity, MetricKey, record_rate_limit_hit, RecordRateLimitHitInput,
 };
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
@@ -68,13 +68,18 @@ impl ApplicationKeyView {
         // 2. Validate Rate Limit (Specific to this API Key)
         if current_min_total >= self.sub_rate_limit_per_minute as i64 {
             let sk_id = self.sk_id;
+            let app_id = self.app_id;
             let pool_clone = redis_pool.clone();
 
             tokio::spawn(async move {
                 // Increment rate limit hit metrics for this specific key
                 let _ =
-                    increment_rate_limit_hit_pool(&pool_clone, sk_id, &MetricsConfig::default())
-                        .await;
+                    record_rate_limit_hit(
+                        &pool_clone,
+                        RecordRateLimitHitInput::new(uuid::Uuid::new_v4(), app_id),
+                        None,
+                    )
+                    .await;
 
                 let _ =
                     NotificationEventTracker::increment_rate_limit_hits(&pool_clone, sk_id).await;

@@ -129,7 +129,7 @@ pub use models::{
     usage::{
         DailyUsageSummary, FlusherMetrics, MetricCounters, MetricsConfig, MonthlyTotal,
         UsageTrends, get_aggregate_by_application_id, get_realtime_usage, get_usage_trends,
-        increment_rate_limit_hit_pool, start_redis_flusher,
+        record_rate_limit_hit, RecordRateLimitHitInput, start_redis_flusher,
     },
 };
 

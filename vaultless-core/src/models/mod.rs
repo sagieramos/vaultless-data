@@ -7,6 +7,7 @@ pub mod message;
 pub mod notification;
 pub mod proof;
 pub mod session;
+pub mod session_keys;
 pub mod usage;
 pub mod user;
 pub mod webhook;
@@ -26,5 +27,6 @@ pub use notification::{
     UpdateNotification, start_notification_job,
 };
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
+pub use session_keys::{CreateSessionKeyRequest, SessionKey};
 pub use usage::*;
 pub use user::{LoginAttempt, RefreshToken, User, UserSession};

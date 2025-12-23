@@ -169,16 +169,16 @@ impl Client {
             .bind(idf)
             .fetch_optional(exec)
             .await?
-        } else if let Some(ref pk) = input.public_key {
+        } else if let Some(ref sk) = input.signing_key {
             sqlx::query_as::<_, Client>(
-                "SELECT * FROM clients WHERE public_key = $1 AND is_active = TRUE",
+                "SELECT * FROM clients WHERE signing_key = $1 AND is_active = TRUE",
             )
-            .bind(pk)
+            .bind(sk)
             .fetch_optional(exec)
             .await?
         } else {
             return Err(VaultlessError::Validation(
-                "Provide at least one of client_identifier_hash, identifier, or public_key".into(),
+                "Provide at least one of client_identifier_hash, identifier, or signing_key".into(),
             ));
         };
 

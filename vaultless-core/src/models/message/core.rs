@@ -4,7 +4,7 @@ use super::dto::*;
 use super::helper::*;
 use crate::circuit_breaker::CircuitBreaker;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::{increment_message_received_pool, MetricsConfig};
+use crate::models::usage::{record_message_received, RecordMessageReceivedInput, MetricsConfig};
 use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -88,11 +88,15 @@ impl InstantMessage {
         const BASE_DELAY_MS: u64 = 50;
 
         for attempt in 0..MAX_RETRIES {
-            match increment_message_received_pool(
+            match record_message_received(
                 &self.redis_pool,
-                application_id,
-                bytes,
-                &self.config,
+                RecordMessageReceivedInput::new(
+                    Uuid::new_v4(), // Use a placeholder message_id for rate limit tracking
+                    application_id,
+                    String::new(), // Empty session_id for app-only metrics
+                    bytes,
+                ),
+                None,
             )
             .await
             {

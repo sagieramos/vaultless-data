@@ -246,16 +246,11 @@ Safe: device type, app version, locale, preferences.
 Forbidden: names, emails, phone numbers, addresses.';
 COMMENT ON COLUMN clients.last_seen_at IS 'Privacy-preserving activity tracking. No correlation with identity.';
 COMMENT ON FUNCTION get_or_create_client IS 'Idempotent client registration. Returns existing client or creates new one.';
-COMMENT ON FUNCTION cleanup_expired_sessions IS 'Scheduled cleanup job. Remove sessions expired for 7+ days.';
 COMMENT ON FUNCTION deactivate_inactive_clients IS 'Optional GDPR compliance. Deactivate clients inactive for N days.';
 
 -- ============================================================================
 -- SCHEDULED CLEANUP (PostgreSQL pg_cron extension)
 -- ============================================================================
-
--- If you have pg_cron installed:
--- SELECT cron.schedule('cleanup-expired-sessions', '0 2 * * *', 
---   'SELECT cleanup_expired_sessions();');
 
 -- SELECT cron.schedule('deactivate-inactive-clients', '0 3 * * 0', 
 --   'SELECT deactivate_inactive_clients(90);');

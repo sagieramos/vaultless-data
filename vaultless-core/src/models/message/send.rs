@@ -1,19 +1,43 @@
-//! Message sending implementation.
+//! Message sending implementation using atomic Lua script.
 
 use super::dto::*;
 use super::helper::*;
+use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::increment_message_sent_pool;
 use chrono::{Duration as ChronoDuration, Utc};
-use redis::AsyncCommands;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+/// Default monthly message quota (100,000 messages per month)
+const DEFAULT_MONTHLY_QUOTA: i64 = 100_000;
+
+/// Lua script for atomic message sending (with optional proof verification)
+const SEND_MESSAGE_LUA: &str = include_str!("../../scripts/send_message_v1.lua");
+
+/// Message send result from Lua script
+#[derive(Debug, Clone)]
+pub struct SendMessageResult {
+    pub status: String,       // "OK", "QUOTA_EXCEEDED", "DUPLICATE", "ERROR"
+    pub counted: i64,         // 1 if counted, 0 if duplicate
+    pub remaining_quota: i64, // Remaining monthly quota
+    pub error_details: Option<String>,
+}
+
 impl InstantMessage {
-    /// Sends a P2P instant message, caches in Redis, queues for DB flush, and increments sent metrics.
+    /// Sends a P2P instant message atomically via Lua script.
+    ///
+    /// This method performs all critical operations in a single Redis round-trip:
+    /// 1. Signature verification (no Redis)
+    /// 2. Idempotency check (prevents duplicate sending)
+    /// 3. Monthly quota check and increment
+    /// 4. Session metrics increment (including proof verified if applicable)
+    /// 5. Message caching
+    /// 6. Recipient inbox enqueue
+    ///
+    /// Returns immediately on duplicate detection without state changes.
     pub async fn send_instant_message(
         &self,
         sender_client_id: Uuid,
@@ -22,11 +46,12 @@ impl InstantMessage {
         nonce: Uuid,
         content_size_bytes: i64,
         application_id: Uuid,
+        session_id: String,
         signature: Option<String>,
         envelope_public_key: String,
         require_proof_verification: bool,
     ) -> Result<Uuid> {
-        // Create message
+        // Create message ID first for idempotency
         let msg_id = Uuid::new_v4();
         let created_at = Utc::now();
         let expires_at = created_at + ChronoDuration::days(DEFAULT_MESSAGE_EXPIRY_DAYS);
@@ -55,123 +80,73 @@ impl InstantMessage {
             file_id: None,
         };
 
-        // Verify signature BEFORE any state changes
-        if !self.verify_envelope_soft(&msg).await {
+        // Verify signature (no Redis call - proof recorded in Lua script later)
+        let proof_verified = verify_envelope_without_metrics(&msg);
+        if !proof_verified {
             return Err(VaultlessError::SignatureVerificationFailed(format!(
                 "Message {} failed signature verification",
                 msg_id
             )));
         }
 
-        // Increment sent metrics with atomic check
-        let mut conn = self.redis_pool.get().await?;
-        let counted_key = instant_sent_counted_key(msg_id);
+        // Execute atomic Lua script (includes proof verified and rate limit check)
+        let result = self.execute_send_message(&msg, &session_id, proof_verified, 60).await?;
 
-        let counted: bool = redis::cmd("SET")
-            .arg(&counted_key)
-            .arg("1")
-            .arg("NX")
-            .arg("EX")
-            .arg(SENT_COUNTED_TTL_SECS)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or(false);
-
-        if counted {
-            // Make metrics increment critical - retry on failure
-            let mut retries = 3;
-            let mut last_error = None;
-
-            while retries > 0 {
-                match increment_message_sent_pool(
-                    &self.redis_pool,
-                    msg.application_id,
-                    msg.content_size_bytes as i64,
-                    &self.config,
-                )
-                .await
-                {
-                    Ok(_) => break,
-                    Err(e) => {
-                        last_error = Some(e);
-                        retries -= 1;
-                        if retries > 0 {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    }
-                }
+        // Handle result
+        match result.status.as_str() {
+            "OK" => {
+                debug!(
+                    msg_id = %msg_id,
+                    remaining_quota = result.remaining_quota,
+                    "Message sent successfully"
+                );
             }
-
-            if retries == 0 {
+            "DUPLICATE" => {
+                debug!(msg_id = %msg_id, "Message already sent (duplicate)");
+                // Return the existing message ID - idempotent success
+                return Ok(msg_id);
+            }
+            "QUOTA_EXCEEDED" => {
                 error!(
                     msg_id = %msg_id,
-                    application_id = %msg.application_id,
-                    error = ?last_error,
-                    "CRITICAL: Metrics increment failed after retries - billing affected"
+                    application_id = %application_id,
+                    "Monthly quota exceeded"
                 );
-                return Err(VaultlessError::MetricsIncrementFailed(
-                    "Failed to increment sent metrics after retries".into(),
+                return Err(VaultlessError::QuotaExceeded(
+                    result.error_details.unwrap_or_else(|| "Monthly quota limit reached".into()),
                 ));
             }
-        }
-
-        // Cache in Redis + queue to flusher
-        let redis_key = instant_message_key(msg_id);
-        let data = serde_json::to_string(&msg)?;
-        let _: () = conn.set_ex(&redis_key, data, CACHE_TTL_SECS).await?;
-
-        let queue_key = instant_inbox_key(recipient_client_id);
-        let _: () = conn.rpush(&queue_key, msg_id.to_string()).await?;
-        let _: () = conn.ltrim(&queue_key, 0, MAX_QUEUE_LEN).await?;
-
-        // Handle backpressure with better error propagation
-        match self.sender.try_send(msg.clone()) {
-            Ok(_) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!(
+            "RATE_LIMIT_EXCEEDED" => {
+                error!(
                     msg_id = %msg_id,
-                    "Flusher channel full; attempting emergency write"
+                    "Per-minute rate limit exceeded"
                 );
-
-                // Use a oneshot channel to get result back
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let db_pool = Arc::clone(&self.db_pool);
-                let msg_clone = msg.clone();
-
-                tokio::spawn(async move {
-                    let result = emergency_write_message(&db_pool, &msg_clone).await;
-                    let _ = tx.send(result);
-                });
-
-                // Wait with timeout
-                match tokio::time::timeout(Duration::from_secs(5), rx).await {
-                    Ok(Ok(Ok(_))) => {
-                        info!(msg_id = %msg_id, "Emergency write succeeded");
-                    }
-                    Ok(Ok(Err(e))) => {
-                        error!(
-                            msg_id = %msg_id,
-                            error = %e,
-                            "Emergency write failed - message may be lost"
-                        );
-                        return Err(VaultlessError::Internal("Emergency write failed".into()));
-                    }
-                    Ok(Err(_)) => {
-                        error!(msg_id = %msg_id, "Emergency write channel dropped");
-                        return Err(VaultlessError::Internal(
-                            "Emergency write channel error".into(),
-                        ));
-                    }
-                    Err(_) => {
-                        error!(msg_id = %msg_id, "Emergency write timeout");
-                        return Err(VaultlessError::Internal("Emergency write timeout".into()));
-                    }
-                }
+                return Err(VaultlessError::RateLimitExceeded(
+                    result.error_details.unwrap_or_else(|| "Per-minute rate limit exceeded".into()),
+                ));
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                return Err(VaultlessError::Internal("Flusher channel closed".into()));
+            "ERROR" => {
+                error!(
+                    msg_id = %msg_id,
+                    error = ?result.error_details,
+                    "Redis error during message send"
+                );
+                return Err(VaultlessError::Internal(
+                    result.error_details.unwrap_or_else(|| "Redis operation failed".into()),
+                ));
             }
-        }
+            _ => {
+                error!(msg_id = %msg_id, status = %result.status, "Unknown send status");
+                return Err(VaultlessError::Internal(format!(
+                    "Unknown send status: {}",
+                    result.status
+                )));
+            }
+        };
+
+        // Non-critical path: queue for database flush
+        // If this fails, message is still in Redis cache
+        self.queue_for_persistence(&msg).await;
 
         info!(
             msg_id = %msg_id,
@@ -183,4 +158,169 @@ impl InstantMessage {
 
         Ok(msg_id)
     }
+
+    /// Executes the atomic send message Lua script
+    async fn execute_send_message(
+        &self,
+        msg: &Message,
+        session_id: &str,
+        proof_verified: bool,
+        rate_limit_per_minute: i64,
+    ) -> Result<SendMessageResult> {
+        let mut conn = self.redis_pool.get().await?;
+
+        // Generate Redis keys
+        let monthly_quota_key = cache_key!("quota", "app", msg.application_id, "monthly");
+        let minute_window = crate::models::usage::get_minute_window(&chrono::Utc::now());
+        let minute_key = minute_window.format("%Y_%m_%d_%H_%M").to_string();
+        let rate_limit_key = cache_key!("metric", "key", msg.sender_client_id, "minute", minute_key);
+        let session_sent_key = cache_key!("metric", "session", session_id, "sent");
+        let session_bytes_key = cache_key!("metric", "session", session_id, "bytes_sent");
+        let session_proved_key = cache_key!("metric", "session", session_id, "proved");
+        let idempotency_key = cache_key!("counted", "msg", msg.id);
+        let message_cache_key = cache_key!("instant_message", "message", msg.id);
+        let inbox_queue_key = cache_key!("instant_message", "inbox", msg.recipient_client_id);
+
+        // Serialize message
+        let message_json = serde_json::to_string(msg)
+            .map_err(|e| VaultlessError::Internal(format!("Failed to serialize message: {}", e)))?;
+
+        // Execute Lua script
+        let result: Vec<String> = tokio::time::timeout(
+            Duration::from_secs(5),
+            redis::Script::new(SEND_MESSAGE_LUA)
+                .key(&monthly_quota_key)
+                .key(&rate_limit_key)
+                .key(&session_sent_key)
+                .key(&session_bytes_key)
+                .key(&session_proved_key)
+                .key(&idempotency_key)
+                .key(&message_cache_key)
+                .key(&inbox_queue_key)
+                .arg(DEFAULT_MONTHLY_QUOTA)         // ARGV[1]: quota limit
+                .arg(rate_limit_per_minute)         // ARGV[2]: rate limit per minute
+                .arg(7 * 24 * 60 * 60)              // ARGV[3]: session TTL (7 days)
+                .arg(3600)                           // ARGV[4]: idempotency TTL (1 hour)
+                .arg(CACHE_TTL_SECS as i64)          // ARGV[5]: cache TTL
+                .arg(MAX_QUEUE_LEN)                  // ARGV[6]: inbox max length
+                .arg(&message_json)                  // ARGV[7]: message JSON
+                .arg(msg.content_size_bytes)         // ARGV[8]: size_bytes
+                .arg(session_id)                     // ARGV[9]: session_id
+                .arg(msg.recipient_client_id.to_string()) // ARGV[10]: recipient
+                .arg(if proof_verified { 1 } else { 0 }) // ARGV[11]: proof_verified
+                .arg(msg.id.to_string())             // ARGV[12]: ratelimit hit suffix
+                .invoke_async(&mut conn),
+        )
+        .await
+        .map_err(|_| VaultlessError::Timeout("send_message Lua script timed out".into()))?
+        .map_err(|e| VaultlessError::Internal(format!("Lua script error: {}", e)))?;
+
+        // Parse result
+        let status = result.get(0).cloned().unwrap_or_else(|| "ERROR".to_string());
+        let counted = result
+            .get(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let remaining_quota = result
+            .get(2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let error_details = result.get(3).cloned();
+
+        Ok(SendMessageResult {
+            status,
+            counted,
+            remaining_quota,
+            error_details,
+        })
+    }
+
+    /// Queues message for async persistence to PostgreSQL
+    /// This is non-critical path - message is already in Redis cache
+    async fn queue_for_persistence(&self, msg: &Message) {
+        if let Err(mpsc::error::TrySendError::Full(msg_clone)) = self.sender.try_send(msg.clone()) {
+            warn!(
+                msg_id = %msg.id,
+                "Flusher channel full; attempting emergency write"
+            );
+            self.emergency_write(&msg_clone).await;
+        } else {
+            // Message queued successfully, nothing to do
+        }
+    }
+
+    /// Emergency write to database when channel is full
+    async fn emergency_write(&self, msg: &Message) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let db_pool = Arc::clone(&self.db_pool);
+        let msg_clone = msg.clone();
+
+        tokio::spawn(async move {
+            let result = emergency_write_message(&db_pool, &msg_clone).await;
+            let _ = tx.send(result);
+        });
+
+        match tokio::time::timeout(Duration::from_secs(5), rx).await {
+            Ok(Ok(Ok(()))) => {
+                info!(msg_id = %msg.id, "Emergency write succeeded");
+            }
+            Ok(Ok(Err(e))) => {
+                error!(
+                    msg_id = %msg.id,
+                    error = %e,
+                    "Emergency write failed - message may be lost"
+                );
+            }
+            Ok(Err(_)) => {
+                error!(msg_id = %msg.id, "Emergency write channel dropped");
+            }
+            Err(_) => {
+                error!(msg_id = %msg.id, "Emergency write timeout");
+            }
+        }
+    }
+}
+
+/// Emergency write to database for messages that can't be queued
+async fn emergency_write_message(
+    db_pool: &sqlx::PgPool,
+    msg: &Message,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO messages (
+            id, ciphertext, nonce, content_type, content_size_bytes, application_id,
+            created_at, expires_at, accessed_at, access_count, is_delivered,
+            delivered_at, max_access_count, require_proof_verification,
+            sender_client_id, recipient_client_id, group_id, is_group_message,
+            signature, envelope_public_key, file_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+        "#,
+    )
+    .bind(msg.id)
+    .bind(&msg.ciphertext)
+    .bind(msg.nonce)
+    .bind(msg.content_type.clone())
+    .bind(msg.content_size_bytes)
+    .bind(msg.application_id)
+    .bind(msg.created_at)
+    .bind(msg.expires_at)
+    .bind(msg.accessed_at)
+    .bind(msg.access_count)
+    .bind(msg.is_delivered)
+    .bind(msg.delivered_at)
+    .bind(msg.max_access_count)
+    .bind(msg.require_proof_verification)
+    .bind(msg.sender_client_id)
+    .bind(msg.recipient_client_id)
+    .bind(msg.group_id)
+    .bind(msg.is_group_message)
+    .bind(msg.signature.clone())
+    .bind(&msg.envelope_public_key)
+    .bind(&msg.file_id)
+    .execute(db_pool)
+    .await
+    .map_err(|e| VaultlessError::Internal(format!("Emergency write failed: {}", e)))?;
+
+    Ok(())
 }

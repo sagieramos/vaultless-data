@@ -3,6 +3,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use getrandom;
 use ring_compat::signature::ed25519::SigningKey;
 use serde::{Deserialize, Serialize};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
 use crate::crypto::{encryption, signing};
 use crate::error::Result;
@@ -14,6 +15,24 @@ pub struct SigningKeypair {
     pub private_key: String,
     /// Base64-encoded public/verifying key (32 bytes)
     pub public_key: String,
+}
+
+/// X25519 keypair (for key exchange)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeKeypair {
+    /// Base64-encoded private/secret key (32 bytes)
+    pub private_key: String,
+    /// Base64-encoded public key (32 bytes)
+    pub public_key: String,
+}
+
+/// Combined keypair for dual-key cryptography
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DualKeypair {
+    /// Ed25519 keypair for signing/authentication
+    pub signing: SigningKeypair,
+    /// X25519 keypair for key exchange/encryption
+    pub exchange: ExchangeKeypair,
 }
 
 /// Generate a new Ed25519 signing keypair
@@ -37,6 +56,48 @@ pub fn generate_signing_keypair() -> Result<SigningKeypair> {
     Ok(SigningKeypair {
         private_key: BASE64_STANDARD.encode(signing_key.to_bytes()),
         public_key: BASE64_STANDARD.encode(verifying_key.as_ref()),
+    })
+}
+
+/// Generate a new X25519 key exchange keypair
+///
+/// # Returns
+/// * `ExchangeKeypair` with both keys base64-encoded
+///
+/// # Security Notes
+/// - Uses cryptographically secure random number generator
+/// - Private key should be stored securely (never in database)
+/// - Public key can be shared freely
+/// - Used for ECDH key agreement to establish session keys
+pub fn generate_exchange_keypair() -> Result<ExchangeKeypair> {
+    let mut secret_bytes = [0u8; 32];
+    getrandom::fill(&mut secret_bytes).map_err(|e| {
+        crate::error::VaultlessError::Internal(format!("Key generation failed: {}", e))
+    })?;
+
+    let secret = X25519StaticSecret::from(secret_bytes);
+    let public = X25519PublicKey::from(&secret);
+
+    Ok(ExchangeKeypair {
+        private_key: BASE64_STANDARD.encode(secret.to_bytes()),
+        public_key: BASE64_STANDARD.encode(public.as_bytes()),
+    })
+}
+
+/// Generate a complete dual-keypair (Ed25519 + X25519)
+///
+/// # Returns
+/// * `DualKeypair` containing both signing and exchange keypairs
+///
+/// # Security Notes
+/// - Generates two independent keypairs
+/// - Ed25519 for signatures/authentication
+/// - X25519 for key exchange/encryption
+/// - Private keys should never be transmitted or stored in database
+pub fn generate_dual_keypair() -> Result<DualKeypair> {
+    Ok(DualKeypair {
+        signing: generate_signing_keypair()?,
+        exchange: generate_exchange_keypair()?,
     })
 }
 
@@ -305,5 +366,64 @@ mod tests {
 
         // Public key from signing should match keypair public key
         assert_eq!(signed.public_key, keypair.public_key);
+    }
+
+    #[test]
+    fn test_generate_exchange_keypair() {
+        let keypair = generate_exchange_keypair().unwrap();
+
+        assert!(!keypair.private_key.is_empty());
+        assert!(!keypair.public_key.is_empty());
+        assert_ne!(keypair.private_key, keypair.public_key);
+
+        // Should be valid base64
+        assert!(BASE64.decode(&keypair.private_key).is_ok());
+        assert!(BASE64.decode(&keypair.public_key).is_ok());
+
+        // Keys should be 32 bytes when decoded
+        let private_bytes = BASE64.decode(&keypair.private_key).unwrap();
+        let public_bytes = BASE64.decode(&keypair.public_key).unwrap();
+        assert_eq!(private_bytes.len(), 32);
+        assert_eq!(public_bytes.len(), 32);
+    }
+
+    #[test]
+    fn test_generate_dual_keypair() {
+        let dual = generate_dual_keypair().unwrap();
+
+        // Both keypairs should exist
+        assert!(!dual.signing.private_key.is_empty());
+        assert!(!dual.signing.public_key.is_empty());
+        assert!(!dual.exchange.private_key.is_empty());
+        assert!(!dual.exchange.public_key.is_empty());
+
+        // All keys should be different
+        assert_ne!(dual.signing.private_key, dual.exchange.private_key);
+        assert_ne!(dual.signing.public_key, dual.exchange.public_key);
+    }
+
+    #[test]
+    fn test_x25519_key_exchange() {
+        // Generate two keypairs (Alice and Bob)
+        let alice_keypair = generate_exchange_keypair().unwrap();
+        let bob_keypair = generate_exchange_keypair().unwrap();
+
+        // Decode keys
+        let alice_private = BASE64.decode(&alice_keypair.private_key).unwrap();
+        let alice_public_bytes = BASE64.decode(&alice_keypair.public_key).unwrap();
+        let bob_private = BASE64.decode(&bob_keypair.private_key).unwrap();
+        let bob_public_bytes = BASE64.decode(&bob_keypair.public_key).unwrap();
+
+        // Perform ECDH
+        let alice_secret = X25519StaticSecret::from(<[u8; 32]>::try_from(alice_private.as_slice()).unwrap());
+        let bob_secret = X25519StaticSecret::from(<[u8; 32]>::try_from(bob_private.as_slice()).unwrap());
+        let bob_public = X25519PublicKey::from(<[u8; 32]>::try_from(bob_public_bytes.as_slice()).unwrap());
+        let alice_public = X25519PublicKey::from(<[u8; 32]>::try_from(alice_public_bytes.as_slice()).unwrap());
+
+        let alice_shared = alice_secret.diffie_hellman(&bob_public);
+        let bob_shared = bob_secret.diffie_hellman(&alice_public);
+
+        // Both should derive the same shared secret
+        assert_eq!(alice_shared.as_bytes(), bob_shared.as_bytes());
     }
 }

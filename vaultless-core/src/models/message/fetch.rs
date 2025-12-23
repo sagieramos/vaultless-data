@@ -379,7 +379,7 @@ impl InstantMessage {
         // Step 2: Resolve sender_client_id if not found in Redis
         if sender_client_id.is_none() {
             let client: Option<(Uuid,)> =
-                sqlx::query_as("SELECT id FROM clients WHERE public_key = $1 LIMIT 1")
+                sqlx::query_as("SELECT id FROM clients WHERE signing_key = $1 LIMIT 1")
                     .bind(sender_pubkey)
                     .fetch_optional(self.db_pool.as_ref())
                     .await
