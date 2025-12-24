@@ -16,7 +16,7 @@ CREATE MATERIALIZED VIEW public.mv_applications_with_usage AS
 SELECT 
     -- APPLICATION METADATA
     a.id AS application_id,
-    a.user_id,
+    a.developer_id,
     a.name,
     a.description,
     a.is_active,
@@ -68,7 +68,7 @@ SELECT
     COALESCE(lifetime.total_estimated_cost_cents, 0) AS lifetime_cost_cents
 
 FROM public.applications a
-INNER JOIN public.subscriptions s ON a.subscription_id = s.id
+INNER JOIN public.developer_subscriptions s ON a.subscription_id = s.id
 LEFT JOIN public.api_keys sk ON (sk.application_id = a.id AND sk.key_type = 'secret' AND sk.is_active = true)
 
 -- LATERAL: Publishable Keys
@@ -121,13 +121,13 @@ LEFT JOIN LATERAL (
 
 -- 4. Recreate Indexes
 CREATE UNIQUE INDEX idx_mv_app_usage_app_id ON public.mv_applications_with_usage (application_id);
-CREATE INDEX idx_mv_app_usage_user_id ON public.mv_applications_with_usage (user_id);
-CREATE INDEX idx_mv_app_usage_client_count ON public.mv_applications_with_usage (user_id, client_count DESC);
-CREATE INDEX idx_mv_app_usage_quota_warning ON public.mv_applications_with_usage (user_id, quota_usage_percentage DESC) WHERE quota_usage_percentage >= 80;
+CREATE INDEX idx_mv_app_usage_developer_id ON public.mv_applications_with_usage (developer_id);
+CREATE INDEX idx_mv_app_usage_client_count ON public.mv_applications_with_usage (developer_id, client_count DESC);
+CREATE INDEX idx_mv_app_usage_quota_warning ON public.mv_applications_with_usage (developer_id, quota_usage_percentage DESC) WHERE quota_usage_percentage >= 80;
 
 -- 5. Helper Functions (Referencing updated view)
 
-CREATE OR REPLACE FUNCTION public.get_user_usage_summary(p_user_id UUID)
+CREATE OR REPLACE FUNCTION public.get_user_usage_summary(p_developer_id UUID)
 RETURNS TABLE (
     total_apps INTEGER,
     total_monthly_messages BIGINT,
@@ -142,7 +142,7 @@ RETURNS TABLE (
         COALESCE(SUM(current_month_cost_cents), 0)::BIGINT,
         COUNT(*) FILTER (WHERE quota_usage_percentage >= 90)::INTEGER
     FROM mv_applications_with_usage
-    WHERE user_id = p_user_id;
+    WHERE developer_id = p_developer_id;
 $$;
 
 -- 6. Refresh and Permissions

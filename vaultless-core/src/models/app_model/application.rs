@@ -272,7 +272,7 @@ impl Application {
             r#"
         UPDATE applications
         SET is_active = false, updated_at = NOW()
-        WHERE id = $1 AND user_id = $2
+        WHERE id = $1 AND developer_id = $2
         RETURNING id
         "#,
             app_id,

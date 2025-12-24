@@ -10,7 +10,7 @@ RETURNS TABLE (
     app_is_active boolean,
     app_max_ttl_seconds integer,
     app_is_key_rotation_forced boolean,
-    app_app_meta jsonb,
+    app_meta jsonb,
 
     -- Secret Key Fields (Internal Audit/Prefix)
     sk_id uuid,
@@ -36,7 +36,7 @@ AS $$
     )
     -- Step 2: Join Application -> Subscription AND Application -> Active Secret Key
     SELECT
-        a.id, a.user_id, a.name, a.description, a.is_active,
+        a.id, a.developer_id, a.name, a.description, a.is_active,
         a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
         sk.id, sk.key_prefix,
         s.tier, s.monthly_message_quota, s.message_retention_seconds,
@@ -44,7 +44,7 @@ AS $$
     FROM public.applications a
     JOIN app_lookup al ON a.id = al.application_id
     -- Link via application.subscription_id
-    JOIN public.subscriptions s ON a.subscription_id = s.id
+    JOIN public.developer_subscriptions s ON a.subscription_id = s.id
     -- Optional: Get the current active secret key if one exists
     LEFT JOIN public.api_keys sk ON a.id = sk.application_id 
         AND sk.key_type = 'secret'::key_type 
@@ -83,7 +83,7 @@ STABLE
 AS $$
     -- Direct chain: API Key -> Application -> Subscription
     SELECT
-        a.id, a.user_id, a.name, a.description, a.is_active,
+        a.id, a.developer_id, a.name, a.description, a.is_active,
         a.max_ttl_seconds, a.is_key_rotation_forced, a.app_meta,
         sk.id, sk.key_prefix,
         s.tier, s.monthly_message_quota, s.message_retention_seconds,
@@ -91,7 +91,7 @@ AS $$
     FROM public.api_keys sk
     INNER JOIN public.applications a ON sk.application_id = a.id
     -- Link via application.subscription_id
-    INNER JOIN public.subscriptions s ON a.subscription_id = s.id
+    INNER JOIN public.developer_subscriptions s ON a.subscription_id = s.id
     WHERE sk.key_hash = sk_hash_hex
       AND sk.key_type = 'secret'::key_type
       AND sk.is_active = TRUE

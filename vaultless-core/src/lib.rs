@@ -109,8 +109,8 @@ pub use models::{
         },
         material_view_helper::get_global_mv_etag,
     },
-    // Billing
-    billing::*,
+    // Billing / Pricing
+    pricing::*,
     // Client Tokens
     client_token::*,
     // Clients

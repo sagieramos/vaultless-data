@@ -11,7 +11,7 @@ CREATE TABLE usage_metrics (
     
     -- Identity Dimensions
     application_id UUID NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
-    subscription_id UUID NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+    subscription_id UUID NOT NULL REFERENCES developer_subscriptions(id) ON DELETE CASCADE,
     api_key_id UUID REFERENCES api_keys(id) ON DELETE SET NULL,
     
     -- Usage Counters
@@ -48,7 +48,7 @@ SELECT create_hypertable('usage_metrics', 'period_start', if_not_exists => TRUE)
 -- Primary lookup indices for raw data
 -- Optimizing for: "Show me usage for this app" or "Show me usage for this specific key"
 CREATE INDEX idx_usage_application_lookup ON usage_metrics(application_id, period_start DESC);
-CREATE INDEX idx_usage_subscription_lookup ON usage_metrics(subscription_id, period_start DESC);
+CREATE INDEX idx_usage_developer_subscription_lookup ON usage_metrics(subscription_id, period_start DESC);
 CREATE INDEX idx_usage_api_key_lookup ON usage_metrics(api_key_id, period_start DESC);
 
 -- Unique constraint: Prevents duplicate writes for the same key in the same window

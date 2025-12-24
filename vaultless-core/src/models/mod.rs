@@ -1,10 +1,10 @@
 pub mod api_key;
 pub mod app_model;
-pub mod billing;
 pub mod client_token;
 pub mod clients;
 pub mod message;
 pub mod notification;
+pub mod pricing;
 pub mod proof;
 pub mod session;
 pub mod session_keys;
@@ -18,13 +18,19 @@ pub use app_model::dto::{
     UpdateApplication, WebhookEventType, WebhookInput, MAX_WEBHOOKS_PER_APPLICATION,
 };
 pub use webhook::WebhookRecord;
-pub use billing::*;
 pub use message::*;
 pub use notification::{
     CreateNotification, Notification, NotificationBuilder, NotificationEventTracker,
     NotificationJobConfig, NotificationQuery, NotificationSeverity, NotificationSummary,
     NotificationType, PaginatedNotifications, RateLimitNotificationData, UnreadCountResponse,
     UpdateNotification, start_notification_job,
+};
+pub use pricing::{
+    ApplicationPricingPlan, AttachPricingPlan, BillingPeriod, BillingPeriodStatus,
+    ClientBillingUsage, ClientInvoice, ClientSubscription, CloseBillingPeriod,
+    CreateBillingPeriod, CreateClientSubscription, CreateInvoice, CreatePricingPlan,
+    InvoiceStatus, PricingMode, PricingPlan, PricingSnapshot, RevenueSnapshot,
+    SubscriptionStatus, UpdateInvoiceStatus, UpdateSubscriptionStatus,
 };
 pub use proof::{CreateProof, MessageProof, ProofVerificationResult, VerifyProofRequest};
 pub use session_keys::{CreateSessionKeyRequest, SessionKey};
