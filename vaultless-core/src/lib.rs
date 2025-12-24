@@ -126,7 +126,7 @@ pub use models::{
         paseto_session::{SessionData, SessionKeyManager},
     },
     // Usage & Metrics
-    usage::{
+    usage::application::{
         DailyUsageSummary, FlusherMetrics, MetricCounters, MetricsConfig, MonthlyTotal,
         UsageTrends, get_aggregate_by_application_id, get_realtime_usage, get_usage_trends,
         record_rate_limit_hit, RecordRateLimitHitInput, start_redis_flusher,

@@ -37,7 +37,13 @@ pub const MINIMAL_CLIENT_FIELDS: &str = "
     developer_id,
     application_id,
     metadata,
-    is_platform_attested
+    is_platform_attested,
+    messages_sent,
+    messages_received,
+    messages_proved,
+    bytes_sent,
+    bytes_received,
+    bytes_proved
 ";
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -80,6 +86,16 @@ pub struct Client {
     pub application_id: Uuid,
 
     pub is_platform_attested: bool,
+
+    // =========================================================================
+    // Usage Metrics (flushed to usage_metrics table)
+    // =========================================================================
+    pub messages_sent: i64,
+    pub messages_received: i64,
+    pub messages_proved: i64,
+    pub bytes_sent: i64,
+    pub bytes_received: i64,
+    pub bytes_proved: i64,
 }
 
 // =============================================================================

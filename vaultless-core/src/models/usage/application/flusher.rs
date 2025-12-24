@@ -418,7 +418,7 @@ async fn flush_batch_to_pg(
                 application_id, subscription_id,
                 messages_sent, messages_received, proofs_verified,
                 total_bytes_stored, total_bytes_sent, total_bytes_received,
-                rate_limit_hits, estimated_cost_cents
+                rate_limit_hits, bytes_proved, estimated_cost_cents
             )
             "#,
         );
@@ -441,6 +441,7 @@ async fn flush_batch_to_pg(
                     .push_bind(counters.total_bytes_sent)
                     .push_bind(counters.total_bytes_received)
                     .push_bind(counters.rate_limit_hits)
+                    .push_bind(counters.bytes_proved)
                     .push_bind(estimated_cost);
             },
         );
@@ -459,6 +460,7 @@ async fn flush_batch_to_pg(
                 total_bytes_sent = usage_metrics.total_bytes_sent + EXCLUDED.total_bytes_sent,
                 total_bytes_received = usage_metrics.total_bytes_received + EXCLUDED.total_bytes_received,
                 rate_limit_hits = usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits,
+                bytes_proved = usage_metrics.bytes_proved + EXCLUDED.bytes_proved,
                 estimated_cost_cents = usage_metrics.estimated_cost_cents + EXCLUDED.estimated_cost_cents
             "#,
         );

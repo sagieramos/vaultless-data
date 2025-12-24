@@ -9,7 +9,6 @@ pub mod iot;
 // Supporting modules
 pub mod helper;
 pub mod dto;
-pub mod circuit;
 pub mod background_process;
 
 

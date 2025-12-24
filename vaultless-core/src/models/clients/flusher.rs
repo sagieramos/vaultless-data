@@ -1,29 +1,29 @@
-//! Background flusher for periodic Redis to Postgres session counter persistence.
+//! Background flusher for periodic Redis to Postgres client metrics persistence.
 //!
-//! Handles batched upserts for session message counters (sent, received, proofs_verified).
-//! Uses SCAN to find all session metric keys since they're keyed by session_id.
+//! Handles batched upserts for client message counters (sent, received, proved).
+//! Uses SCAN to find all client metric keys since they're keyed by client_id.
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::application::{EngineConfig, RedisPoolType, session_metric_key};
+use crate::models::usage::application::{EngineConfig, RedisPoolType};
 use redis::AsyncCommands;
 use sqlx::PgPool;
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::{Duration, interval};
 use tracing::{error, info};
 
-/// Metrics for monitoring the session flusher performance
+/// Metrics for monitoring the client flusher performance
 #[derive(Debug, Default)]
-pub struct SessionFlusherMetrics {
-    pub sessions_flushed: AtomicU64,
+pub struct ClientFlusherMetrics {
+    pub clients_flushed: AtomicU64,
     pub errors: AtomicU64,
     pub total_flush_duration_ms: AtomicU64,
 }
 
-impl SessionFlusherMetrics {
+impl ClientFlusherMetrics {
     pub fn new() -> Self {
         Self::default()
     }
@@ -34,7 +34,7 @@ impl SessionFlusherMetrics {
 
     pub fn average_flush_duration_ms(&self) -> f64 {
         let duration = self.total_flush_duration_ms.load(Ordering::SeqCst);
-        let flushed = self.sessions_flushed.load(Ordering::SeqCst);
+        let flushed = self.clients_flushed.load(Ordering::SeqCst);
         if flushed > 0 {
             duration as f64 / flushed as f64
         } else {
@@ -43,15 +43,15 @@ impl SessionFlusherMetrics {
     }
 }
 
-/// Start the background session flusher task
+/// Start the background client flusher task
 ///
 /// Returns a join handle and a shutdown notifier. Call `shutdown.notify_one()`
 /// to trigger graceful shutdown with a final flush.
-pub fn start_session_flusher(
+pub fn start_client_flusher(
     redis_pool: Arc<RedisPoolType>,
     pg_pool: Arc<PgPool>,
     config: Arc<EngineConfig>,
-    metrics: Option<Arc<SessionFlusherMetrics>>,
+    metrics: Option<Arc<ClientFlusherMetrics>>,
 ) -> (tokio::task::JoinHandle<()>, Arc<Notify>) {
     let shutdown = Arc::new(Notify::new());
     let shutdown_clone = Arc::clone(&shutdown);
@@ -62,34 +62,34 @@ pub fn start_session_flusher(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    if let Err(e) = flush_session_counters(
+                    if let Err(e) = flush_client_counters(
                         Arc::clone(&redis_pool),
                         Arc::clone(&pg_pool),
                         &config,
                         metrics.as_ref().map(Arc::as_ref),
                         false,
                     ).await {
-                        error!(?e, "Session counters flush failed");
+                        error!(?e, "Client counters flush failed");
                         if let Some(metrics) = &metrics {
                             metrics.record_error();
                         }
                     }
                 }
                 _ = shutdown.notified() => {
-                    info!("Shutdown signal received. Performing final session counters flush...");
-                    if let Err(e) = flush_session_counters(
+                    info!("Shutdown signal received. Performing final client counters flush...");
+                    if let Err(e) = flush_client_counters(
                         Arc::clone(&redis_pool),
                         Arc::clone(&pg_pool),
                         &config,
                         metrics.as_ref().map(Arc::as_ref),
                         true,
                     ).await {
-                        error!(?e, "Final session flush failed");
+                        error!(?e, "Final client flush failed");
                         if let Some(metrics) = &metrics {
                             metrics.record_error();
                         }
                     } else {
-                        info!("Final session flush completed successfully");
+                        info!("Final client flush completed successfully");
                     }
                     break;
                 }
@@ -101,11 +101,11 @@ pub fn start_session_flusher(
 }
 
 /// Main flush cycle: scan Redis, collect counters, flush to Postgres
-async fn flush_session_counters(
+async fn flush_client_counters(
     redis_pool: Arc<RedisPoolType>,
     pg: Arc<PgPool>,
     config: &EngineConfig,
-    metrics: Option<&SessionFlusherMetrics>,
+    metrics: Option<&ClientFlusherMetrics>,
     flush_all: bool,
 ) -> Result<()> {
     let start = std::time::Instant::now();
@@ -114,14 +114,14 @@ async fn flush_session_counters(
         .await
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-    // Track processed session IDs to avoid duplicates in this batch
-    let mut processed_sessions: HashSet<String> = HashSet::new();
-    // Batch format: (session_id, sent, received, proofs_verified, bytes_sent, bytes_received)
-    let mut batch: Vec<(String, i64, i64, i64, i64, i64)> = Vec::new();
+    // Track processed client IDs to avoid duplicates in this batch
+    let mut processed_clients: HashSet<String> = HashSet::new();
+    // Batch format: (client_id, sent, received, proved, bytes_sent, bytes_received)
+    let mut batch: Vec<(String, i64, i64, i64, i64, i64, i64)> = Vec::new();
 
-    // SCAN for all session metric keys
+    // SCAN for all client metric keys
     let mut cursor: u64 = 0;
-    let pattern = format!("{}:*", cache_key!("session", "metric"));
+    let pattern = format!("{}:*", cache_key!("metric", "client"));
 
     loop {
         let (next_cursor, keys): (u64, Vec<String>) = tokio::time::timeout(
@@ -140,32 +140,25 @@ async fn flush_session_counters(
 
         // Process keys in this batch
         for key in keys {
-            // Parse the session_id from the key
-            // Key format: session:metric:{session_id}:{counter_type}
-            let session_id = extract_session_id_from_key(&key);
+            // Parse the client_id from the key
+            // Key format: metric:client:{client_id}:{counter_type}
+            let client_id = extract_client_id_from_key(&key);
 
-            if session_id.is_empty() {
+            if client_id.is_empty() {
                 continue;
             }
 
-            // Skip if we already processed this session in this batch
-            if !processed_sessions.insert(session_id.clone()) {
+            // Skip if we already processed this client in this batch
+            if !processed_clients.insert(client_id.clone()) {
                 continue;
             }
 
-            // Get counters for this session
-            let counters = get_session_counters(&mut conn, &session_id).await?;
+            // Get counters for this client
+            let counters = get_client_counters(&mut conn, &client_id).await?;
 
-            if let Some((sent, received, proofs_verified, bytes_sent, bytes_received)) = counters {
-                if sent > 0 || received > 0 || proofs_verified > 0 || bytes_sent > 0 || bytes_received > 0 {
-                    batch.push((
-                        session_id,
-                        sent,
-                        received,
-                        proofs_verified,
-                        bytes_sent,
-                        bytes_received,
-                    ));
+            if let Some((sent, received, proved, bytes_sent, bytes_received, bytes_proved)) = counters {
+                if sent > 0 || received > 0 || proved > 0 || bytes_sent > 0 || bytes_received > 0 || bytes_proved > 0 {
+                    batch.push((client_id, sent, received, proved, bytes_sent, bytes_received, bytes_proved));
                 }
             }
 
@@ -188,20 +181,20 @@ async fn flush_session_counters(
     }
 
     let duration = start.elapsed();
-    let sessions_flushed = batch.len() as u64;
+    let clients_flushed = batch.len() as u64;
 
-    if sessions_flushed > 0 {
+    if clients_flushed > 0 {
         info!(
-            sessions_flushed = sessions_flushed,
+            clients_flushed = clients_flushed,
             duration_ms = duration.as_millis(),
-            "Completed session counters flush"
+            "Completed client counters flush"
         );
     }
 
     if let Some(metrics) = metrics {
         metrics
-            .sessions_flushed
-            .fetch_add(sessions_flushed, Ordering::SeqCst);
+            .clients_flushed
+            .fetch_add(clients_flushed, Ordering::SeqCst);
         metrics
             .total_flush_duration_ms
             .fetch_add(duration.as_millis() as u64, Ordering::SeqCst);
@@ -210,10 +203,10 @@ async fn flush_session_counters(
     Ok(())
 }
 
-/// Extract session_id from a Redis key
-/// Key format: session:metric:{session_id}:{counter_type}
-fn extract_session_id_from_key(key: &str) -> String {
-    let prefix = cache_key!("session", "metric");
+/// Extract client_id from a Redis key
+/// Key format: metric:client:{client_id}:{counter_type}
+fn extract_client_id_from_key(key: &str) -> String {
+    let prefix = cache_key!("metric", "client");
     if !key.starts_with(&prefix) {
         return String::new();
     }
@@ -221,7 +214,7 @@ fn extract_session_id_from_key(key: &str) -> String {
     // Remove prefix
     let after_prefix = &key[prefix.len()..];
 
-    // Split by : and get the session_id (first part after prefix)
+    // Split by : and get the client_id (first part after prefix)
     let parts: Vec<&str> = after_prefix.trim_matches(':').split(':').collect();
     if parts.is_empty() {
         return String::new();
@@ -230,55 +223,44 @@ fn extract_session_id_from_key(key: &str) -> String {
     parts[0].to_string()
 }
 
-/// Get session counters from Redis (including bytes)
-async fn get_session_counters<C>(
+/// Get client counters from Redis (including bytes)
+async fn get_client_counters<C>(
     conn: &mut C,
-    session_id: &str,
-) -> Result<Option<(i64, i64, i64, i64, i64)>>
+    client_id: &str,
+) -> Result<Option<(i64, i64, i64, i64, i64, i64)>>
 where
     C: AsyncCommands + Send + Unpin,
 {
-    let sent_key = session_metric_key(session_id, "sent");
-    let received_key = session_metric_key(session_id, "received");
-    let proofs_verified_key = session_metric_key(session_id, "proofs_verified");
-    let bytes_sent_key = session_metric_key(session_id, "bytes_sent");
-    let bytes_rcvd_key = session_metric_key(session_id, "bytes_received");
+    let sent_key = cache_key!("metric", "client", client_id, "sent");
+    let received_key = cache_key!("metric", "client", client_id, "received");
+    let proved_key = cache_key!("metric", "client", client_id, "proved");
+    let bytes_sent_key = cache_key!("metric", "client", client_id, "bytes_sent");
+    let bytes_rcvd_key = cache_key!("metric", "client", client_id, "bytes_received");
+    let bytes_proved_key = cache_key!("metric", "client", client_id, "bytes_proved");
 
-    let (sent, received, proofs_verified, bytes_sent, bytes_received, bytes_proofs_verified): (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-    ) = redis::pipe()
+    let (sent, received, proved, bytes_sent, bytes_received, bytes_proved): (i64, i64, i64, i64, i64, i64) = redis::pipe()
         .get(&sent_key)
         .get(&received_key)
-        .get(&proofs_verified_key)
+        .get(&proved_key)
         .get(&bytes_sent_key)
         .get(&bytes_rcvd_key)
+        .get(&bytes_proved_key)
         .query_async(conn)
         .await
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-    if sent == 0
-        && received == 0
-        && proofs_verified == 0
-        && bytes_sent == 0
-        && bytes_received == 0
-        && bytes_proofs_verified == 0
-    {
+    if sent == 0 && received == 0 && proved == 0 && bytes_sent == 0 && bytes_received == 0 && bytes_proved == 0 {
         Ok(None)
     } else {
-        Ok(Some((sent, received, proofs_verified, bytes_sent, bytes_received)))
+        Ok(Some((sent, received, proved, bytes_sent, bytes_received, bytes_proved)))
     }
 }
 
-/// Flush a batch of session counters to Postgres (including bytes)
+/// Flush a batch of client counters to Postgres (including bytes)
 async fn flush_batch_to_pg(
     pg: &PgPool,
-    batch: &[(String, i64, i64, i64, i64, i64)],
-    metrics: Option<&SessionFlusherMetrics>,
+    batch: &[(String, i64, i64, i64, i64, i64, i64)],
+    metrics: Option<&ClientFlusherMetrics>,
 ) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
@@ -286,25 +268,27 @@ async fn flush_batch_to_pg(
 
     let mut tx = pg.begin().await?;
 
-    for (session_id, sent, received, proofs_verified, bytes_sent, bytes_received) in batch {
+    for (client_id, sent, received, proved, bytes_sent, bytes_received, bytes_proved) in batch {
         sqlx::query(
             "
-            UPDATE session_keys
+            UPDATE clients
             SET messages_sent = messages_sent + $1,
                 messages_received = messages_received + $2,
-                proofs_verified = proofs_verified + $3,
+                messages_proved = messages_proved + $3,
                 bytes_sent = bytes_sent + $4,
                 bytes_received = bytes_received + $5,
-                last_used_at = NOW()
-            WHERE session_id = $6 AND is_active = true
-            ",
+                bytes_proved = bytes_proved + $6,
+                last_seen_at = NOW()
+            WHERE id = $7 AND is_active = true
+            "
         )
         .bind(sent)
         .bind(received)
-        .bind(proofs_verified)
+        .bind(proved)
         .bind(bytes_sent)
         .bind(bytes_received)
-        .bind(session_id)
+        .bind(bytes_proved)
+        .bind(client_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
@@ -314,7 +298,7 @@ async fn flush_batch_to_pg(
 
     if let Some(metrics) = metrics {
         metrics
-            .sessions_flushed
+            .clients_flushed
             .fetch_add(batch.len() as u64, Ordering::SeqCst);
     }
 

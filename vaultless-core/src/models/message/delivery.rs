@@ -4,7 +4,7 @@ use super::dto::*;
 use super::helper::*;
 use crate::crypto::verify_signature;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::{record_proof_verified, RecordProofVerifiedInput};
+use crate::models::usage::application::{record_proof_verified, RecordProofVerifiedInput};
 use chrono::Utc;
 use redis::AsyncCommands;
 use std::sync::atomic::Ordering;

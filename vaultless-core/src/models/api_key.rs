@@ -17,7 +17,7 @@ use tracing::{self, info};
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::models::usage::{
+use crate::models::usage::application::{
     MetricCounters, MetricGranularity, MetricKey, REDIS_OPERATION_TIMEOUT_SECS,
 };
 

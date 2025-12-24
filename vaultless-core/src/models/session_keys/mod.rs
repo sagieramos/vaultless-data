@@ -38,7 +38,7 @@ pub struct SessionKey {
 
     pub messages_sent: i64,
     pub messages_received: i64,
-    pub messages_proved: i64,
+    pub proofs_verified: i64,
     pub bytes_sent: i64,
     pub bytes_received: i64,
     pub is_active: bool,
@@ -54,7 +54,7 @@ pub struct HotSession {
     // HOT counters (never written to SQL directly)
     pub messages_sent: u64,
     pub messages_received: u64,
-    pub messages_proved: u64,
+    pub proofs_verified: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -201,39 +201,6 @@ impl SessionKey {
     {
         sqlx::query(
             "UPDATE session_keys SET last_used_at = NOW() WHERE session_id = $1"
-        )
-        .bind(session_id)
-        .execute(exec)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Increment message counters (DB-based, not Redis)
-    pub async fn increment_message_counter<'c, E>(
-        exec: E,
-        session_id: &str,
-        counter_type: &str,
-    ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        let counter_field = match counter_type {
-            "sent" => "messages_sent",
-            "received" => "messages_received",
-            "proved" => "messages_proved",
-            "bytes_sent" => "bytes_sent",
-            "bytes_received" => "bytes_received",
-            _ => return Err(VaultlessError::InvalidInput("Invalid counter type".into())),
-        };
-
-        sqlx::query(
-            &format!(
-                "UPDATE session_keys
-                 SET {0} = {0} + 1, last_used_at = NOW()
-                 WHERE session_id = $1",
-                counter_field
-            ),
         )
         .bind(session_id)
         .execute(exec)

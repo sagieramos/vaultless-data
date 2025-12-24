@@ -1,5 +1,5 @@
 use crate::circuit_breaker::CircuitBreaker;
-use crate::models::usage::MetricsConfig;
+use crate::models::usage::application::MetricsConfig;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};

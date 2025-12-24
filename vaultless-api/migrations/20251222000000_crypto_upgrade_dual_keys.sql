@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS public.session_keys (
     -- Usage tracking
     messages_sent BIGINT NOT NULL DEFAULT 0,
     messages_received BIGINT NOT NULL DEFAULT 0,
-    messages_proved BIGINT NOT NULL DEFAULT 0,
+    proofs_verified BIGINT NOT NULL DEFAULT 0,
     bytes_sent BIGINT NOT NULL DEFAULT 0,
     bytes_received BIGINT NOT NULL DEFAULT 0,
 

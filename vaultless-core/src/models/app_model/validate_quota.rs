@@ -3,7 +3,7 @@ use crate::cache_key;
 use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
 use crate::models::notification::NotificationEventTracker;
-use crate::models::usage::{
+use crate::models::usage::application::{
     MetricGranularity, MetricKey, record_rate_limit_hit, RecordRateLimitHitInput,
 };
 use chrono::Utc;

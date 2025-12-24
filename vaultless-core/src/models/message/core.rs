@@ -4,7 +4,7 @@ use super::dto::*;
 use super::helper::*;
 use crate::circuit_breaker::CircuitBreaker;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::{record_message_received, RecordMessageReceivedInput, MetricsConfig};
+use crate::models::usage::application::{record_message_received, RecordMessageReceivedInput, MetricsConfig};
 use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
 use std::sync::Arc;

@@ -23,7 +23,7 @@
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::counters::{MetricGranularity, MetricKey};
+use super::counters::{MetricGranularity, MetricKey};
 use chrono::{Datelike, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};

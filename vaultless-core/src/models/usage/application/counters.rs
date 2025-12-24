@@ -179,6 +179,8 @@ pub struct MetricCounters {
     pub total_bytes_received: i64,
     #[schema(example = 5)]
     pub rate_limit_hits: i64,
+    #[schema(example = 25600)]
+    pub bytes_proved: i64,  // Bytes from messages with verified proofs
 }
 
 impl MetricCounters {
@@ -190,6 +192,7 @@ impl MetricCounters {
             && self.total_bytes_sent == 0
             && self.total_bytes_received == 0
             && self.rate_limit_hits == 0
+            && self.bytes_proved == 0
     }
 
     /// Merge values from a Redis hash map into this counter
@@ -200,6 +203,7 @@ impl MetricCounters {
         self.total_bytes_sent += *map.get("total_bytes_sent").unwrap_or(&0);
         self.total_bytes_received += *map.get("total_bytes_received").unwrap_or(&0);
         self.rate_limit_hits += *map.get("rate_limit_hits").unwrap_or(&0);
+        self.bytes_proved += *map.get("bytes_proved").unwrap_or(&0);
     }
 
     /// Estimate cost in cents based on usage

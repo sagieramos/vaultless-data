@@ -11,8 +11,19 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::models::usage::client::{ClientMetricKey, MetricGranularity};
+
 /// Default monthly message quota (100,000 messages per month)
 const DEFAULT_MONTHLY_QUOTA: i64 = 100_000;
+
+/// Default monthly client message quota (10,000 messages per month)
+const DEFAULT_CLIENT_MONTHLY_QUOTA: i64 = 10_000;
+
+/// Default per-minute rate limit for applications (1000 messages/min)
+const DEFAULT_APP_RATE_LIMIT: i64 = 1000;
+
+/// Default per-minute rate limit for clients (100 messages/min)
+const DEFAULT_CLIENT_RATE_LIMIT: i64 = 100;
 
 /// Lua script for atomic message sending (with optional proof verification)
 const SEND_MESSAGE_LUA: &str = include_str!("../../scripts/send_message_v1.lua");
@@ -90,7 +101,7 @@ impl InstantMessage {
         }
 
         // Execute atomic Lua script (includes proof verified and rate limit check)
-        let result = self.execute_send_message(&msg, &session_id, proof_verified, 60).await?;
+        let result = self.execute_send_message(&msg, &session_id, proof_verified, 60, false).await?;
 
         // Handle result
         match result.status.as_str() {
@@ -165,21 +176,34 @@ impl InstantMessage {
         msg: &Message,
         session_id: &str,
         proof_verified: bool,
-        rate_limit_per_minute: i64,
+        _rate_limit_per_minute: i64, // Deprecated, now uses separate app/client rate limits
+        persist_to_db: bool,
     ) -> Result<SendMessageResult> {
         let mut conn = self.redis_pool.get().await?;
+        let now = chrono::Utc::now();
 
         // Generate Redis keys
-        let monthly_quota_key = cache_key!("quota", "app", msg.application_id, "monthly");
-        let minute_window = crate::models::usage::get_minute_window(&chrono::Utc::now());
+        let app_quota_key = cache_key!("quota", "app", msg.application_id, "monthly");
+        let minute_window = crate::models::usage::application::get_minute_window(&now);
         let minute_key = minute_window.format("%Y_%m_%d_%H_%M").to_string();
-        let rate_limit_key = cache_key!("metric", "key", msg.sender_client_id, "minute", minute_key);
+
+        // Application and client rate limit keys (per-minute)
+        let app_rate_limit_key = cache_key!("metric", "app", msg.application_id, "minute", minute_key);
+        let client_rate_limit_key = cache_key!("metric", "client", msg.sender_client_id, "minute", minute_key);
+
         let session_sent_key = cache_key!("metric", "session", session_id, "sent");
         let session_bytes_key = cache_key!("metric", "session", session_id, "bytes_sent");
         let session_proved_key = cache_key!("metric", "session", session_id, "proved");
         let idempotency_key = cache_key!("counted", "msg", msg.id);
-        let message_cache_key = cache_key!("instant_message", "message", msg.id);
-        let inbox_queue_key = cache_key!("instant_message", "inbox", msg.recipient_client_id);
+        let message_stream_key = cache_key!("stream", "instant_message", "pending");
+
+        // Client quota and metric keys
+        let client_quota_key = cache_key!("quota", "client", msg.sender_client_id, "monthly");
+        let client_metric_key = ClientMetricKey::new(
+            msg.application_id, msg.sender_client_id, now,
+            MetricGranularity::Hour
+        )?.as_str().to_string();
+        let client_active_keys_set = cache_key!("metric", "client", "active_keys");
 
         // Serialize message
         let message_json = serde_json::to_string(msg)
@@ -189,26 +213,33 @@ impl InstantMessage {
         let result: Vec<String> = tokio::time::timeout(
             Duration::from_secs(5),
             redis::Script::new(SEND_MESSAGE_LUA)
-                .key(&monthly_quota_key)
-                .key(&rate_limit_key)
+                .key(&app_quota_key)
+                .key(&app_rate_limit_key)
+                .key(&client_rate_limit_key)
                 .key(&session_sent_key)
                 .key(&session_bytes_key)
                 .key(&session_proved_key)
                 .key(&idempotency_key)
-                .key(&message_cache_key)
-                .key(&inbox_queue_key)
-                .arg(DEFAULT_MONTHLY_QUOTA)         // ARGV[1]: quota limit
-                .arg(rate_limit_per_minute)         // ARGV[2]: rate limit per minute
-                .arg(7 * 24 * 60 * 60)              // ARGV[3]: session TTL (7 days)
-                .arg(3600)                           // ARGV[4]: idempotency TTL (1 hour)
-                .arg(CACHE_TTL_SECS as i64)          // ARGV[5]: cache TTL
-                .arg(MAX_QUEUE_LEN)                  // ARGV[6]: inbox max length
-                .arg(&message_json)                  // ARGV[7]: message JSON
-                .arg(msg.content_size_bytes)         // ARGV[8]: size_bytes
-                .arg(session_id)                     // ARGV[9]: session_id
-                .arg(msg.recipient_client_id.to_string()) // ARGV[10]: recipient
-                .arg(if proof_verified { 1 } else { 0 }) // ARGV[11]: proof_verified
-                .arg(msg.id.to_string())             // ARGV[12]: ratelimit hit suffix
+                .key(&message_stream_key)
+                .key(&client_quota_key)
+                .key(&client_metric_key)
+                .key(&client_active_keys_set)
+                .arg(DEFAULT_MONTHLY_QUOTA)                  // ARGV[1]: app monthly quota
+                .arg(DEFAULT_APP_RATE_LIMIT)                 // ARGV[2]: app rate limit per minute
+                .arg(DEFAULT_CLIENT_MONTHLY_QUOTA)           // ARGV[3]: client monthly quota
+                .arg(DEFAULT_CLIENT_RATE_LIMIT)              // ARGV[4]: client rate limit per minute
+                .arg(7 * 24 * 60 * 60)                       // ARGV[5]: session TTL (7 days)
+                .arg(3600)                                    // ARGV[6]: idempotency TTL (1 hour)
+                .arg(100000)                                  // ARGV[7]: stream max length
+                .arg(msg.id.to_string())                      // ARGV[8]: message_id
+                .arg(&message_json)                           // ARGV[9]: message JSON
+                .arg(msg.content_size_bytes)                  // ARGV[10]: size_bytes
+                .arg(session_id)                              // ARGV[11]: session_id
+                .arg(msg.recipient_client_id.to_string())     // ARGV[12]: recipient
+                .arg(if proof_verified { 1 } else { 0 })      // ARGV[13]: proof_verified
+                .arg(if persist_to_db { 1 } else { 0 })       // ARGV[14]: persist_to_db
+                .arg(7 * 24 * 60 * 60)                        // ARGV[15]: client metric TTL (7 days)
+                .arg(msg.sender_client_id.to_string())        // ARGV[16]: sender client ID
                 .invoke_async(&mut conn),
         )
         .await

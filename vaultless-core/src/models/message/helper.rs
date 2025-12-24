@@ -2,7 +2,7 @@ use super::dto::*;
 use crate::cache_key;
 use crate::crypto::verify_signature;
 use crate::error::Result;
-use crate::models::usage::{MetricsConfig, record_proof_verified, RecordProofVerifiedInput};
+use crate::models::usage::application::{MetricsConfig, record_proof_verified, RecordProofVerifiedInput};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use redis::RedisResult;
