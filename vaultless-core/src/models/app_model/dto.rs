@@ -242,7 +242,7 @@ pub struct ApplicationKeyView {
     pub app_is_active: bool,
     pub app_max_ttl_seconds: i32,
     pub app_is_key_rotation_forced: bool,
-    pub app_app_meta: serde_json::Value,
+    pub app_meta: serde_json::Value,
 
     // Secret Key Fields (Prefix info only)
     pub sk_id: Uuid,
@@ -256,7 +256,7 @@ pub struct ApplicationKeyView {
 
 impl ApplicationKeyView {
     pub fn integrity(&self) -> crate::error::Result<IntegrityConfigHandler> {
-        IntegrityConfigHandler::new_from_jsonb(&self.app_app_meta)
+        IntegrityConfigHandler::new_from_jsonb(&self.app_meta)
     }
 }
 
@@ -515,6 +515,128 @@ pub struct ApplicationWithUsage {
 }
 
 
+/// Minimal cache-only struct for Redis HASH storage.
+/// Contains only fields needed for hot-path authorization and rate-limiting.
+/// Stored as Redis HASH for O(1) field access and Lua script compatibility.
+#[derive(Debug, Clone)]
+pub struct AuthCacheEntry {
+    pub app_id: Uuid,
+    pub user_id: Uuid,
+    pub is_active: bool,
+    pub rotation_forced: bool,
+    pub sk_id: Uuid,
+    pub sk_prefix: String,
+    pub tier: String,
+    pub rate_limit_per_minute: i32,
+    pub monthly_quota: i64,
+    pub retention_seconds: i64,
+}
+
+/// Redis field names for AuthCacheEntry HASH storage
+pub mod auth_cache_field {
+    pub const APP_ID: &str = "app_id";
+    pub const USER_ID: &str = "user_id";
+    pub const IS_ACTIVE: &str = "is_active";
+    pub const ROTATION_FORCED: &str = "rotation_forced";
+    pub const SK_ID: &str = "sk_id";
+    pub const SK_PREFIX: &str = "sk_prefix";
+    pub const TIER: &str = "tier";
+    pub const RATE_LIMIT: &str = "rate_limit";
+    pub const QUOTA: &str = "quota";
+    pub const RETENTION: &str = "retention";
+}
+
+impl AuthCacheEntry {
+    /// Cache TTL (1 hour)
+    pub const TTL_SECONDS: i64 = 3600;
+
+    /// Convert from Redis HASH (HashMap<String, String>)
+    /// Returns None if required fields are missing
+    pub fn from_redis(vals: std::collections::HashMap<String, String>) -> Option<Self> {
+        Some(Self {
+            app_id: vals.get(auth_cache_field::APP_ID)?.parse().ok()?,
+            user_id: vals.get(auth_cache_field::USER_ID)?.parse().ok()?,
+            is_active: vals.get(auth_cache_field::IS_ACTIVE).map(|v| v == "1").unwrap_or(false),
+            rotation_forced: vals.get(auth_cache_field::ROTATION_FORCED).map(|v| v == "1").unwrap_or(false),
+            sk_id: vals.get(auth_cache_field::SK_ID)?.parse().ok()?,
+            sk_prefix: vals.get(auth_cache_field::SK_PREFIX)?.clone(),
+            tier: vals.get(auth_cache_field::TIER)?.clone(),
+            rate_limit_per_minute: vals.get(auth_cache_field::RATE_LIMIT)?.parse().ok()?,
+            monthly_quota: vals.get(auth_cache_field::QUOTA)?.parse().ok()?,
+            retention_seconds: vals.get(auth_cache_field::RETENTION)?.parse().ok()?,
+        })
+    }
+
+    /// Convert to Redis HASH compatible values for hset_multiple
+    /// Returns Vec of String for redis pipe
+    pub fn to_redis_args(&self) -> Vec<String> {
+        let mut args = Vec::with_capacity(20);
+        args.push(auth_cache_field::APP_ID.to_string());
+        args.push(self.app_id.to_string());
+        args.push(auth_cache_field::USER_ID.to_string());
+        args.push(self.user_id.to_string());
+        args.push(auth_cache_field::IS_ACTIVE.to_string());
+        args.push(if self.is_active { "1".to_string() } else { "0".to_string() });
+        args.push(auth_cache_field::ROTATION_FORCED.to_string());
+        args.push(if self.rotation_forced { "1".to_string() } else { "0".to_string() });
+        args.push(auth_cache_field::SK_ID.to_string());
+        args.push(self.sk_id.to_string());
+        args.push(auth_cache_field::SK_PREFIX.to_string());
+        args.push(self.sk_prefix.clone());
+        args.push(auth_cache_field::TIER.to_string());
+        args.push(self.tier.clone());
+        args.push(auth_cache_field::RATE_LIMIT.to_string());
+        args.push(self.rate_limit_per_minute.to_string());
+        args.push(auth_cache_field::QUOTA.to_string());
+        args.push(self.monthly_quota.to_string());
+        args.push(auth_cache_field::RETENTION.to_string());
+        args.push(self.retention_seconds.to_string());
+        args
+    }
+
+    /// Convert from ApplicationKeyView (Postgres result)
+    pub fn from_application_key_view(view: &ApplicationKeyView) -> Self {
+        Self {
+            app_id: view.app_id,
+            user_id: view.app_user_id,
+            is_active: view.app_is_active,
+            rotation_forced: view.app_is_key_rotation_forced,
+            sk_id: view.sk_id,
+            sk_prefix: view.sk_key_prefix.clone(),
+            tier: view.sub_tier.to_string(),
+            rate_limit_per_minute: view.sub_rate_limit_per_minute,
+            monthly_quota: view.sub_monthly_message_quota,
+            retention_seconds: view.sub_message_retention_seconds,
+        }
+    }
+
+    /// Project into ApplicationKeyView when full struct is needed
+    pub fn into_application_key_view(self) -> ApplicationKeyView {
+        ApplicationKeyView {
+            app_id: self.app_id,
+            app_user_id: self.user_id,
+            app_name: String::new(), // Not needed in hot path
+            app_description: None,
+            app_is_active: self.is_active,
+            app_max_ttl_seconds: self.retention_seconds as i32, // Approximation
+            app_is_key_rotation_forced: self.rotation_forced,
+            app_meta: serde_json::json!({}),
+            sk_id: self.sk_id,
+            sk_key_prefix: self.sk_prefix,
+            sub_tier: self.tier.parse().unwrap_or(SubscriptionTier::Free),
+            sub_monthly_message_quota: self.monthly_quota,
+            sub_message_retention_seconds: self.retention_seconds,
+            sub_rate_limit_per_minute: self.rate_limit_per_minute,
+        }
+    }
+}
+
+impl From<ApplicationKeyView> for AuthCacheEntry {
+    fn from(view: ApplicationKeyView) -> Self {
+        Self::from_application_key_view(&view)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedApplicationKeyView {
     pub app_id: Uuid,
@@ -537,7 +659,7 @@ pub struct CachedApplicationKeyView {
 
 impl From<ApplicationKeyView> for CachedApplicationKeyView {
     fn from(a: ApplicationKeyView) -> Self {
-        let platform_fingerprint = IntegrityConfigHandler::new_from_jsonb(&a.app_app_meta)
+        let platform_fingerprint = IntegrityConfigHandler::new_from_jsonb(&a.app_meta)
             .map(|handler| handler.platform_config_version)
             .unwrap_or(PlatformConfigVersion::new());
 
@@ -627,11 +749,11 @@ pub struct PaginatedQuotaWarnings {
 }
 
 pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
-    cache_key!("res", "sk", key_hash)
+    cache_key!("auth", "sk", key_hash)
 }
 
 pub fn publishable_key_resolution_cache_key(pk_plaintext: &str) -> String {
-    cache_key!("res", "pk", pk_plaintext)
+    cache_key!("auth", "pk", pk_plaintext)
 }
 
 /// Real-time quota status for an application

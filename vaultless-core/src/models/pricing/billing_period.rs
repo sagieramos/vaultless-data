@@ -28,7 +28,7 @@ pub struct BillingPeriod {
 
 impl BillingPeriod {
     /// Create a new billing period
-    pub async fn create<'c, E>(executor: E, input: CreateBillingPeriod) -> Result<Self, crate::error::VaultlessError>
+    pub async fn create<'c, E>(executor: E, input: CreateBillingPeriod) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -50,7 +50,7 @@ impl BillingPeriod {
     }
 
     /// Find by ID
-    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -64,7 +64,7 @@ impl BillingPeriod {
     }
 
     /// Get the current open billing period for an application
-    pub async fn get_current_open<'c, E>(executor: E, application_id: Uuid) -> Result<Option<Self>, crate::error::VaultlessError>
+    pub async fn get_current_open<'c, E>(executor: E, application_id: Uuid) -> Result<Option<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -84,7 +84,7 @@ impl BillingPeriod {
     }
 
     /// Get all billing periods for an application
-    pub async fn find_by_application<'c, E>(executor: E, application_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_application<'c, E>(executor: E, application_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -99,7 +99,7 @@ impl BillingPeriod {
     }
 
     /// Get all billing periods for a developer
-    pub async fn find_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -114,7 +114,7 @@ impl BillingPeriod {
     }
 
     /// Close a billing period
-    pub async fn close<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn close<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -131,7 +131,7 @@ impl BillingPeriod {
     }
 
     /// Mark billing period as invoiced
-    pub async fn mark_invoiced<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn mark_invoiced<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -148,7 +148,7 @@ impl BillingPeriod {
     }
 
     /// Check if period has any active subscriptions
-    pub async fn has_active_subscriptions<'c, E>(executor: E, id: Uuid) -> Result<bool, crate::error::VaultlessError>
+    pub async fn has_active_subscriptions<'c, E>(executor: E, id: Uuid) -> Result<bool>
     where
         E: Executor<'c, Database = Postgres>,
     {

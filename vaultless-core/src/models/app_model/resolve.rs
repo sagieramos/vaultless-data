@@ -3,6 +3,7 @@ use crate::error::Result;
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 impl Application {
@@ -16,29 +17,23 @@ impl Application {
     {
         let cache_key = publishable_key_resolution_cache_key(pk_plaintext);
 
-        // --- HOT PATH (Redis) ---
-        if let Some(redis_pool) = &redis
-            && let Ok(mut conn) = redis_pool.get().await
-            && let Ok(Some(cached_str)) = conn.get::<_, Option<String>>(&cache_key).await
-        {
-            let cached: CachedApplicationKeyView = serde_json::from_str(&cached_str)?;
-
-            return Ok(Some(ApplicationKeyView {
-                app_id: cached.app_id,
-                app_user_id: cached.app_user_id,
-                app_name: cached.app_name,
-                app_description: None,
-                app_is_active: cached.app_is_active,
-                app_max_ttl_seconds: cached.app_max_ttl_seconds,
-                app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
-                app_app_meta: serde_json::json!({}),
-                sk_id: cached.sk_id,
-                sk_key_prefix: String::new(),
-                sub_tier: cached.sub_tier,
-                sub_monthly_message_quota: cached.sub_monthly_message_quota,
-                sub_message_retention_seconds: cached.sub_message_retention_seconds,
-                sub_rate_limit_per_minute: cached.sub_rate_limit_per_minute,
-            }));
+        // --- HOT PATH (Redis HASH) ---
+        if let Some(redis_pool) = &redis {
+            if let Ok(mut conn) = redis_pool.get().await {
+                // HGETALL for O(1) field access without JSON parsing
+                if let Ok(vals) = conn.hgetall::<_, HashMap<String, String>>(&cache_key).await {
+                    if !vals.is_empty() {
+                        if let Some(auth_entry) = AuthCacheEntry::from_redis(vals) {
+                            // Only return if app is active
+                            if auth_entry.is_active {
+                                return Ok(Some(auth_entry.into_application_key_view()));
+                            }
+                            // Cache exists but app is inactive - return None
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
         }
 
         // --- POSTGRES FALLBACK ---
@@ -49,14 +44,27 @@ impl Application {
         .fetch_optional(exec)
         .await?;
 
-        // Cache-Aside: Update Redis if found
-        if let (Some(full), Some(redis_pool)) = (&auth, redis)
-            && let Ok(mut conn) = redis_pool.get().await
-        {
-            let cached: CachedApplicationKeyView = full.clone().into();
-            let _ = conn
-                .set_ex::<_, _, ()>(&cache_key, serde_json::to_string(&cached)?, 3600)
-                .await;
+        // Cache-Aside: Update Redis HASH if found and app is active
+        if let (Some(full), Some(redis_pool)) = (&auth, redis) {
+            if full.app_is_active {
+                if let Ok(mut conn) = redis_pool.get().await {
+                    let auth_entry: AuthCacheEntry = full.clone().into();
+                    let args = auth_entry.to_redis_args();
+                    // Use HMSET command with all arguments
+                    let mut cmd = redis::cmd("HMSET");
+                    cmd.arg(&cache_key);
+                    for arg in &args {
+                        cmd.arg(arg);
+                    }
+                    let _: () = cmd.query_async(&mut *conn).await?;
+                    // Set TTL on the HASH key
+                    let _: () = redis::cmd("EXPIRE")
+                        .arg(&cache_key)
+                        .arg(AuthCacheEntry::TTL_SECONDS)
+                        .query_async(&mut *conn)
+                        .await?;
+                }
+            }
         }
 
         Ok(auth)
@@ -72,30 +80,23 @@ impl Application {
     {
         let cache_key = secret_key_resolution_cache_key(secret_hash_hex);
 
-        // --- HOT PATH (Redis) ---
-        if let Some(redis_pool) = &redis
-            && let Ok(mut conn) = redis_pool.get().await
-            && let Ok(Some(cached_str)) = conn.get::<_, Option<String>>(&cache_key).await
-        {
-            let cached: CachedApplicationKeyView = serde_json::from_str(&cached_str)?;
-
-            return Ok(Some(ApplicationKeyView {
-                app_id: cached.app_id,
-                app_user_id: cached.app_user_id,
-                app_name: cached.app_name,
-                app_description: None,
-                app_is_active: cached.app_is_active,
-                app_max_ttl_seconds: cached.app_max_ttl_seconds,
-                app_is_key_rotation_forced: cached.app_is_key_rotation_forced,
-                app_app_meta: serde_json::json!({}),
-                sk_id: cached.sk_id,
-                sk_key_prefix: String::new(),
-                // Map Subscription fields
-                sub_tier: cached.sub_tier,
-                sub_monthly_message_quota: cached.sub_monthly_message_quota,
-                sub_message_retention_seconds: cached.sub_message_retention_seconds,
-                sub_rate_limit_per_minute: cached.sub_rate_limit_per_minute,
-            }));
+        // --- HOT PATH (Redis HASH) ---
+        if let Some(redis_pool) = &redis {
+            if let Ok(mut conn) = redis_pool.get().await {
+                // HGETALL for O(1) field access without JSON parsing
+                if let Ok(vals) = conn.hgetall::<_, HashMap<String, String>>(&cache_key).await {
+                    if !vals.is_empty() {
+                        if let Some(auth_entry) = AuthCacheEntry::from_redis(vals) {
+                            // Only return if app is active
+                            if auth_entry.is_active {
+                                return Ok(Some(auth_entry.into_application_key_view()));
+                            }
+                            // Cache exists but app is inactive - return None
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
         }
 
         // --- POSTGRES FALLBACK ---
@@ -106,13 +107,27 @@ impl Application {
         .fetch_optional(exec)
         .await?;
 
-        if let (Some(full), Some(redis_pool)) = (&auth, redis)
-            && let Ok(mut conn) = redis_pool.get().await
-        {
-            let cached: CachedApplicationKeyView = full.clone().into();
-            let _ = conn
-                .set_ex::<_, _, ()>(&cache_key, serde_json::to_string(&cached)?, 3600)
-                .await;
+        // Cache-Aside: Update Redis HASH if found and app is active
+        if let (Some(full), Some(redis_pool)) = (&auth, redis) {
+            if full.app_is_active {
+                if let Ok(mut conn) = redis_pool.get().await {
+                    let auth_entry: AuthCacheEntry = full.clone().into();
+                    let args = auth_entry.to_redis_args();
+                    // Use HMSET command with all arguments
+                    let mut cmd = redis::cmd("HMSET");
+                    cmd.arg(&cache_key);
+                    for arg in &args {
+                        cmd.arg(arg);
+                    }
+                    let _: () = cmd.query_async(&mut *conn).await?;
+                    // Set TTL on the HASH key
+                    let _: () = redis::cmd("EXPIRE")
+                        .arg(&cache_key)
+                        .arg(AuthCacheEntry::TTL_SECONDS)
+                        .query_async(&mut *conn)
+                        .await?;
+                }
+            }
         }
 
         Ok(auth)

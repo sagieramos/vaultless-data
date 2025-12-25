@@ -12,8 +12,8 @@
 //!
 //! ## Module Structure
 //!
-//! - `config`: Configuration for Redis TTLs, batch sizes, and flush intervals.
-//! - `counters`: Data structures for metric counters and Redis key schemas.
+//! - `config`: Configuration for Redis TTLs, batch sizes, and flush intervals (re-exported from parent).
+//! - `counters`: Data structures for metric counters and Redis key schemas (re-exported from parent).
 //! - `engine`: Atomic Lua scripts for incrementing client metrics in Redis.
 //! - `flusher`: The background service for persisting Redis data to Postgres.
 //! - `queries`: SQL queries for retrieving aggregated client usage data from Postgres.
@@ -21,29 +21,14 @@
 //! - `restoration`: Logic to restore Redis state from Postgres on service restarts.
 
 pub mod aggregate;
-pub mod config;
-pub mod counters;
 pub mod engine;
 pub mod flusher;
 pub mod queries;
 pub mod restoration;
 
-// =============================================================================
-// Re-exports
-// =============================================================================
-
-// Config
-pub use config::{
-    MetricsConfig, RedisPoolType, ACTIVE_CLIENT_KEYS_SET,
-    REDIS_OPERATION_TIMEOUT_SECS,
-};
-
-// Counters
-pub use counters::{
-    ClientFlusherMetrics, ClientMetricCounters, ClientMetricKey,
-    MetricGranularity,
-    get_hour_window, get_minute_window,
-};
+// Re-export from parent module (consolidated config and counters)
+pub use super::config::{MetricsConfig, RedisPoolType, ACTIVE_CLIENT_KEYS_SET, PROCESSING_FLAG, ClientUsageEngineConfig};
+pub use super::counters::{ClientFlusherMetrics, ClientMetricCounters, ClientMetricKey, MetricGranularity, get_hour_window};
 
 // Flusher
 pub use flusher::start_client_redis_flusher;
@@ -61,7 +46,7 @@ pub use aggregate::{
 pub use engine::{
     record_client_message_received, record_client_message_sent,
     record_client_proof_verified, record_client_rate_limit_hit,
-    ClientEngineConfig, RecordClientMessageReceivedInput,
+    RecordClientMessageReceivedInput,
     RecordClientMessageSentInput, RecordClientProofVerifiedInput,
     RecordClientRateLimitHitInput,
 };

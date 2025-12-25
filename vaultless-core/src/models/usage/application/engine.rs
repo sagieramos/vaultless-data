@@ -23,11 +23,23 @@
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use super::counters::{MetricGranularity, MetricKey};
+use crate::models::usage::counters::{MetricGranularity, MetricKey};
 use chrono::{Datelike, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::models::usage::config::UsageEngineConfig;
+
+// =============================================================================
+// Lua Scripts (loaded from external files)
+// =============================================================================
+
+const RECORD_MESSAGE_SENT_LUA: &str = include_str!("../../../scripts/usage_record_message_sent.lua");
+const RECORD_MESSAGE_RECEIVED_LUA: &str = include_str!("../../../scripts/usage_record_message_received.lua");
+const RECORD_PROOF_VERIFIED_LUA: &str = include_str!("../../../scripts/usage_record_proof_verified.lua");
+const RECORD_RATE_LIMIT_HIT_LUA: &str = include_str!("../../../scripts/usage_record_rate_limit_hit.lua");
+const INCREMENT_SESSION_LUA: &str = include_str!("../../../scripts/usage_increment_session.lua");
 
 // =============================================================================
 // Key Generation
@@ -63,190 +75,12 @@ pub fn session_metric_key(session_id: &str, counter_type: &str) -> String {
 }
 
 // =============================================================================
-// Lua Scripts
-// =============================================================================
-
-/// Record message sent with atomic app + session metrics.
-///
-/// Performs in a single atomic operation:
-/// 1. Idempotency check (prevents double-counting)
-/// 2. Application monthly quota increment
-/// 3. Application hourly metrics increment
-/// 4. Session sent metrics increment
-/// 5. TTL setup (only on first creation)
-///
-/// Returns: 1 if counted, 0 if already counted
-const RECORD_MESSAGE_SENT_LUA: &str = r#"
-local counted_key = KEYS[1]
-local monthly_key = KEYS[2]
-local hourly_key = KEYS[3]
-local session_sent_key = KEYS[4]
-local session_bytes_key = KEYS[5]
-
-local counted_ttl = tonumber(ARGV[1])
-local monthly_ttl = tonumber(ARGV[2])
-local hourly_ttl = tonumber(ARGV[3])
-local session_ttl = tonumber(ARGV[4])
-local size_bytes = tonumber(ARGV[5])
-
--- Idempotency check: only count once per message
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
--- Application monthly quota
-local monthly_count = redis.call('INCR', monthly_key)
-if monthly_count == 1 then
-    redis.call('EXPIRE', monthly_key, monthly_ttl)
-end
-
--- Application hourly metrics (hash)
-redis.call('HINCRBY', hourly_key, 'messages_sent', 1)
-redis.call('HINCRBY', hourly_key, 'total_bytes_sent', size_bytes)
--- Only set TTL on first creation
-if redis.call('EXISTS', hourly_key) == 0 then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
--- Session metrics
-redis.call('INCR', session_sent_key)
-redis.call('INCRBY', session_bytes_key, size_bytes)
-redis.call('EXPIRE', session_sent_key, session_ttl)
-redis.call('EXPIRE', session_bytes_key, session_ttl)
-
-return 1
-"#;
-
-/// Record message received with atomic app + session metrics.
-///
-/// Returns: 1 if counted, 0 if already counted
-const RECORD_MESSAGE_RECEIVED_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-local session_rcvd_key = KEYS[3]
-local session_bytes_key = KEYS[4]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-local session_ttl = tonumber(ARGV[3])
-local size_bytes = tonumber(ARGV[4])
-
--- Idempotency check
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
--- Application hourly metrics (hash)
-redis.call('HINCRBY', hourly_key, 'messages_received', 1)
-redis.call('HINCRBY', hourly_key, 'total_bytes_received', size_bytes)
-if redis.call('EXISTS', hourly_key) == 0 then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
--- Session metrics
-redis.call('INCR', session_rcvd_key)
-redis.call('INCRBY', session_bytes_key, size_bytes)
-redis.call('EXPIRE', session_rcvd_key, session_ttl)
-redis.call('EXPIRE', session_bytes_key, session_ttl)
-
-return 1
-"#;
-
-/// Record proof verified with atomic app + session metrics.
-///
-/// Returns: 1 if counted, 0 if already counted
-const RECORD_PROOF_VERIFIED_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-local session_proved_key = KEYS[3]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-local session_ttl = tonumber(ARGV[3])
-
--- Idempotency check
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
--- Application hourly metrics (hash)
-redis.call('HINCRBY', hourly_key, 'proofs_verified', 1)
-if redis.call('EXISTS', hourly_key) == 0 then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
--- Session metrics
-redis.call('INCR', session_proved_key)
-redis.call('EXPIRE', session_proved_key, session_ttl)
-
-return 1
-"#;
-
-/// Record rate limit hit with atomic app + session metrics.
-///
-/// Returns: 1 if counted, 0 if already counted
-const RECORD_RATE_LIMIT_HIT_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-
--- Idempotency check
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
--- Application hourly metrics (hash)
-redis.call('HINCRBY', hourly_key, 'rate_limit_hits', 1)
-if redis.call('EXISTS', hourly_key) == 0 then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
-return 1
-"#;
-
-// =============================================================================
 // Configuration
 // =============================================================================
 
 /// Default engine configuration (lazily initialized)
-static DEFAULT_CONFIG: once_cell::sync::Lazy<EngineConfig> =
-    once_cell::sync::Lazy::new(|| EngineConfig::default());
-
-/// Configuration for usage engine
-#[derive(Debug, Clone)]
-pub struct EngineConfig {
-    /// TTL for counted keys (prevents replay, e.g., 1 hour)
-    pub counted_ttl_secs: i64,
-    /// TTL for monthly quota keys (35 days)
-    pub monthly_ttl_secs: i64,
-    /// TTL for hourly metric keys (2 hours)
-    pub hourly_ttl_secs: i64,
-    /// TTL for session metric keys (7 days)
-    pub session_ttl_secs: i64,
-    /// Redis operation timeout
-    pub operation_timeout_secs: u64,
-    /// Max batch size for flush operations
-    pub max_batch_size: usize,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            counted_ttl_secs: 3600,                  // 1 hour
-            monthly_ttl_secs: 35 * 24 * 60 * 60,    // 35 days
-            hourly_ttl_secs: 7200,                   // 2 hours
-            session_ttl_secs: 7 * 24 * 60 * 60,      // 7 days
-            operation_timeout_secs: 5,
-            max_batch_size: 100,
-        }
-    }
-}
+static DEFAULT_CONFIG: once_cell::sync::Lazy<UsageEngineConfig> =
+    once_cell::sync::Lazy::new(|| UsageEngineConfig::default());
 
 // =============================================================================
 // Input Types
@@ -339,7 +173,7 @@ impl RecordRateLimitHitInput {
 pub async fn record_message_sent(
     pool: &RedisPool,
     input: RecordMessageSentInput,
-    config: Option<&'static EngineConfig>,
+    config: Option<&'static UsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let mut conn = pool
@@ -382,7 +216,7 @@ pub async fn record_message_sent(
 pub async fn record_message_received(
     pool: &RedisPool,
     input: RecordMessageReceivedInput,
-    config: Option<&'static EngineConfig>,
+    config: Option<&'static UsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let mut conn = pool
@@ -422,7 +256,7 @@ pub async fn record_message_received(
 pub async fn record_proof_verified(
     pool: &RedisPool,
     input: RecordProofVerifiedInput,
-    config: Option<&'static EngineConfig>,
+    config: Option<&'static UsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let mut conn = pool
@@ -459,7 +293,7 @@ pub async fn record_proof_verified(
 pub async fn record_rate_limit_hit(
     pool: &RedisPool,
     input: RecordRateLimitHitInput,
-    config: Option<&'static EngineConfig>,
+    config: Option<&'static UsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let mut conn = pool
@@ -506,7 +340,7 @@ pub async fn record_message_events(
     sent: Option<RecordMessageSentInput>,
     received: Option<RecordMessageReceivedInput>,
     proved: Option<RecordProofVerifiedInput>,
-    config: Option<&'static EngineConfig>,
+    config: Option<&'static UsageEngineConfig>,
 ) -> Result<MultiRecordResult> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
 
@@ -536,45 +370,6 @@ pub async fn record_message_events(
 // =============================================================================
 // Session-Only Operations (no idempotency, no app metrics)
 // =============================================================================
-
-/// Lua script for incrementing session counters only (no idempotency)
-const INCREMENT_SESSION_LUA: &str = r#"
-local sent_key = KEYS[1]
-local bytes_sent_key = KEYS[2]
-local rcvd_key = KEYS[3]
-local bytes_rcvd_key = KEYS[4]
-local proved_key = KEYS[5]
-
-local sent_delta = tonumber(ARGV[1])
-local bytes_sent_delta = tonumber(ARGV[2])
-local rcvd_delta = tonumber(ARGV[3])
-local bytes_rcvd_delta = tonumber(ARGV[4])
-local proved_delta = tonumber(ARGV[5])
-local ttl = tonumber(ARGV[6])
-
-if sent_delta > 0 then
-    redis.call('INCRBY', sent_key, sent_delta)
-    redis.call('EXPIRE', sent_key, ttl)
-end
-if bytes_sent_delta > 0 then
-    redis.call('INCRBY', bytes_sent_key, bytes_sent_delta)
-    redis.call('EXPIRE', bytes_sent_key, ttl)
-end
-if rcvd_delta > 0 then
-    redis.call('INCRBY', rcvd_key, rcvd_delta)
-    redis.call('EXPIRE', rcvd_key, ttl)
-end
-if bytes_rcvd_delta > 0 then
-    redis.call('INCRBY', bytes_rcvd_key, bytes_rcvd_delta)
-    redis.call('EXPIRE', bytes_rcvd_key, ttl)
-end
-if proved_delta > 0 then
-    redis.call('INCRBY', proved_key, proved_delta)
-    redis.call('EXPIRE', proved_key, ttl)
-end
-
-return 1
-"#;
 
 /// Increment session counters without idempotency or app metrics.
 /// Use this for background/cached updates where you already know the counts.

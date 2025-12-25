@@ -3,8 +3,8 @@
 //! Restores missing or recent aggregated hourly rows from Postgres into Redis
 //! so a Redis restart can continue from the last persisted state.
 
-use super::config::{RedisPoolType, ACTIVE_KEYS_SET};
-use super::counters::{MetricGranularity, MetricKey};
+use crate::models::usage::config::{RedisPoolType, ACTIVE_KEYS_SET};
+use crate::models::usage::counters::{MetricGranularity, MetricKey};
 use crate::error::{Result, VaultlessError};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -78,37 +78,37 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             let mut pipe = redis::pipe();
             pipe.atomic()
                 .hset(
-                    key_str,
+                    &key_str,
                     "messages_sent",
                     r.try_get::<i64, _>("messages_sent").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "messages_received",
                     r.try_get::<i64, _>("messages_received").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "proofs_verified",
                     r.try_get::<i64, _>("proofs_verified").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "total_bytes_sent",
                     r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "total_bytes_received",
                     r.try_get::<i64, _>("total_bytes_received").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "rate_limit_hits",
                     r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0),
                 )
-                .sadd(ACTIVE_KEYS_SET.as_str(), key_str)
-                .expire(key_str, LOOKBACK_SECS);
+                .sadd(ACTIVE_KEYS_SET.as_str(), &key_str)
+                .expire(&key_str, LOOKBACK_SECS);
             let _: () = pipe
                 .query_async(&mut *conn)
                 .await
@@ -168,37 +168,37 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             let mut pipe = redis::pipe();
             pipe.atomic()
                 .hset(
-                    key_str,
+                    &key_str,
                     "messages_sent",
                     r.try_get::<i64, _>("messages_sent").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "messages_received",
                     r.try_get::<i64, _>("messages_received").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "proofs_verified",
                     r.try_get::<i64, _>("proofs_verified").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "total_bytes_sent",
                     r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "total_bytes_received",
                     r.try_get::<i64, _>("total_bytes_received").unwrap_or(0),
                 )
                 .hset(
-                    key_str,
+                    &key_str,
                     "rate_limit_hits",
                     r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0),
                 )
-                .sadd(ACTIVE_KEYS_SET.as_str(), key_str)
-                .expire(key_str, LOOKBACK_SECS);
+                .sadd(ACTIVE_KEYS_SET.as_str(), &key_str)
+                .expire(&key_str, LOOKBACK_SECS);
             let _: () = pipe
                 .query_async(&mut *conn)
                 .await

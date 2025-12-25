@@ -6,8 +6,8 @@
 //!
 //! ## Module Structure
 //!
-//! - `config` - Configuration, constants, and type aliases
-//! - `counters` - Metric counter types and Redis key management
+//! - `config` - Configuration, constants, and type aliases (re-exported from parent)
+//! - `counters` - Metric counter types and Redis key management (re-exported from parent)
 //! - `engine` - Atomic Lua scripts for billing-critical operations
 //! - `increment` - Redis increment operations (legacy hot path)
 //! - `flusher` - Background flusher for Redis to Postgres persistence
@@ -16,27 +16,14 @@
 //! - `restoration` - Redis state restoration from Postgres
 
 pub mod aggregate;
-pub mod config;
-pub mod counters;
 pub mod engine;
 pub mod flusher;
 pub mod queries;
 pub mod restoration;
 
-// =============================================================================
-// Re-exports
-// =============================================================================
-
-// Config
-pub use config::{
-    MetricsConfig, RedisPoolType, ACTIVE_KEYS_SET, REDIS_OPERATION_TIMEOUT_SECS,
-};
-
-// Counters
-pub use counters::{
-    FlusherMetrics, MetricCounters, MetricGranularity, MetricKey,
-    get_hour_window, get_minute_window,
-};
+// Re-export from parent module (consolidated config and counters)
+pub use super::config::{MetricsConfig, RedisPoolType, ACTIVE_KEYS_SET, PROCESSING_FLAG, UsageEngineConfig};
+pub use super::counters::{FlusherMetrics, MetricCounters, MetricGranularity, MetricKey, get_hour_window, get_minute_window};
 
 // Flusher
 pub use flusher::start_redis_flusher;
@@ -54,7 +41,7 @@ pub use aggregate::{
 pub use engine::{
     get_session_counters, increment_session_counters, record_message_events,
     record_message_received, record_message_sent, record_proof_verified,
-    record_rate_limit_hit, session_metric_key, EngineConfig,
+    record_rate_limit_hit, session_metric_key,
     RecordMessageReceivedInput, RecordMessageSentInput, RecordProofVerifiedInput,
     RecordRateLimitHitInput,
 };

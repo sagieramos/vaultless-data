@@ -12,8 +12,8 @@ use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use super::config::{MetricsConfig, RedisPoolType, ACTIVE_CLIENT_KEYS_SET, PROCESSING_FLAG};
-use super::counters::{
+use crate::models::usage::config::{MetricsConfig, RedisPoolType, ACTIVE_CLIENT_KEYS_SET, PROCESSING_FLAG};
+use crate::models::usage::counters::{
     get_hour_window, ClientFlusherMetrics, ClientMetricCounters, ClientMetricKey,
 };
 
@@ -173,7 +173,7 @@ async fn flush_redis_to_pg(
 
 async fn recover_orphaned_keys(
     redis_pool: &Arc<RedisPoolType>,
-    config: &MetricsConfig,
+    _config: &MetricsConfig,
 ) -> Result<Vec<ClientMetricKey>> {
     let mut conn = redis_pool.get().await?;
     let mut orphaned = Vec::new();
@@ -206,7 +206,7 @@ async fn flush_batch_to_pg(
     pg: &PgPool,
     mut batch: Vec<BatchEntry>,
     redis_pool: &Arc<RedisPoolType>,
-    config: &MetricsConfig,
+    _config: &MetricsConfig,
     metrics: Option<&ClientFlusherMetrics>,
 ) -> Result<()> {
     if batch.is_empty() {

@@ -2,10 +2,21 @@
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use super::counters::{ClientMetricKey, MetricGranularity};
+use crate::models::usage::counters::{ClientMetricKey, MetricGranularity};
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
 use uuid::Uuid;
+
+use crate::models::usage::config::ClientUsageEngineConfig;
+
+// =============================================================================
+// Lua Scripts (loaded from external files)
+// =============================================================================
+
+const RECORD_CLIENT_MESSAGE_SENT_LUA: &str = include_str!("../../../scripts/usage_record_client_message_sent.lua");
+const RECORD_CLIENT_MESSAGE_RECEIVED_LUA: &str = include_str!("../../../scripts/usage_record_client_message_received.lua");
+const RECORD_CLIENT_PROOF_VERIFIED_LUA: &str = include_str!("../../../scripts/usage_record_client_proof_verified.lua");
+const RECORD_CLIENT_RATE_LIMIT_HIT_LUA: &str = include_str!("../../../scripts/usage_record_client_rate_limit_hit.lua");
 
 // =============================================================================
 // Key Generation
@@ -27,138 +38,11 @@ pub fn client_hourly_key(application_id: Uuid, client_id: Uuid, hour: chrono::Da
 }
 
 // =============================================================================
-// Lua Scripts
-// =============================================================================
-
-/// Records a message sent by a client.
-/// Atomically increments client-specific counters.
-///
-/// Keys:
-/// 1. Idempotency key (`counted:client:{message_id}`)
-/// 2. Client hourly metric hash key
-///
-/// Args:
-/// 1. Idempotency key TTL
-/// 2. Hourly metric key TTL
-/// 3. Size of the message in bytes
-///
-/// Returns: 1 if counted, 0 if already counted
-const RECORD_CLIENT_MESSAGE_SENT_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-local size_bytes = tonumber(ARGV[3])
-
--- Idempotency check
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
--- Increment client hourly metrics
-local initial_creation = (redis.call('EXISTS', hourly_key) == 0)
-redis.call('HINCRBY', hourly_key, 'messages_sent', 1)
-redis.call('HINCRBY', hourly_key, 'total_bytes_sent', size_bytes)
-if initial_creation then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
-return 1
-"#;
-
-/// Records a message received by a client.
-const RECORD_CLIENT_MESSAGE_RECEIVED_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-local size_bytes = tonumber(ARGV[3])
-
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
-local initial_creation = (redis.call('EXISTS', hourly_key) == 0)
-redis.call('HINCRBY', hourly_key, 'messages_received', 1)
-redis.call('HINCRBY', hourly_key, 'total_bytes_received', size_bytes)
-if initial_creation then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
-return 1
-"#;
-
-/// Records a proof verified by a client.
-const RECORD_CLIENT_PROOF_VERIFIED_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
-local initial_creation = (redis.call('EXISTS', hourly_key) == 0)
-redis.call('HINCRBY', hourly_key, 'proofs_verified', 1)
-if initial_creation then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
-return 1
-"#;
-
-/// Records a rate limit hit for a client.
-const RECORD_CLIENT_RATE_LIMIT_HIT_LUA: &str = r#"
-local counted_key = KEYS[1]
-local hourly_key = KEYS[2]
-
-local counted_ttl = tonumber(ARGV[1])
-local hourly_ttl = tonumber(ARGV[2])
-
-local ok = redis.call('SET', counted_key, '1', 'NX', 'EX', counted_ttl)
-if not ok then
-    return 0
-end
-
-local initial_creation = (redis.call('EXISTS', hourly_key) == 0)
-redis.call('HINCRBY', hourly_key, 'rate_limit_hits', 1)
-if initial_creation then
-    redis.call('EXPIRE', hourly_key, hourly_ttl)
-end
-
-return 1
-"#;
-
-// =============================================================================
 // Configuration
 // =============================================================================
 
-static DEFAULT_CONFIG: once_cell::sync::Lazy<ClientEngineConfig> =
-    once_cell::sync::Lazy::new(ClientEngineConfig::default);
-
-#[derive(Debug, Clone)]
-pub struct ClientEngineConfig {
-    pub counted_ttl_secs: i64,
-    pub hourly_ttl_secs: i64,
-    pub operation_timeout_secs: u64,
-}
-
-impl Default for ClientEngineConfig {
-    fn default() -> Self {
-        Self {
-            counted_ttl_secs: 3600, // 1 hour
-            hourly_ttl_secs: 7200,  // 2 hours
-            operation_timeout_secs: 5,
-        }
-    }
-}
+static DEFAULT_CONFIG: once_cell::sync::Lazy<ClientUsageEngineConfig> =
+    once_cell::sync::Lazy::new(ClientUsageEngineConfig::default);
 
 // =============================================================================
 // Input Types
@@ -207,7 +91,7 @@ async fn run_script(
     error_context: &str,
 ) -> Result<bool> {
     let mut conn = pool.get().await.map_err(|e| VaultlessError::Internal(e.to_string()))?;
-    let mut script_cmd = redis::Script::new(script);
+    let script_cmd = redis::Script::new(script);
     for key in keys {
         script_cmd.key(key);
     }
@@ -231,7 +115,7 @@ async fn run_script(
 pub async fn record_client_message_sent(
     pool: &RedisPool,
     input: RecordClientMessageSentInput,
-    config: Option<&'static ClientEngineConfig>,
+    config: Option<&'static ClientUsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let now = Utc::now();
@@ -251,7 +135,7 @@ pub async fn record_client_message_sent(
 pub async fn record_client_message_received(
     pool: &RedisPool,
     input: RecordClientMessageReceivedInput,
-    config: Option<&'static ClientEngineConfig>,
+    config: Option<&'static ClientUsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let now = Utc::now();
@@ -271,7 +155,7 @@ pub async fn record_client_message_received(
 pub async fn record_client_proof_verified(
     pool: &RedisPool,
     input: RecordClientProofVerifiedInput,
-    config: Option<&'static ClientEngineConfig>,
+    config: Option<&'static ClientUsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let now = Utc::now();
@@ -287,7 +171,7 @@ pub async fn record_client_proof_verified(
 pub async fn record_client_rate_limit_hit(
     pool: &RedisPool,
     input: RecordClientRateLimitHitInput,
-    config: Option<&'static ClientEngineConfig>,
+    config: Option<&'static ClientUsageEngineConfig>,
 ) -> Result<bool> {
     let config = config.unwrap_or(&DEFAULT_CONFIG);
     let now = Utc::now();

@@ -16,8 +16,8 @@ use tokio::time::{Duration, interval};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use super::config::{MetricsConfig, RedisPoolType, ACTIVE_KEYS_SET, PROCESSING_FLAG};
-use super::counters::{get_hour_window, FlusherMetrics, MetricCounters, MetricKey};
+use crate::models::usage::config::{MetricsConfig, RedisPoolType, ACTIVE_KEYS_SET, PROCESSING_FLAG};
+use crate::models::usage::counters::{get_hour_window, FlusherMetrics, MetricCounters, MetricKey};
 
 // =============================================================================
 // Types
@@ -302,7 +302,7 @@ async fn recover_orphaned_keys(
                 warn!("Recovering orphaned key: {}", key.as_str());
                 let _ = tokio::time::timeout(
                     Duration::from_secs(config.redis_operation_timeout_secs),
-                    conn.hdel::<&str, &str, ()>(key.as_str(), PROCESSING_FLAG),
+                    conn.hdel::<String, &str, ()>(key.as_str(), PROCESSING_FLAG),
                 )
                 .await;
                 orphaned.push(key);

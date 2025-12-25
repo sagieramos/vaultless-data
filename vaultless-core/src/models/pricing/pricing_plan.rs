@@ -46,7 +46,7 @@ impl PricingPlan {
     }
 
     /// Create a new pricing plan
-    pub async fn create<'c, E>(executor: E, input: CreatePricingPlan) -> Result<Self, crate::error::VaultlessError>
+    pub async fn create<'c, E>(executor: E, input: CreatePricingPlan) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -75,7 +75,7 @@ impl PricingPlan {
     }
 
     /// Find a plan by ID
-    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -89,7 +89,7 @@ impl PricingPlan {
     }
 
     /// Find all plans for a developer
-    pub async fn find_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -104,7 +104,7 @@ impl PricingPlan {
     }
 
     /// Delete a plan
-    pub async fn delete<'c, E>(executor: E, id: Uuid, developer_id: Uuid) -> Result<bool, crate::error::VaultlessError>
+    pub async fn delete<'c, E>(executor: E, id: Uuid, developer_id: Uuid) -> Result<bool>
     where
         E: Executor<'c, Database = Postgres>,
     {

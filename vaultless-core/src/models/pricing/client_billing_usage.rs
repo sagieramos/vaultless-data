@@ -47,7 +47,7 @@ impl ClientBillingUsage {
         total_bytes_received: i64,
         rate_limit_hits: i32,
         pricing_snapshot: &PricingSnapshot,
-    ) -> Result<Self, crate::error::VaultlessError>
+    ) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -93,7 +93,7 @@ impl ClientBillingUsage {
     }
 
     /// Find by ID
-    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -107,7 +107,7 @@ impl ClientBillingUsage {
     }
 
     /// Get usage for a billing period
-    pub async fn find_by_billing_period<'c, E>(executor: E, billing_period_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_billing_period<'c, E>(executor: E, billing_period_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -126,7 +126,7 @@ impl ClientBillingUsage {
         executor: E,
         client_id: Uuid,
         billing_period_id: Uuid,
-    ) -> Result<Option<Self>, crate::error::VaultlessError>
+    ) -> Result<Option<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {

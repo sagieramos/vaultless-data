@@ -40,7 +40,7 @@ impl ClientInvoice {
         pricing_snapshot: PricingSnapshot,
         subtotal_cents: i64,
         total_cents: i64,
-    ) -> Result<Self, crate::error::VaultlessError>
+    ) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -68,7 +68,7 @@ impl ClientInvoice {
     }
 
     /// Find by ID
-    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn find_by_id<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -86,7 +86,7 @@ impl ClientInvoice {
         executor: E,
         client_id: Uuid,
         billing_period_id: Uuid,
-    ) -> Result<Option<Self>, crate::error::VaultlessError>
+    ) -> Result<Option<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -105,7 +105,7 @@ impl ClientInvoice {
     }
 
     /// Get all invoices for a billing period
-    pub async fn find_by_billing_period<'c, E>(executor: E, billing_period_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_billing_period<'c, E>(executor: E, billing_period_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -120,7 +120,7 @@ impl ClientInvoice {
     }
 
     /// Get all invoices for a client
-    pub async fn find_by_client<'c, E>(executor: E, client_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_client<'c, E>(executor: E, client_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -135,7 +135,7 @@ impl ClientInvoice {
     }
 
     /// Get all invoices for an application
-    pub async fn find_by_application<'c, E>(executor: E, application_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_application<'c, E>(executor: E, application_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -150,7 +150,7 @@ impl ClientInvoice {
     }
 
     /// Get all invoices for a developer (across all their applications)
-    pub async fn find_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<Vec<Self>, crate::error::VaultlessError>
+    pub async fn find_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<Vec<Self>>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -165,7 +165,7 @@ impl ClientInvoice {
     }
 
     /// Update invoice status
-    pub async fn update_status<'c, E>(executor: E, id: Uuid, status: InvoiceStatus) -> Result<Self, crate::error::VaultlessError>
+    pub async fn update_status<'c, E>(executor: E, id: Uuid, status: InvoiceStatus) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -181,7 +181,7 @@ impl ClientInvoice {
     }
 
     /// Mark invoice as finalized
-    pub async fn finalize<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn finalize<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -189,7 +189,7 @@ impl ClientInvoice {
     }
 
     /// Mark invoice as paid
-    pub async fn mark_paid<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn mark_paid<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -197,7 +197,7 @@ impl ClientInvoice {
     }
 
     /// Mark invoice as failed
-    pub async fn mark_failed<'c, E>(executor: E, id: Uuid) -> Result<Self, crate::error::VaultlessError>
+    pub async fn mark_failed<'c, E>(executor: E, id: Uuid) -> Result<Self>
     where
         E: Executor<'c, Database = Postgres>,
     {
@@ -205,7 +205,7 @@ impl ClientInvoice {
     }
 
     /// Get total revenue for a developer
-    pub async fn get_total_revenue_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<i64, crate::error::VaultlessError>
+    pub async fn get_total_revenue_by_developer<'c, E>(executor: E, developer_id: Uuid) -> Result<i64>
     where
         E: Executor<'c, Database = Postgres>,
     {

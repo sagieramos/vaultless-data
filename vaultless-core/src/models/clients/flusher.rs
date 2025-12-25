@@ -5,7 +5,7 @@
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::application::{EngineConfig, RedisPoolType};
+use crate::models::usage::config::{RedisPoolType, UsageEngineConfig};
 use redis::AsyncCommands;
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -50,7 +50,7 @@ impl ClientFlusherMetrics {
 pub fn start_client_flusher(
     redis_pool: Arc<RedisPoolType>,
     pg_pool: Arc<PgPool>,
-    config: Arc<EngineConfig>,
+    config: Arc<UsageEngineConfig>,
     metrics: Option<Arc<ClientFlusherMetrics>>,
 ) -> (tokio::task::JoinHandle<()>, Arc<Notify>) {
     let shutdown = Arc::new(Notify::new());
@@ -104,7 +104,7 @@ pub fn start_client_flusher(
 async fn flush_client_counters(
     redis_pool: Arc<RedisPoolType>,
     pg: Arc<PgPool>,
-    config: &EngineConfig,
+    config: &UsageEngineConfig,
     metrics: Option<&ClientFlusherMetrics>,
     flush_all: bool,
 ) -> Result<()> {

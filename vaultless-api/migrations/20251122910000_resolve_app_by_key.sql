@@ -66,7 +66,7 @@ RETURNS TABLE (
     app_is_active boolean,
     app_max_ttl_seconds integer,
     app_is_key_rotation_forced boolean,
-    app_app_meta jsonb,
+    app_meta jsonb,
 
     -- Secret Key Fields
     sk_id uuid,

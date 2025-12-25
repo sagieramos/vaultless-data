@@ -1,8 +1,8 @@
 //! Redis state restoration from Postgres for client metrics.
 
-use super::config::{RedisPoolType, ACTIVE_CLIENT_KEYS_SET};
-use super::counters::{ClientMetricKey, MetricGranularity};
-use crate::error::{Result};
+use crate::models::usage::config::{RedisPoolType, ACTIVE_CLIENT_KEYS_SET};
+use crate::models::usage::counters::{ClientMetricKey, MetricGranularity};
+use crate::error::Result;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
@@ -67,14 +67,14 @@ async fn restore_from_lookback_period(
 
         let mut pipe = redis::pipe();
         pipe.atomic()
-            .hset(key_str, "messages_sent", r.try_get::<i64, _>("messages_sent").unwrap_or(0))
-            .hset(key_str, "messages_received", r.try_get::<i64, _>("messages_received").unwrap_or(0))
-            .hset(key_str, "proofs_verified", r.try_get::<i64, _>("proofs_verified").unwrap_or(0))
-            .hset(key_str, "total_bytes_sent", r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0))
-            .hset(key_str, "total_bytes_received", r.try_get::<i64, _>("total_bytes_received").unwrap_or(0))
-            .hset(key_str, "rate_limit_hits", r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0))
-            .sadd(ACTIVE_CLIENT_KEYS_SET.as_str(), key_str)
-            .expire(key_str, LOOKBACK_SECS);
+            .hset(&key_str, "messages_sent", r.try_get::<i64, _>("messages_sent").unwrap_or(0))
+            .hset(&key_str, "messages_received", r.try_get::<i64, _>("messages_received").unwrap_or(0))
+            .hset(&key_str, "proofs_verified", r.try_get::<i64, _>("proofs_verified").unwrap_or(0))
+            .hset(&key_str, "total_bytes_sent", r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0))
+            .hset(&key_str, "total_bytes_received", r.try_get::<i64, _>("total_bytes_received").unwrap_or(0))
+            .hset(&key_str, "rate_limit_hits", r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0))
+            .sadd(ACTIVE_CLIENT_KEYS_SET.as_str(), &key_str)
+            .expire(&key_str, LOOKBACK_SECS);
         
         let _: () = pipe.query_async(&mut conn).await?;
     }
@@ -128,14 +128,14 @@ async fn restore_incrementally(
 
             let mut pipe = redis::pipe();
             pipe.atomic()
-                .hset(key_str, "messages_sent", r.try_get::<i64, _>("messages_sent").unwrap_or(0))
-                .hset(key_str, "messages_received", r.try_get::<i64, _>("messages_received").unwrap_or(0))
-                .hset(key_str, "proofs_verified", r.try_get::<i64, _>("proofs_verified").unwrap_or(0))
-                .hset(key_str, "total_bytes_sent", r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0))
-                .hset(key_str, "total_bytes_received", r.try_get::<i64, _>("total_bytes_received").unwrap_or(0))
-                .hset(key_str, "rate_limit_hits", r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0))
-                .sadd(ACTIVE_CLIENT_KEYS_SET.as_str(), key_str)
-                .expire(key_str, LOOKBACK_SECS);
+                .hset(&key_str, "messages_sent", r.try_get::<i64, _>("messages_sent").unwrap_or(0))
+                .hset(&key_str, "messages_received", r.try_get::<i64, _>("messages_received").unwrap_or(0))
+                .hset(&key_str, "proofs_verified", r.try_get::<i64, _>("proofs_verified").unwrap_or(0))
+                .hset(&key_str, "total_bytes_sent", r.try_get::<i64, _>("total_bytes_sent").unwrap_or(0))
+                .hset(&key_str, "total_bytes_received", r.try_get::<i64, _>("total_bytes_received").unwrap_or(0))
+                .hset(&key_str, "rate_limit_hits", r.try_get::<i64, _>("rate_limit_hits").unwrap_or(0))
+                .sadd(ACTIVE_CLIENT_KEYS_SET.as_str(), &key_str)
+                .expire(&key_str, LOOKBACK_SECS);
 
             let _: () = pipe.query_async(&mut conn).await?;
         }

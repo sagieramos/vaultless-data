@@ -29,27 +29,29 @@ impl ApplicationPricingPlan {
     where
         E: Executor<'c, Database = Postgres>,
     {
-        // Use a single query with CTE to handle default clearing and insertion atomically
+        let is_default = input.is_default.unwrap_or(false);
+
         let plan = sqlx::query_as::<_, Self>(
             r#"
-            WITH updated AS (
+            WITH cleared AS (
                 UPDATE application_pricing_plans
                 SET is_default = false
                 WHERE application_id = $1
                   AND pricing_plan_id <> $2
+                  AND is_default = true
                   AND $3 = true
                 RETURNING application_id
             )
             INSERT INTO application_pricing_plans (application_id, pricing_plan_id, is_default)
             VALUES ($1, $2, $3)
             ON CONFLICT (application_id, pricing_plan_id)
-            DO UPDATE SET is_default = $3
+            DO UPDATE SET is_default = EXCLUDED.is_default
             RETURNING *
             "#,
         )
         .bind(application_id)
         .bind(input.pricing_plan_id)
-        .bind(input.is_default.unwrap_or(false))
+        .bind(is_default)
         .fetch_one(executor)
         .await?;
 
