@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 // =============================================================================
@@ -75,13 +76,13 @@ impl FromStr for MetricGranularity {
 
 /// Key structure for application-level metrics
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MetricKey {
+pub struct AppMetricKey {
     pub app_id: Uuid,
     pub granularity: MetricGranularity,
     pub window: DateTime<Utc>,
 }
 
-impl MetricKey {
+impl AppMetricKey {
     /// Create a new metric key
     pub fn new(app_id: Uuid, dt: DateTime<Utc>, granularity: MetricGranularity) -> Result<Self, VaultlessError> {
         let window = match granularity {
@@ -111,13 +112,13 @@ impl MetricKey {
     }
 }
 
-impl fmt::Display for MetricKey {
+impl fmt::Display for AppMetricKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-impl MetricKey {
+impl AppMetricKey {
     /// Parse from a Redis key string
     pub fn try_from(s: String) -> Result<Self, VaultlessError> {
         // Expected format: metric:app:{app_id}:{granularity}:{window}
@@ -255,7 +256,7 @@ pub fn get_minute_window(now: &DateTime<Utc>) -> DateTime<Utc> {
 // =============================================================================
 
 /// Counters for application-level metrics
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MetricCounters {
     pub messages_sent: i64,
     pub messages_received: i64,
@@ -356,6 +357,10 @@ pub struct FlusherMetrics {
 }
 
 impl FlusherMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn record_error(&self) {
         self.errors.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }

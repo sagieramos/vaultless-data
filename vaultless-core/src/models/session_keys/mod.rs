@@ -34,29 +34,8 @@ pub struct SessionKey {
 
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
-
-    pub messages_sent: i64,
-    pub messages_received: i64,
-    pub proofs_verified: i64,
-    pub bytes_sent: i64,
-    pub bytes_received: i64,
+    pub algorithm_version: i16,
     pub is_active: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HotSession {
-    pub session_id: String,
-    pub application_id: Uuid,
-    pub ephemeral_public_key: String,
-    pub expires_at: DateTime<Utc>,
-
-    // HOT counters (never written to SQL directly)
-    pub messages_sent: u64,
-    pub messages_received: u64,
-    pub proofs_verified: u64,
-    pub bytes_sent: u64,
-    pub bytes_received: u64,
 }
 
 /// DTO for creating a new session
@@ -191,24 +170,6 @@ impl SessionKey {
         Ok(session)
     }
 
-    /// Update last_used_at timestamp
-    pub async fn update_last_used<'c, E>(
-        exec: E,
-        session_id: &str,
-    ) -> Result<()>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        sqlx::query(
-            "UPDATE session_keys SET last_used_at = NOW() WHERE session_id = $1"
-        )
-        .bind(session_id)
-        .execute(exec)
-        .await?;
-
-        Ok(())
-    }
-
     /// Deactivate a session
     pub async fn deactivate<'c, E>(
         exec: E,
@@ -265,11 +226,3 @@ impl SessionKey {
         Ok(result.rows_affected() as i64)
     }
 }
-
-// =============================================================================
-// Flusher Module (for Redis to Postgres session counter sync)
-// =============================================================================
-
-pub mod flusher;
-
-pub use flusher::{start_session_flusher, SessionFlusherMetrics};

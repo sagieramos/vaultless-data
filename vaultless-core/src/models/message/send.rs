@@ -61,6 +61,8 @@ impl InstantMessage {
         signature: Option<String>,
         envelope_public_key: String,
         require_proof_verification: bool,
+        encryption_algorithm: Option<String>,
+        algorithm_version: Option<i16>,
     ) -> Result<Uuid> {
         // Create message ID first for idempotency
         let msg_id = Uuid::new_v4();
@@ -86,6 +88,9 @@ impl InstantMessage {
             recipient_client_id,
             group_id: None,
             is_group_message: false,
+            encryption_algorithm,
+            algorithm_version,
+            session_id: Some(session_id.clone()),
             signature,
             envelope_public_key,
             file_id: None,

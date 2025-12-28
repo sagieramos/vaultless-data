@@ -43,14 +43,6 @@ CREATE TABLE IF NOT EXISTS public.session_keys (
     -- Session metadata
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    last_used_at TIMESTAMP WITH TIME ZONE,
-
-    -- Usage tracking
-    messages_sent BIGINT NOT NULL DEFAULT 0,
-    messages_received BIGINT NOT NULL DEFAULT 0,
-    proofs_verified BIGINT NOT NULL DEFAULT 0,
-    bytes_sent BIGINT NOT NULL DEFAULT 0,
-    bytes_received BIGINT NOT NULL DEFAULT 0,
 
     -- Algorithm version for crypto
     algorithm_version SMALLINT NOT NULL DEFAULT 1,
@@ -59,7 +51,6 @@ CREATE TABLE IF NOT EXISTS public.session_keys (
     is_active BOOLEAN NOT NULL DEFAULT true,
 
     CONSTRAINT session_keys_pkey PRIMARY KEY (id),
-    CONSTRAINT session_keys_session_id_key UNIQUE (session_id),
     CONSTRAINT session_keys_client_id_fkey FOREIGN KEY (client_id)
         REFERENCES public.clients (id) MATCH SIMPLE
         ON UPDATE NO ACTION
@@ -103,7 +94,7 @@ ON public.session_keys USING btree (session_id);
 
 -- Step 9: Add encryption algorithm version to messages
 ALTER TABLE public.messages
-ADD COLUMN encryption_algorithm VARCHAR(32) DEFAULT 'aes-256-gcm',
+ADD COLUMN encryption_algorithm VARCHAR(32) DEFAULT 'xchacha20-poly1305',
 ADD COLUMN algorithm_version SMALLINT DEFAULT 1;
 
 -- Index for algorithm filtering (useful for migrations)

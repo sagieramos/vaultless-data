@@ -4,7 +4,7 @@ use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
 use crate::models::notification::NotificationEventTracker;
 use crate::models::usage::application::{
-    MetricGranularity, MetricKey, record_rate_limit_hit, RecordRateLimitHitInput,
+    MetricGranularity, AppMetricKey, record_rate_limit_hit, RecordRateLimitHitInput,
 };
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;
@@ -34,7 +34,7 @@ impl AuthCacheEntry {
 
         // Get rate limit key
         let now = Utc::now();
-        let period_key = MetricKey::new(sk_id, now, MetricGranularity::Minute)
+        let period_key = AppMetricKey::new(sk_id, now, MetricGranularity::Minute)
             .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
 
         // Atomic pipeline to fetch both global quota and local rate limit
@@ -109,7 +109,7 @@ impl ApplicationKeyView {
         // --- RATE LIMIT LOGIC (Key Level) ---
         // Rate limits remain specific to the individual API Key
         let now = Utc::now();
-        let period_key = MetricKey::new(self.sk_id, now, MetricGranularity::Minute)
+        let period_key = AppMetricKey::new(self.sk_id, now, MetricGranularity::Minute)
             .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
 
         let mut conn = redis_pool.get().await?;

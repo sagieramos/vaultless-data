@@ -15,7 +15,7 @@ use vaultless_core::{Client, SessionData as SessionDataClient};
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ClientResponse {
     pub identifier: Option<String>,
-    pub public_key: Option<String>,
+    pub signing_key: Option<String>,
 
     pub allow_anonymous_messages: bool,
     pub require_proof_verification: bool,
@@ -30,7 +30,7 @@ impl From<Client> for ClientResponse {
     fn from(client: Client) -> Self {
         Self {
             identifier: client.identifier,
-            public_key: client.public_key,
+            signing_key: client.signing_key,
 
             allow_anonymous_messages: client.allow_anonymous_messages,
             require_proof_verification: client.require_proof_verification,

@@ -18,7 +18,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::models::usage::{
-    counters::{MetricCounters, MetricGranularity, MetricKey},
+    counters::{MetricCounters, MetricGranularity, AppMetricKey},
     config::REDIS_OPERATION_TIMEOUT_SECS,
 };
 
@@ -408,7 +408,7 @@ impl ApiKey {
 
         // 1. Determine the key for the current hourly period
         let now = Utc::now();
-        let period_key = match MetricKey::new(api_key_id, now, MetricGranularity::Hour) {
+        let period_key = match AppMetricKey::new(api_key_id, now, MetricGranularity::Hour) {
             Ok(key) => key,
             Err(e) => {
                 tracing::warn!("Failed to generate metric key: {}", e);

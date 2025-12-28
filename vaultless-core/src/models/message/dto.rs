@@ -46,6 +46,10 @@ pub struct Message {
     pub recipient_client_id: Uuid,
     pub group_id: Option<Uuid>,
     pub is_group_message: bool,
+    // Cryptographic algorithm tracking
+    pub encryption_algorithm: Option<String>,
+    pub algorithm_version: Option<i16>,
+    pub session_id: Option<String>,
     // Non-schema fields (stored in Redis JSON only; not persisted to DB)
     pub signature: Option<String>,
     pub envelope_public_key: String,
@@ -74,6 +78,12 @@ pub struct MessageResponse {
     pub group_id: Option<Uuid>,
     /// Associated file ID (if message has an attachment)
     pub file_id: Option<Uuid>,
+    /// Encryption algorithm used (e.g., "xchacha20-poly1305", "aes-256-gcm")
+    pub encryption_algorithm: Option<String>,
+    /// Algorithm version number
+    pub algorithm_version: Option<i16>,
+    /// Session ID (if using session-based encryption)
+    pub session_id: Option<String>,
 }
 
 impl From<Message> for MessageResponse {
@@ -88,6 +98,9 @@ impl From<Message> for MessageResponse {
             is_group_message: msg.is_group_message,
             group_id: msg.group_id,
             file_id: msg.file_id,
+            encryption_algorithm: msg.encryption_algorithm,
+            algorithm_version: msg.algorithm_version,
+            session_id: msg.session_id,
         }
     }
 }

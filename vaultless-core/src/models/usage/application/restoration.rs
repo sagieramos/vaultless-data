@@ -4,7 +4,7 @@
 //! so a Redis restart can continue from the last persisted state.
 
 use crate::models::usage::config::{RedisPoolType, ACTIVE_KEYS_SET};
-use crate::models::usage::counters::{MetricGranularity, MetricKey};
+use crate::models::usage::counters::{MetricGranularity, AppMetricKey};
 use crate::error::{Result, VaultlessError};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -72,7 +72,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-            let metric_key = MetricKey::new(application_id, period_start, MetricGranularity::Hour)?;
+            let metric_key = AppMetricKey::new(application_id, period_start, MetricGranularity::Hour)?;
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();
@@ -122,7 +122,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
     // 2. Redis has active keys: restore only missing periods
     let mut last_period_per_app: HashMap<Uuid, DateTime<Utc>> = HashMap::new();
     for key_str in active_keys {
-        if let Ok(key) = MetricKey::try_from(key_str.to_string())
+        if let Ok(key) = AppMetricKey::try_from(key_str.to_string())
             && let Some((application_id, period_start)) = key.parse()
         {
             last_period_per_app
@@ -162,7 +162,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             let period_start: DateTime<Utc> = r
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-            let metric_key = MetricKey::new(application_id, period_start, MetricGranularity::Hour)?;
+            let metric_key = AppMetricKey::new(application_id, period_start, MetricGranularity::Hour)?;
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();

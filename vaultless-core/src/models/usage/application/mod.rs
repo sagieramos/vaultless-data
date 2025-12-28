@@ -23,7 +23,7 @@ pub mod restoration;
 
 // Re-export from parent module (consolidated config and counters)
 pub use super::config::{MetricsConfig, RedisPoolType, ACTIVE_KEYS_SET, PROCESSING_FLAG, UsageEngineConfig};
-pub use super::counters::{FlusherMetrics, MetricCounters, MetricGranularity, MetricKey, get_hour_window, get_minute_window};
+pub use super::counters::{FlusherMetrics, MetricCounters, MetricGranularity, AppMetricKey, get_hour_window, get_minute_window};
 
 // Flusher
 pub use flusher::start_redis_flusher;

@@ -23,7 +23,7 @@
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
-use crate::models::usage::counters::{MetricGranularity, MetricKey};
+use crate::models::usage::counters::{MetricGranularity, AppMetricKey};
 use chrono::{Datelike, Utc};
 use deadpool_redis::Pool as RedisPool;
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub fn app_monthly_key(application_id: Uuid) -> String {
 /// Generate application hourly metric key
 #[inline]
 pub fn app_hourly_key(application_id: Uuid, hour: chrono::DateTime<Utc>) -> String {
-    MetricKey::new(application_id, hour, MetricGranularity::Hour)
+    AppMetricKey::new(application_id, hour, MetricGranularity::Hour)
         .expect("Valid metric key")
         .as_str()
         .to_string()

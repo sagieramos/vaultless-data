@@ -456,9 +456,12 @@ async fn handle_inbound_message<S>(
                     nonce,
                     content_size_bytes,
                     application_id,
+                    "default".to_string(), // session_id (WebSocket doesn't use sessions yet)
                     signature.clone(),
                     envelope_pubkey,
                     require_proof_verification,
+                    None, // encryption_algorithm
+                    None, // algorithm_version
                 )
                 .await
             {

@@ -17,14 +17,14 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::models::usage::config::{MetricsConfig, RedisPoolType, ACTIVE_KEYS_SET, PROCESSING_FLAG};
-use crate::models::usage::counters::{get_hour_window, FlusherMetrics, MetricCounters, MetricKey};
+use crate::models::usage::counters::{get_hour_window, FlusherMetrics, MetricCounters, AppMetricKey};
 
 // =============================================================================
 // Types
 // =============================================================================
 
 /// Entry in the flush batch: ((application_id, period_start), counters, redis_key)
-type BatchEntry = ((Uuid, DateTime<Utc>), MetricCounters, MetricKey);
+type BatchEntry = ((Uuid, DateTime<Utc>), MetricCounters, AppMetricKey);
 
 // =============================================================================
 // Background Flusher
@@ -147,7 +147,7 @@ async fn flush_redis_to_pg(
 
         // Process this chunk immediately
         for key_str in keys {
-            let key = match MetricKey::try_from(key_str) {
+            let key = match AppMetricKey::try_from(key_str) {
                 Ok(key) => key,
                 Err(e) => {
                     warn!("Skipping invalid metric key: {}", e);
@@ -258,7 +258,7 @@ async fn flush_redis_to_pg(
 async fn recover_orphaned_keys(
     redis_pool: &Arc<RedisPoolType>,
     config: &MetricsConfig,
-) -> Result<Vec<MetricKey>> {
+) -> Result<Vec<AppMetricKey>> {
     let mut conn = redis_pool
         .get()
         .await
@@ -282,7 +282,7 @@ async fn recover_orphaned_keys(
         .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
         for key_str in keys {
-            let key = match MetricKey::try_from(key_str) {
+            let key = match AppMetricKey::try_from(key_str) {
                 Ok(key) => key,
                 Err(e) => {
                     warn!("Invalid metric key found in tracking set: {}", e);
@@ -385,7 +385,7 @@ async fn flush_batch_to_pg(
         let subscription_map = get_subscription_ids_batch(pg, &application_ids).await?;
 
         // Resolve subscription IDs and prepare data for insertion
-        let mut resolved_data: Vec<(Uuid, Uuid, DateTime<Utc>, MetricCounters, MetricKey)> =
+        let mut resolved_data: Vec<(Uuid, Uuid, DateTime<Utc>, MetricCounters, AppMetricKey)> =
             Vec::new();
         for ((application_id, period_start), counters, key) in non_zero_chunk {
             if let Some(subscription_id) = subscription_map.get(&application_id) {

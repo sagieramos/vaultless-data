@@ -40,6 +40,15 @@ pub struct SendMessageRequest {
     /// Whether to require proof verification (defaults to true)
     #[serde(default = "default_require_verification")]
     pub require_proof_verification: bool,
+
+    /// Optional session ID for session-based encryption
+    pub session_id: Option<String>,
+
+    /// Encryption algorithm used (defaults to "xchacha20-poly1305")
+    pub encryption_algorithm: Option<String>,
+
+    /// Algorithm version (defaults to 1)
+    pub algorithm_version: Option<i16>,
 }
 
 fn default_require_verification() -> bool {
@@ -223,9 +232,12 @@ pub async fn send_message(
             input.nonce,
             content_size_bytes,
             app.app_id,
+            input.session_id.clone().unwrap_or_else(|| "default".to_string()),
             input.signature.clone(),
             sender_pubkey,
             input.require_proof_verification,
+            input.encryption_algorithm.clone(),
+            input.algorithm_version,
         )
         .await
         .map_err(|e| {
