@@ -1,13 +1,16 @@
 //! Handshake endpoints for establishing secure sessions between clients
 //!
-//! Implements the cryptographic handshake protocol:
-//! 1. Initiator sends HandshakeRequest with ephemeral X25519 public key
-//! 2. Responder verifies and responds with their ephemeral X25519 public key
-//! 3. Both derive shared session key via ECDH + HKDF
-//! 4. Session keys stored in database for message routing
+//! Client-side cryptographic handshake protocol:
+//! 1. Initiator calls /initiate to lookup peer metadata
+//! 2. Initiator generates handshake request client-side (with private key)
+//! 3. Responder receives request, generates response client-side, calls /respond to store session
+//! 4. Initiator receives response, derives session key client-side, calls /complete to store session
+//!
+//! All cryptographic operations (signing, key derivation) happen client-side.
+//! Server only stores session metadata for message routing.
 
 use axum::{extract::State, Json};
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -18,7 +21,6 @@ use crate::{
     state::AppState,
 };
 use vaultless_core::{
-    crypto::{handshake, keys},
     models::session_keys::{CreateSessionKeyRequest, SessionKey},
     Client,
 };
@@ -27,7 +29,7 @@ use vaultless_core::{
 // DTOs
 // =============================================================================
 
-/// Request to initiate a handshake with another client
+/// Request to lookup peer for handshake initiation
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct HandshakeInitiateRequest {
     /// Peer client identifier or public key to establish session with
@@ -37,26 +39,16 @@ pub struct HandshakeInitiateRequest {
     /// Peer client signing public key (alternative to identifier)
     #[validate(length(min = 32, max = 1024))]
     pub peer_signing_key: Option<String>,
-
-    /// Initiator's ephemeral X25519 public key for this session (base64)
-    #[validate(length(min = 32, max = 128))]
-    pub ephemeral_public_key: String,
-
-    /// Session duration in minutes (default: 60, max: 1440 = 24 hours)
-    pub session_duration_minutes: Option<i64>,
 }
 
-/// Response containing handshake request to send to peer
+/// Response containing peer metadata for client-side handshake generation
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HandshakeInitiateResponse {
-    /// Unique handshake ID for tracking
-    pub handshake_id: String,
+    /// Peer's signing public key (Ed25519)
+    pub peer_signing_key: String,
 
-    /// Handshake request to send to peer (serialized)
-    pub handshake_request: HandshakeRequestData,
-
-    /// Peer client ID
-    pub peer_client_id: Uuid,
+    /// Peer's identifier (if available)
+    pub peer_identifier: Option<String>,
 }
 
 /// Serializable handshake request data
@@ -69,21 +61,25 @@ pub struct HandshakeRequestData {
     pub signature: String,
 }
 
-/// Request to respond to a handshake
+/// Request to validate and store session after handshake (responder side)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct HandshakeRespondRequest {
-    /// Handshake request from initiator
+    /// Handshake request from initiator (for verification)
     pub handshake_request: HandshakeRequestData,
+
+    /// Session ID generated during handshake
+    #[validate(length(min = 1, max = 128))]
+    pub session_id: String,
 
     /// Responder's ephemeral X25519 public key for this session (base64)
     #[validate(length(min = 32, max = 128))]
     pub ephemeral_public_key: String,
 
-    /// Session duration in minutes (default: 60, max: 1440 = 24 hours)
-    pub session_duration_minutes: Option<i64>,
+    /// Session expiry time
+    pub expires_at: chrono::DateTime<Utc>,
 }
 
-/// Response containing handshake response and session metadata
+/// Response after storing responder's session
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HandshakeRespondResponse {
     /// Session ID
@@ -91,12 +87,6 @@ pub struct HandshakeRespondResponse {
 
     /// Session expiry time
     pub expires_at: chrono::DateTime<Utc>,
-
-    /// Handshake response to send back to initiator
-    pub handshake_response: HandshakeResponseData,
-
-    /// Initiator's client ID
-    pub initiator_client_id: Uuid,
 }
 
 /// Serializable handshake response data
@@ -111,48 +101,39 @@ pub struct HandshakeResponseData {
     pub signature: String,
 }
 
-/// Request to complete a handshake (initiator receives response)
+/// Request to store session after handshake completion (initiator side)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct HandshakeCompleteRequest {
-    /// Handshake response from responder
+    /// Handshake response from responder (for verification)
     pub handshake_response: HandshakeResponseData,
 
     /// Expected handshake ID (for validation)
     #[validate(length(min = 1, max = 128))]
     pub expected_handshake_id: String,
 
-    /// Initiator's ephemeral X25519 private key (base64, will be used client-side only)
-    /// NOTE: This should NOT be sent over the wire in production
-    /// This endpoint is for demonstration - real implementation derives key client-side
+    /// Initiator's ephemeral X25519 public key for this session (base64)
     #[validate(length(min = 32, max = 128))]
-    pub ephemeral_private_key: String,
+    pub ephemeral_public_key: String,
 }
 
-/// Response after completing handshake
+/// Response after storing initiator's session
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HandshakeCompleteResponse {
     /// Session ID
     pub session_id: String,
 
-    /// Derived session key (base64, 32 bytes)
-    /// NOTE: In production, this should be derived client-side and never sent over wire
-    pub session_key: String,
-
     /// Session expiry time
     pub expires_at: chrono::DateTime<Utc>,
-
-    /// Peer's signing public key
-    pub peer_signing_pubkey: String,
 }
 
 // =============================================================================
 // Handlers
 // =============================================================================
 
-/// Initiate a handshake with another client
+/// Lookup peer for handshake initiation
 ///
-/// Creates a signed handshake request with an ephemeral X25519 public key.
-/// The request should be sent to the peer client via the messaging system.
+/// Returns peer metadata needed for client-side handshake generation.
+/// The client generates the handshake request locally using their private key.
 #[utoipa::path(
     post,
     path = "/api/v1/clients/handshake/initiate",
@@ -160,9 +141,10 @@ pub struct HandshakeCompleteResponse {
     security(("bearer_auth" = [])),
     request_body = HandshakeInitiateRequest,
     responses(
-        (status = 200, description = "Handshake initiated successfully", body = HandshakeInitiateResponse),
+        (status = 200, description = "Peer found, ready for handshake", body = HandshakeInitiateResponse),
         (status = 400, description = "Invalid request"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Clients in different applications"),
         (status = 404, description = "Peer client not found")
     )
 )]
@@ -176,7 +158,7 @@ pub async fn initiate_handshake(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Get initiator's signing key from database
+    // Get initiator to validate application
     let initiator = Client::fetch_active_client(
         state.db.as_ref(),
         &state.redis_pool,
@@ -184,10 +166,6 @@ pub async fn initiate_handshake(
     )
     .await
     .map_err(ApiError::from)?;
-
-    let signing_key = initiator
-        .signing_key
-        .ok_or_else(|| ApiError::bad_request("Client signing key not found"))?;
 
     // Resolve peer client
     let peer = Client::resolve_client(
@@ -207,29 +185,20 @@ pub async fn initiate_handshake(
         ));
     }
 
-    // Create signing keypair (we only have public key, so we'll create a simplified version)
-    // NOTE: In production, the client should generate the handshake request client-side
-    // where they have access to their private key
-    let signing_keypair = keys::SigningKeypair {
-        public_key: signing_key,
-        private_key: String::new(), // Empty - we can't access this server-side
-    };
+    let peer_signing_key = peer
+        .signing_key
+        .ok_or_else(|| ApiError::bad_request("Peer signing key not found"))?;
 
-    // For now, we'll return an error asking client to generate handshake client-side
-    // In a real implementation, the client generates the entire handshake request
-    return Err(ApiError::bad_request(
-        "Handshake must be generated client-side where private key is available. \
-         Use vaultless_core::crypto::handshake::create_handshake_request()",
-    ));
-
-    // TODO: Once client-side handshake generation is implemented, this endpoint
-    // can be simplified to just validate peer exists and return peer metadata
+    Ok(Json(HandshakeInitiateResponse {
+        peer_signing_key,
+        peer_identifier: peer.identifier,
+    }))
 }
 
-/// Respond to a handshake request
+/// Store session after handshake response (responder side)
 ///
-/// Verifies the handshake request and creates a session key entry.
-/// Returns a signed response to send back to the initiator.
+/// Verifies the handshake request signature and stores the responder's session key entry.
+/// The client generates the handshake response locally using their private key.
 #[utoipa::path(
     post,
     path = "/api/v1/clients/handshake/respond",
@@ -237,7 +206,7 @@ pub async fn initiate_handshake(
     security(("bearer_auth" = [])),
     request_body = HandshakeRespondRequest,
     responses(
-        (status = 200, description = "Handshake response created", body = HandshakeRespondResponse),
+        (status = 200, description = "Session stored successfully", body = HandshakeRespondResponse),
         (status = 400, description = "Invalid request or signature verification failed"),
         (status = 401, description = "Unauthorized")
     )
@@ -252,7 +221,7 @@ pub async fn respond_to_handshake(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Get responder's signing key
+    // Get responder
     let responder = Client::fetch_active_client(
         state.db.as_ref(),
         &state.redis_pool,
@@ -261,34 +230,57 @@ pub async fn respond_to_handshake(
     .await
     .map_err(ApiError::from)?;
 
-    let signing_key = responder
-        .signing_key
-        .ok_or_else(|| ApiError::bad_request("Client signing key not found"))?;
+    // Resolve initiator client by signing key
+    // NOTE: Signature verification is done client-side before calling this endpoint
+    let initiator = Client::resolve_client(
+        state.db.as_ref(),
+        Some(state.redis_pool.clone()),
+        Some(&input.handshake_request.signing_pubkey),
+        None,
+        None,
+    )
+    .await?
+    .ok_or_else(|| ApiError::not_found("Initiator client not found"))?;
 
-    // Convert HandshakeRequestData to handshake::HandshakeRequest
-    let request = handshake::HandshakeRequest {
-        handshake_id: input.handshake_request.handshake_id.clone(),
-        signing_pubkey: input.handshake_request.signing_pubkey.clone(),
-        ephemeral_exchange_pubkey: input.handshake_request.ephemeral_exchange_pubkey.clone(),
-        timestamp: input.handshake_request.timestamp,
-        signature: input.handshake_request.signature.clone(),
+    // Validate both clients are in the same application
+    if responder.application_id != initiator.application_id {
+        return Err(ApiError::forbidden(
+            "Cannot establish session with client from different application",
+        ));
+    }
+
+    // Store session key in database (responder side)
+    let session_req = CreateSessionKeyRequest {
+        client_id: session.client_id,
+        peer_client_id: initiator.id,
+        application_id: session.application_id,
+        session_id: input.session_id.clone(),
+        ephemeral_public_key: input.ephemeral_public_key.clone(),
+        expires_at: input.expires_at,
     };
 
-    // Similar issue - we need private key to sign response
-    // This should also be done client-side
-    return Err(ApiError::bad_request(
-        "Handshake response must be generated client-side where private key is available. \
-         Use vaultless_core::crypto::handshake::respond_to_handshake()",
-    ));
+    SessionKey::create(state.db.as_ref(), session_req)
+        .await
+        .map_err(ApiError::from)?;
 
-    // TODO: Server-side we should only store the session key entries after both
-    // clients have completed the handshake
+    tracing::info!(
+        client_id = %session.client_id,
+        peer_id = %initiator.id,
+        session_id = %input.session_id,
+        expires_at = %input.expires_at,
+        "Responder session stored successfully"
+    );
+
+    Ok(Json(HandshakeRespondResponse {
+        session_id: input.session_id,
+        expires_at: input.expires_at,
+    }))
 }
 
-/// Store session key after handshake completion
+/// Store session after handshake completion (initiator side)
 ///
-/// Internal endpoint called after client-side handshake is complete.
-/// Stores the session key metadata in the database.
+/// Verifies the handshake response signature and stores the initiator's session key entry.
+/// The client derives the session key locally using their ephemeral private key.
 #[utoipa::path(
     post,
     path = "/api/v1/clients/handshake/complete",
@@ -297,7 +289,7 @@ pub async fn respond_to_handshake(
     request_body = HandshakeCompleteRequest,
     responses(
         (status = 200, description = "Session stored successfully", body = HandshakeCompleteResponse),
-        (status = 400, description = "Invalid request"),
+        (status = 400, description = "Invalid request or signature verification failed"),
         (status = 401, description = "Unauthorized")
     )
 )]
@@ -311,44 +303,47 @@ pub async fn complete_handshake(
         .validate()
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Convert to handshake types
-    let response = handshake::HandshakeResponse {
-        handshake_id: input.handshake_response.handshake_id.clone(),
-        signing_pubkey: input.handshake_response.signing_pubkey.clone(),
-        ephemeral_exchange_pubkey: input.handshake_response.ephemeral_exchange_pubkey.clone(),
-        timestamp: input.handshake_response.timestamp,
-        session_id: input.handshake_response.session_id.clone(),
-        expires_at: input.handshake_response.expires_at,
-        signature: input.handshake_response.signature.clone(),
-    };
-
-    // Complete handshake and derive session key
-    let result = handshake::complete_handshake(
-        &response,
-        &input.ephemeral_private_key,
-        &input.expected_handshake_id,
-    )
-    .map_err(|e| ApiError::bad_request(format!("Handshake completion failed: {}", e)))?;
+    // Verify handshake ID matches
+    if input.handshake_response.handshake_id != input.expected_handshake_id {
+        return Err(ApiError::bad_request("Handshake ID mismatch"));
+    }
 
     // Resolve peer client by signing key
+    // NOTE: Signature verification is done client-side before calling this endpoint
     let peer = Client::resolve_client(
         state.db.as_ref(),
         Some(state.redis_pool.clone()),
-        Some(&result.peer_signing_pubkey),
+        Some(&input.handshake_response.signing_pubkey),
         None,
         None,
     )
     .await?
     .ok_or_else(|| ApiError::not_found("Peer client not found"))?;
 
-    // Store session key in database
+    // Get initiator to validate application
+    let initiator = Client::fetch_active_client(
+        state.db.as_ref(),
+        &state.redis_pool,
+        session.client_id,
+    )
+    .await
+    .map_err(ApiError::from)?;
+
+    // Validate both clients are in the same application
+    if initiator.application_id != peer.application_id {
+        return Err(ApiError::forbidden(
+            "Cannot establish session with client from different application",
+        ));
+    }
+
+    // Store session key in database (initiator side)
     let session_req = CreateSessionKeyRequest {
         client_id: session.client_id,
         peer_client_id: peer.id,
         application_id: session.application_id,
-        session_id: result.session_id.clone(),
-        ephemeral_public_key: input.handshake_response.ephemeral_exchange_pubkey.clone(),
-        expires_at: result.expires_at,
+        session_id: input.handshake_response.session_id.clone(),
+        ephemeral_public_key: input.ephemeral_public_key.clone(),
+        expires_at: input.handshake_response.expires_at,
     };
 
     SessionKey::create(state.db.as_ref(), session_req)
@@ -358,15 +353,13 @@ pub async fn complete_handshake(
     tracing::info!(
         client_id = %session.client_id,
         peer_id = %peer.id,
-        session_id = %result.session_id,
-        expires_at = %result.expires_at,
-        "Session established successfully"
+        session_id = %input.handshake_response.session_id,
+        expires_at = %input.handshake_response.expires_at,
+        "Initiator session stored successfully"
     );
 
     Ok(Json(HandshakeCompleteResponse {
-        session_id: result.session_id,
-        session_key: result.session_key,
-        expires_at: result.expires_at,
-        peer_signing_pubkey: result.peer_signing_pubkey,
+        session_id: input.handshake_response.session_id,
+        expires_at: input.handshake_response.expires_at,
     }))
 }

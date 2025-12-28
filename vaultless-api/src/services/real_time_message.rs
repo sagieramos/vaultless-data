@@ -71,6 +71,21 @@ pub enum WsOutboundMessage {
     Connected { client_id: Uuid, session_id: String },
     /// Heartbeat/ping
     Ping { timestamp: String },
+    /// Handshake initiated - peer metadata returned
+    HandshakeInitiated {
+        peer_signing_key: String,
+        peer_identifier: Option<String>,
+    },
+    /// Handshake response stored
+    HandshakeRespondSuccess {
+        session_id: String,
+        expires_at: String,
+    },
+    /// Handshake completed - session stored
+    HandshakeCompleted {
+        session_id: String,
+        expires_at: String,
+    },
     /// Error notification
     Error { code: String, message: String },
 }
@@ -85,6 +100,28 @@ pub struct WsMessageDto {
     pub signature: Option<String>,
     pub content_size_bytes: i64,
     pub created_at: String,
+}
+
+/// Handshake request data (matches API DTO)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandshakeRequestData {
+    pub handshake_id: String,
+    pub signing_pubkey: String,
+    pub ephemeral_exchange_pubkey: String,
+    pub timestamp: String,
+    pub signature: String,
+}
+
+/// Handshake response data (matches API DTO)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandshakeResponseData {
+    pub handshake_id: String,
+    pub signing_pubkey: String,
+    pub ephemeral_exchange_pubkey: String,
+    pub timestamp: String,
+    pub session_id: String,
+    pub expires_at: String,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +155,32 @@ pub enum WsInboundMessage {
     FetchInbox {
         /// Optional limit
         limit: Option<usize>,
+    },
+    /// Initiate handshake with peer (lookup peer metadata)
+    InitiateHandshake {
+        /// Peer identifier or signing key
+        peer_identifier: Option<String>,
+        peer_signing_key: Option<String>,
+    },
+    /// Store session after responding to handshake
+    RespondHandshake {
+        /// Handshake request data (for verification)
+        handshake_request: HandshakeRequestData,
+        /// Session ID
+        session_id: String,
+        /// Responder's ephemeral public key
+        ephemeral_public_key: String,
+        /// Session expiry
+        expires_at: String,
+    },
+    /// Store session after completing handshake
+    CompleteHandshake {
+        /// Handshake response data (for verification)
+        handshake_response: HandshakeResponseData,
+        /// Expected handshake ID
+        expected_handshake_id: String,
+        /// Initiator's ephemeral public key
+        ephemeral_public_key: String,
     },
 }
 

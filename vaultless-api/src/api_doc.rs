@@ -172,6 +172,10 @@ impl Modify for SecurityAddon {
         crate::handlers::clients::auth::get_current_client,
         crate::handlers::clients::auth::logout,
         crate::handlers::clients::auth::deactivate_client,
+        // Session Handshake
+        crate::handlers::clients::handshake::initiate_handshake,
+        crate::handlers::clients::handshake::respond_to_handshake,
+        crate::handlers::clients::handshake::complete_handshake,
         // Instant Messaging
         crate::handlers::clients::instant_message::send_message,
         crate::handlers::clients::instant_message::fetch_inbox,
@@ -187,6 +191,15 @@ impl Modify for SecurityAddon {
             crate::handlers::clients::auth::SuccessResponse,
             crate::handlers::clients::auth::ChallengeResponse,
             crate::middleware::client::ClientResponse,
+            // Handshake schemas
+            crate::handlers::clients::handshake::HandshakeInitiateRequest,
+            crate::handlers::clients::handshake::HandshakeInitiateResponse,
+            crate::handlers::clients::handshake::HandshakeRequestData,
+            crate::handlers::clients::handshake::HandshakeRespondRequest,
+            crate::handlers::clients::handshake::HandshakeRespondResponse,
+            crate::handlers::clients::handshake::HandshakeResponseData,
+            crate::handlers::clients::handshake::HandshakeCompleteRequest,
+            crate::handlers::clients::handshake::HandshakeCompleteResponse,
             // Instant Message schemas
             crate::handlers::clients::instant_message::SendMessageRequest,
             crate::handlers::clients::instant_message::SendMessageResponse,

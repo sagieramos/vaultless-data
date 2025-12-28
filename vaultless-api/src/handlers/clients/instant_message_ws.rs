@@ -556,5 +556,453 @@ async fn handle_inbound_message<S>(
                 }
             }
         }
+
+        // NEW: Initiate handshake via WebSocket
+        WsInboundMessage::InitiateHandshake {
+            peer_identifier,
+            peer_signing_key,
+        } => {
+            handle_initiate_handshake(
+                client_id,
+                application_id,
+                peer_identifier,
+                peer_signing_key,
+                db_pool,
+                redis_pool,
+                ws_sender,
+            )
+            .await;
+        }
+
+        // NEW: Respond to handshake via WebSocket
+        WsInboundMessage::RespondHandshake {
+            handshake_request,
+            session_id,
+            ephemeral_public_key,
+            expires_at,
+        } => {
+            handle_respond_handshake(
+                client_id,
+                application_id,
+                handshake_request,
+                session_id,
+                ephemeral_public_key,
+                expires_at,
+                db_pool,
+                redis_pool,
+                ws_sender,
+            )
+            .await;
+        }
+
+        // NEW: Complete handshake via WebSocket
+        WsInboundMessage::CompleteHandshake {
+            handshake_response,
+            expected_handshake_id,
+            ephemeral_public_key,
+        } => {
+            handle_complete_handshake(
+                client_id,
+                application_id,
+                handshake_response,
+                expected_handshake_id,
+                ephemeral_public_key,
+                db_pool,
+                redis_pool,
+                ws_sender,
+            )
+            .await;
+        }
     }
+}
+
+// =============================================================================
+// Handshake Handlers
+// =============================================================================
+
+/// Handle InitiateHandshake - lookup peer metadata
+async fn handle_initiate_handshake<S>(
+    client_id: Uuid,
+    _application_id: Uuid,
+    peer_identifier: Option<String>,
+    peer_signing_key: Option<String>,
+    db_pool: &Arc<sqlx::PgPool>,
+    redis_pool: &Arc<RedisPool>,
+    ws_sender: &Arc<Mutex<S>>,
+) where
+    S: futures::Sink<WsMessage> + Unpin,
+    S::Error: std::fmt::Debug,
+{
+    // Get initiator to validate application
+    let initiator = match Client::fetch_active_client(
+        db_pool.as_ref(),
+        redis_pool,
+        client_id,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "Failed to fetch initiator client"
+            );
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "CLIENT_LOOKUP_FAILED".to_string(),
+                message: e.to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Resolve peer client
+    let peer = match Client::resolve_client(
+        db_pool.as_ref(),
+        Some(redis_pool.clone()),
+        peer_signing_key.as_deref(),
+        peer_identifier.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "PEER_NOT_FOUND".to_string(),
+                message: "Peer client not found".to_string(),
+            })
+            .await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "Failed to resolve peer"
+            );
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "PEER_LOOKUP_FAILED".to_string(),
+                message: e.to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Validate both clients are in the same application
+    if initiator.application_id != peer.application_id {
+        send_ws_response(ws_sender, WsOutboundMessage::Error {
+            code: "CROSS_APPLICATION".to_string(),
+            message: "Cannot establish session with client from different application".to_string(),
+        })
+        .await;
+        return;
+    }
+
+    let peer_signing_key = match peer.signing_key {
+        Some(key) => key,
+        None => {
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "PEER_KEY_MISSING".to_string(),
+                message: "Peer signing key not found".to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    send_ws_response(ws_sender, WsOutboundMessage::HandshakeInitiated {
+        peer_signing_key,
+        peer_identifier: peer.identifier,
+    })
+    .await;
+
+    tracing::info!(
+        client_id = %client_id,
+        peer_id = %peer.id,
+        "Handshake initiated via WebSocket"
+    );
+}
+
+/// Handle RespondHandshake - store responder's session
+async fn handle_respond_handshake<S>(
+    client_id: Uuid,
+    application_id: Uuid,
+    handshake_request: crate::services::real_time_message::HandshakeRequestData,
+    session_id: String,
+    ephemeral_public_key: String,
+    expires_at: String,
+    db_pool: &Arc<sqlx::PgPool>,
+    redis_pool: &Arc<RedisPool>,
+    ws_sender: &Arc<Mutex<S>>,
+) where
+    S: futures::Sink<WsMessage> + Unpin,
+    S::Error: std::fmt::Debug,
+{
+    use vaultless_core::models::session_keys::{CreateSessionKeyRequest, SessionKey};
+
+    // Parse expires_at
+    let expires_at_dt = match chrono::DateTime::parse_from_rfc3339(&expires_at) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(e) => {
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "INVALID_EXPIRY".to_string(),
+                message: format!("Invalid expires_at format: {}", e),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Get responder
+    let responder = match Client::fetch_active_client(
+        db_pool.as_ref(),
+        redis_pool,
+        client_id,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "Failed to fetch responder client"
+            );
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "CLIENT_LOOKUP_FAILED".to_string(),
+                message: e.to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Resolve initiator client by signing key
+    let initiator = match Client::resolve_client(
+        db_pool.as_ref(),
+        Some(redis_pool.clone()),
+        Some(&handshake_request.signing_pubkey),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(Some(i)) => i,
+        Ok(None) => {
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "INITIATOR_NOT_FOUND".to_string(),
+                message: "Initiator client not found".to_string(),
+            })
+            .await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "Failed to resolve initiator"
+            );
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "INITIATOR_LOOKUP_FAILED".to_string(),
+                message: e.to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Validate both clients are in the same application
+    if responder.application_id != initiator.application_id {
+        send_ws_response(ws_sender, WsOutboundMessage::Error {
+            code: "CROSS_APPLICATION".to_string(),
+            message: "Cannot establish session with client from different application".to_string(),
+        })
+        .await;
+        return;
+    }
+
+    // Store session key in database (responder side)
+    let session_req = CreateSessionKeyRequest {
+        client_id,
+        peer_client_id: initiator.id,
+        application_id,
+        session_id: session_id.clone(),
+        ephemeral_public_key,
+        expires_at: expires_at_dt,
+    };
+
+    if let Err(e) = SessionKey::create(db_pool.as_ref(), session_req).await {
+        tracing::error!(
+            client_id = %client_id,
+            error = %e,
+            "Failed to create session key"
+        );
+        send_ws_response(ws_sender, WsOutboundMessage::Error {
+            code: "SESSION_CREATE_FAILED".to_string(),
+            message: e.to_string(),
+        })
+        .await;
+        return;
+    }
+
+    send_ws_response(ws_sender, WsOutboundMessage::HandshakeRespondSuccess {
+        session_id: session_id.clone(),
+        expires_at,
+    })
+    .await;
+
+    tracing::info!(
+        client_id = %client_id,
+        peer_id = %initiator.id,
+        session_id = %session_id,
+        "Responder session stored via WebSocket"
+    );
+}
+
+/// Handle CompleteHandshake - store initiator's session
+async fn handle_complete_handshake<S>(
+    client_id: Uuid,
+    application_id: Uuid,
+    handshake_response: crate::services::real_time_message::HandshakeResponseData,
+    expected_handshake_id: String,
+    ephemeral_public_key: String,
+    db_pool: &Arc<sqlx::PgPool>,
+    redis_pool: &Arc<RedisPool>,
+    ws_sender: &Arc<Mutex<S>>,
+) where
+    S: futures::Sink<WsMessage> + Unpin,
+    S::Error: std::fmt::Debug,
+{
+    use vaultless_core::models::session_keys::{CreateSessionKeyRequest, SessionKey};
+
+    // Verify handshake ID matches
+    if handshake_response.handshake_id != expected_handshake_id {
+        send_ws_response(ws_sender, WsOutboundMessage::Error {
+            code: "HANDSHAKE_ID_MISMATCH".to_string(),
+            message: "Handshake ID does not match expected value".to_string(),
+        })
+        .await;
+        return;
+    }
+
+    // Parse expires_at
+    let expires_at_dt = match chrono::DateTime::parse_from_rfc3339(&handshake_response.expires_at) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(e) => {
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "INVALID_EXPIRY".to_string(),
+                message: format!("Invalid expires_at format: {}", e),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Resolve peer client by signing key
+    let peer = match Client::resolve_client(
+        db_pool.as_ref(),
+        Some(redis_pool.clone()),
+        Some(&handshake_response.signing_pubkey),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "PEER_NOT_FOUND".to_string(),
+                message: "Peer client not found".to_string(),
+            })
+            .await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "Failed to resolve peer"
+            );
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "PEER_LOOKUP_FAILED".to_string(),
+                message: e.to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Get initiator to validate application
+    let initiator = match Client::fetch_active_client(
+        db_pool.as_ref(),
+        redis_pool,
+        client_id,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "Failed to fetch initiator client"
+            );
+            send_ws_response(ws_sender, WsOutboundMessage::Error {
+                code: "CLIENT_LOOKUP_FAILED".to_string(),
+                message: e.to_string(),
+            })
+            .await;
+            return;
+        }
+    };
+
+    // Validate both clients are in the same application
+    if initiator.application_id != peer.application_id {
+        send_ws_response(ws_sender, WsOutboundMessage::Error {
+            code: "CROSS_APPLICATION".to_string(),
+            message: "Cannot establish session with client from different application".to_string(),
+        })
+        .await;
+        return;
+    }
+
+    // Store session key in database (initiator side)
+    let session_req = CreateSessionKeyRequest {
+        client_id,
+        peer_client_id: peer.id,
+        application_id,
+        session_id: handshake_response.session_id.clone(),
+        ephemeral_public_key,
+        expires_at: expires_at_dt,
+    };
+
+    if let Err(e) = SessionKey::create(db_pool.as_ref(), session_req).await {
+        tracing::error!(
+            client_id = %client_id,
+            error = %e,
+            "Failed to create session key"
+        );
+        send_ws_response(ws_sender, WsOutboundMessage::Error {
+            code: "SESSION_CREATE_FAILED".to_string(),
+            message: e.to_string(),
+        })
+        .await;
+        return;
+    }
+
+    send_ws_response(ws_sender, WsOutboundMessage::HandshakeCompleted {
+        session_id: handshake_response.session_id.clone(),
+        expires_at: handshake_response.expires_at,
+    })
+    .await;
+
+    tracing::info!(
+        client_id = %client_id,
+        peer_id = %peer.id,
+        session_id = %handshake_response.session_id,
+        "Initiator session stored via WebSocket"
+    );
 }
