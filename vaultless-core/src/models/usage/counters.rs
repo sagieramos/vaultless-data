@@ -84,7 +84,7 @@ pub struct AppMetricKey {
 
 impl AppMetricKey {
     /// Create a new metric key
-    pub fn new(app_id: Uuid, dt: DateTime<Utc>, granularity: MetricGranularity) -> Result<Self, VaultlessError> {
+    pub fn new(app_id: Uuid, dt: DateTime<Utc>, granularity: MetricGranularity) -> Self {
         let window = match granularity {
             MetricGranularity::Minute => {
                 Utc.timestamp_opt(dt.timestamp() / 60 * 60, 0).single().unwrap_or(dt)
@@ -102,7 +102,7 @@ impl AppMetricKey {
             }
         };
 
-        Ok(Self { app_id, granularity, window })
+        Self { app_id, granularity, window }
     }
 
     /// Get the Redis key string
@@ -148,7 +148,7 @@ impl AppMetricKey {
             _ => return Err(VaultlessError::Internal("Unsupported granularity for parsing".into())),
         };
 
-        Ok(Self::new(app_id, window, granularity)?)
+        Ok(Self::new(app_id, window, granularity))
     }
 
     /// Parse key and extract application_id and period
@@ -172,7 +172,7 @@ pub struct ClientMetricKey {
 
 impl ClientMetricKey {
     /// Create a new client metric key
-    pub fn new(app_id: Uuid, client_id: Uuid, dt: DateTime<Utc>, granularity: MetricGranularity) -> Result<Self, VaultlessError> {
+    pub fn new(app_id: Uuid, client_id: Uuid, dt: DateTime<Utc>, granularity: MetricGranularity) -> Self {
         let window = match granularity {
             MetricGranularity::Minute => {
                 Utc.timestamp_opt(dt.timestamp() / 60 * 60, 0).single().unwrap_or(dt)
@@ -183,7 +183,7 @@ impl ClientMetricKey {
             _ => dt,
         };
 
-        Ok(Self { app_id, client_id, granularity, window })
+        Self { app_id, client_id, granularity, window }
     }
 
     /// Get the Redis key string
@@ -224,7 +224,7 @@ impl ClientMetricKey {
             _ => return Err(VaultlessError::Internal("Unsupported granularity for client metric parsing".into())),
         };
 
-        Ok(Self::new(app_id, client_id, window, granularity)?)
+        Ok(Self::new(app_id, client_id, window, granularity))
     }
 
     /// Parse key and extract application_id, client_id, and period

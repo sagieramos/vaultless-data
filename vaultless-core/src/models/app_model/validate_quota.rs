@@ -34,8 +34,7 @@ impl AuthCacheEntry {
 
         // Get rate limit key
         let now = Utc::now();
-        let period_key = AppMetricKey::new(sk_id, now, MetricGranularity::Minute)
-            .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
+        let period_key = AppMetricKey::new(sk_id, now, MetricGranularity::Minute);
 
         // Atomic pipeline to fetch both global quota and local rate limit
         let results: Vec<Option<i64>> = redis::pipe()
@@ -94,7 +93,47 @@ impl AuthCacheEntry {
 }
 
 impl ApplicationKeyView {
-    /// Validates quotas and rate limits in the fast path (Redis-only)
+    /// Fast-path validation using Redis cache only (no DB fetch)
+    /// Returns Ok(()) if cached entry exists and passes validation
+    /// Returns Err if validation fails or cache miss (caller should fetch from DB)
+    async fn try_validate_from_cache(
+        redis_pool: Arc<RedisPool>,
+        api_key: &str,
+    ) -> Result<()> {
+        let cache_key = if api_key.starts_with(PUBLISHABLE_KEY_PREFIX) {
+            publishable_key_resolution_cache_key(api_key)
+        } else if api_key.starts_with(SECRET_KEY_PREFIX) {
+            secret_key_resolution_cache_key(&hash_content(api_key.as_bytes()))
+        } else {
+            return Err(VaultlessError::Unauthorized(
+                "API key must start with 'pk_' or 'sk_' prefix.".into(),
+            ));
+        };
+
+        let mut conn = redis_pool.get().await?;
+
+        // HGETALL for O(1) access without JSON parsing
+        let vals: HashMap<String, String> = conn.hgetall(&cache_key).await?;
+
+        if vals.is_empty() {
+            return Err(VaultlessError::NotFound("Cache miss".into())); // Signal caller to fetch from DB
+        }
+
+        let auth_entry = AuthCacheEntry::from_redis(vals)
+            .ok_or_else(|| VaultlessError::Internal("Invalid cache format".into()))?;
+
+        // Check if app is active
+        if !auth_entry.is_active {
+            return Err(VaultlessError::Forbidden("Application is deactivated.".into()));
+        }
+
+        // Validate quotas and rate limits
+        auth_entry.validate_hot(redis_pool, auth_entry.sk_id).await?;
+
+        Ok(())
+    }
+
+    /// Validate quotas and rate limits for this application key
     pub async fn validate_hot(&self, redis_pool: Arc<RedisPool>) -> Result<()> {
         if !self.app_is_active {
             return Err(VaultlessError::Forbidden(
@@ -103,14 +142,11 @@ impl ApplicationKeyView {
         }
 
         // --- QUOTA LOGIC (Application Level) ---
-        // Quotas are now shared across the application via app_id
         let monthly_quota_key = cache_key!("quota", "app", self.app_id);
 
         // --- RATE LIMIT LOGIC (Key Level) ---
-        // Rate limits remain specific to the individual API Key
         let now = Utc::now();
-        let period_key = AppMetricKey::new(self.sk_id, now, MetricGranularity::Minute)
-            .map_err(|e| VaultlessError::Internal(format!("Failed to create metric key: {}", e)))?;
+        let period_key = AppMetricKey::new(self.sk_id, now, MetricGranularity::Minute);
 
         let mut conn = redis_pool.get().await?;
 
@@ -133,7 +169,6 @@ impl ApplicationKeyView {
             let app_id = self.app_id;
             let pool_clone = redis_pool.clone();
             tokio::spawn(async move {
-                // Notifications are now tracked at the App/Subscription level
                 let _ =
                     NotificationEventTracker::check_and_mark_quota_exceeded(&pool_clone, app_id)
                         .await;
@@ -146,23 +181,12 @@ impl ApplicationKeyView {
 
         // 2. Validate Rate Limit (Specific to this API Key)
         if current_min_total >= self.sub_rate_limit_per_minute as i64 {
-            let sk_id = self.sk_id;
-            let app_id = self.app_id;
-            let pool_clone = redis_pool.clone();
-
-            tokio::spawn(async move {
-                // Increment rate limit hit metrics for this specific key
-                let _ =
-                    record_rate_limit_hit(
-                        &pool_clone,
-                        RecordRateLimitHitInput::new(uuid::Uuid::new_v4(), app_id),
-                        None,
-                    )
-                    .await;
-
-                let _ =
-                    NotificationEventTracker::increment_rate_limit_hits(&pool_clone, sk_id).await;
-            });
+            let _ = record_rate_limit_hit(
+                &redis_pool,
+                RecordRateLimitHitInput::new(Uuid::new_v4(), self.app_id),
+                None,
+            )
+            .await;
 
             return Err(VaultlessError::RateLimitExceeded(
                 "API key rate limit exceeded.".into(),
@@ -172,45 +196,8 @@ impl ApplicationKeyView {
         Ok(())
     }
 
-    /// Fast-path: fetch from Redis HASH and validate directly
-    /// Returns AuthCacheEntry if found and valid, None if not cached
-    pub async fn fetch_and_validate_hot(
-        redis_pool: Arc<RedisPool>,
-        api_key: &str,
-    ) -> Result<Option<Self>> {
-        let cache_key = if api_key.starts_with(PUBLISHABLE_KEY_PREFIX) {
-            publishable_key_resolution_cache_key(api_key)
-        } else if api_key.starts_with(SECRET_KEY_PREFIX) {
-            secret_key_resolution_cache_key(&hash_content(api_key.as_bytes()))
-        } else {
-            return Err(VaultlessError::Unauthorized(
-                "API key must start with 'pk_' or 'sk_' prefix.".into(),
-            ));
-        };
-
-        let mut conn = redis_pool.get().await?;
-
-        // HGETALL for O(1) access without JSON parsing
-        let vals: HashMap<String, String> = conn.hgetall(&cache_key).await?;
-
-        if vals.is_empty() {
-            return Ok(None); // Cache miss
-        }
-
-        let auth_entry = AuthCacheEntry::from_redis(vals)
-            .ok_or_else(|| VaultlessError::Internal("Invalid cache format".into()))?;
-
-        // Check if app is active
-        if !auth_entry.is_active {
-            return Ok(None);
-        }
-
-        // Validate quotas and rate limits
-        auth_entry.validate_hot(redis_pool, auth_entry.sk_id).await?;
-
-        Ok(Some(auth_entry.into_application_key_view()))
-    }
-
+    /// Resolve and validate an API key (hot path optimized)
+    /// First tries cache-only validation, falls back to DB fetch if cache miss
     pub async fn resolve_and_validate<'c, E>(
         exec: E,
         redis_pool: Arc<RedisPool>,
@@ -219,12 +206,35 @@ impl ApplicationKeyView {
     where
         E: Executor<'c, Database = Postgres> + Clone,
     {
-        // Try fast path: Redis HASH first
-        if let Some(auth_config) = Self::fetch_and_validate_hot(redis_pool.clone(), api_key).await? {
-            return Ok(auth_config);
+        // Try fast path: validate from cache only (no DB fetch)
+        if Self::try_validate_from_cache(redis_pool.clone(), api_key).await.is_ok() {
+            // Cache hit and validation passed - now fetch full data from DB
+            // We need full data including app_meta for potential integrity checks
+            let key_type = if api_key.starts_with(PUBLISHABLE_KEY_PREFIX) {
+                KeyGranularity::Publishable
+            } else {
+                KeyGranularity::Secret
+            };
+
+            let auth_config = match key_type {
+                KeyGranularity::Publishable => {
+                    super::Application::fetch_full_auth_by_publishable_key(exec, api_key).await?
+                }
+                KeyGranularity::Secret => {
+                    let secret_hash = hash_content(api_key.as_bytes());
+                    super::Application::fetch_full_auth_by_secret_hash(exec, &secret_hash).await?
+                }
+            };
+
+            return auth_config.ok_or_else(|| {
+                VaultlessError::NotFound(match key_type {
+                    KeyGranularity::Publishable => "Publishable key not found.".into(),
+                    KeyGranularity::Secret => "Secret key not found.".into(),
+                })
+            });
         }
 
-        // Fallback: Resolve from DB (which also caches in Redis)
+        // Cache miss or validation failed - fetch from DB and validate
         let key_type = if api_key.starts_with(PUBLISHABLE_KEY_PREFIX) {
             KeyGranularity::Publishable
         } else if api_key.starts_with(SECRET_KEY_PREFIX) {
@@ -238,7 +248,7 @@ impl ApplicationKeyView {
         let auth_config = match key_type {
             KeyGranularity::Publishable => {
                 super::Application::fetch_auth_config_by_publishable_key(
-                    exec.clone(),
+                    exec,
                     Some(redis_pool.clone()),
                     api_key,
                 )
@@ -247,7 +257,7 @@ impl ApplicationKeyView {
             KeyGranularity::Secret => {
                 let secret_hash = hash_content(api_key.as_bytes());
                 super::Application::fetch_auth_config_by_secret_hash(
-                    exec.clone(),
+                    exec,
                     Some(redis_pool.clone()),
                     &secret_hash,
                 )
@@ -262,8 +272,8 @@ impl ApplicationKeyView {
             })
         })?;
 
-        // Run the hot-path validation (Quota & Rate Limit)
-        auth_config.validate_hot(redis_pool.clone()).await?;
+        // Validate quota and rate limits
+        auth_config.validate_hot(redis_pool).await?;
 
         Ok(auth_config)
     }

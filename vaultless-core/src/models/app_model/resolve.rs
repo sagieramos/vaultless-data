@@ -17,26 +17,11 @@ impl Application {
     {
         let cache_key = publishable_key_resolution_cache_key(pk_plaintext);
 
-        // --- HOT PATH (Redis HASH) ---
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                // HGETALL for O(1) field access without JSON parsing
-                if let Ok(vals) = conn.hgetall::<_, HashMap<String, String>>(&cache_key).await {
-                    if !vals.is_empty() {
-                        if let Some(auth_entry) = AuthCacheEntry::from_redis(vals) {
-                            // Only return if app is active
-                            if auth_entry.is_active {
-                                return Ok(Some(auth_entry.into_application_key_view()));
-                            }
-                            // Cache exists but app is inactive - return None
-                            return Ok(None);
-                        }
-                    }
-                }
-            }
-        }
+        // Note: We always fetch from DB because callers may need app_meta for
+        // integrity checks. The cache is only used by fetch_and_validate_hot()
+        // for quota/rate limit checks in the hot path.
 
-        // --- POSTGRES FALLBACK ---
+        // --- POSTGRES QUERY ---
         let auth = sqlx::query_as::<_, ApplicationKeyView>(
             "SELECT * FROM fetch_auth_config_by_publishable_key($1)",
         )
@@ -80,26 +65,11 @@ impl Application {
     {
         let cache_key = secret_key_resolution_cache_key(secret_hash_hex);
 
-        // --- HOT PATH (Redis HASH) ---
-        if let Some(redis_pool) = &redis {
-            if let Ok(mut conn) = redis_pool.get().await {
-                // HGETALL for O(1) field access without JSON parsing
-                if let Ok(vals) = conn.hgetall::<_, HashMap<String, String>>(&cache_key).await {
-                    if !vals.is_empty() {
-                        if let Some(auth_entry) = AuthCacheEntry::from_redis(vals) {
-                            // Only return if app is active
-                            if auth_entry.is_active {
-                                return Ok(Some(auth_entry.into_application_key_view()));
-                            }
-                            // Cache exists but app is inactive - return None
-                            return Ok(None);
-                        }
-                    }
-                }
-            }
-        }
+        // Note: We always fetch from DB because callers may need app_meta for
+        // integrity checks. The cache is only used by fetch_and_validate_hot()
+        // for quota/rate limit checks in the hot path.
 
-        // --- POSTGRES FALLBACK ---
+        // --- POSTGRES QUERY ---
         let auth = sqlx::query_as::<_, ApplicationKeyView>(
             "SELECT * FROM fetch_auth_config_by_secret_hash($1)",
         )

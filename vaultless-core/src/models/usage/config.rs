@@ -28,7 +28,7 @@ pub const DEFAULT_FLUSH_INTERVAL_SECS: u64 = 300; // 5 minutes
 pub const REDIS_OPERATION_TIMEOUT_SECS: u64 = 30;
 
 /// Set name for tracking active metric keys (application-level)
-pub static ACTIVE_KEYS_SET: Lazy<String> = Lazy::new(|| cache_key!("metric", "active_keys"));
+pub static ACTIVE_KEYS_SET: Lazy<String> = Lazy::new(|| cache_key!("metric", "app", "active_keys"));
 
 /// Set name for tracking active client metric keys
 pub static ACTIVE_CLIENT_KEYS_SET: Lazy<String> = Lazy::new(|| cache_key!("metric", "client", "active_keys"));
@@ -77,8 +77,6 @@ pub struct UsageEngineConfig {
     pub monthly_ttl_secs: i64,
     /// TTL for hourly metric keys (2 hours)
     pub hourly_ttl_secs: i64,
-    /// TTL for session metric keys (7 days)
-    pub session_ttl_secs: i64,
     /// Redis operation timeout
     pub operation_timeout_secs: u64,
     /// Max batch size for flush operations
@@ -91,7 +89,6 @@ impl Default for UsageEngineConfig {
             counted_ttl_secs: 3600,                  // 1 hour
             monthly_ttl_secs: 35 * 24 * 60 * 60,    // 35 days
             hourly_ttl_secs: 7200,                   // 2 hours
-            session_ttl_secs: 7 * 24 * 60 * 60,      // 7 days
             operation_timeout_secs: 5,
             max_batch_size: 100,
         }

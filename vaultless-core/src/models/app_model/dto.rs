@@ -610,25 +610,6 @@ impl AuthCacheEntry {
         }
     }
 
-    /// Project into ApplicationKeyView when full struct is needed
-    pub fn into_application_key_view(self) -> ApplicationKeyView {
-        ApplicationKeyView {
-            app_id: self.app_id,
-            app_user_id: self.user_id,
-            app_name: String::new(), // Not needed in hot path
-            app_description: None,
-            app_is_active: self.is_active,
-            app_max_ttl_seconds: self.retention_seconds as i32, // Approximation
-            app_is_key_rotation_forced: self.rotation_forced,
-            app_meta: serde_json::json!({}),
-            sk_id: self.sk_id,
-            sk_key_prefix: self.sk_prefix,
-            sub_tier: self.tier.parse().unwrap_or(SubscriptionTier::Free),
-            sub_monthly_message_quota: self.monthly_quota,
-            sub_message_retention_seconds: self.retention_seconds,
-            sub_rate_limit_per_minute: self.rate_limit_per_minute,
-        }
-    }
 }
 
 impl From<ApplicationKeyView> for AuthCacheEntry {
@@ -749,11 +730,11 @@ pub struct PaginatedQuotaWarnings {
 }
 
 pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
-    cache_key!("auth", "sk", key_hash)
+    cache_key!("appconfig", "sk", key_hash)
 }
 
 pub fn publishable_key_resolution_cache_key(pk_plaintext: &str) -> String {
-    cache_key!("auth", "pk", pk_plaintext)
+    cache_key!("appconfig", "pk", pk_plaintext)
 }
 
 /// Real-time quota status for an application

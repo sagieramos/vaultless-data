@@ -1,92 +1,98 @@
 -- =============================================================================
--- send_message_v1.lua (Hot Path)
+-- send_message_v2.lua (Consolidated Hot Path)
 -- =============================================================================
--- Atomic hot path for instant message sending: single round-trip handles
--- idempotency, quota check (app + client), rate limit check (app + client),
--- metrics increment, and stream emit. Message storage and inbox enqueue are
--- handled asynchronously by warm path workers consuming from the message stream.
+-- Ultra-optimized: single round-trip handles auth resolution, quota validation,
+-- rate limiting, and message sending. Returns cache miss status if auth not cached.
 --
 -- luacheck: globals KEYS ARGV redis
 --
--- KEY STRUCTURE (8 keys):
---   KEYS[1] = Application monthly quota key (e.g., "quota:app:{app_id}:monthly")
---   KEYS[2] = Application per-minute rate limit key (e.g., "metric:app:{app_id}:minute:{min_key}")
---   KEYS[3] = Client per-minute rate limit key (e.g., "metric:client:{client_id}:minute:{min_key}")
---   KEYS[4] = Message idempotency key (e.g., "counted:msg:{msg_id}")
---   KEYS[5] = Message stream key (e.g., "stream:instant_message:pending")
---   KEYS[6] = Client monthly quota key (e.g., "quota:client:{client_id}:monthly")
---   KEYS[7] = Client metric key (hash, e.g., "metric:client:hour:{app_id}:{client_id}:{window}")
---   KEYS[8] = Client active keys set (for flusher tracking, e.g., "metric:client:active_keys")
+-- KEY STRUCTURE (9 keys):
+--   KEYS[1] = Auth cache key (e.g., "auth:pk:pk_xxx" or "auth:sk:hash")
+--   KEYS[2] = Application monthly quota key (e.g., "quota:app:{app_id}:monthly")
+--   KEYS[3] = Application per-minute rate limit key (e.g., "metric:app:{app_id}:minute:{min_key}")
+--   KEYS[4] = Client per-minute rate limit key (e.g., "metric:client:{client_id}:minute:{min_key}")
+--   KEYS[5] = Message idempotency key (e.g., "counted:msg:{msg_id}")
+--   KEYS[6] = Message stream key (e.g., "stream:instant_message:pending")
+--   KEYS[7] = Client monthly quota key (e.g., "quota:client:{client_id}:monthly")
+--   KEYS[8] = Client metric key (hash, e.g., "metric:client:hour:{app_id}:{client_id}:{window}")
+--   KEYS[9] = Client active keys set (for flusher tracking, e.g., "metric:client:active_keys")
 --
--- ARGUMENTS (14 args):
---   ARGV[1]  = Application monthly quota limit (messages)
---   ARGV[2]  = Application per-minute rate limit
---   ARGV[3]  = Client monthly quota limit (messages)
---   ARGV[4]  = Client per-minute rate limit
---   ARGV[5]  = Idempotency key TTL (seconds, 1 hour)
---   ARGV[6]  = Message stream max length (entries, 100000)
---   ARGV[7]  = Message ID (UUID)
---   ARGV[8]  = Message JSON (serialized Message struct)
---   ARGV[9]  = Content size in bytes
---   ARGV[10] = Recipient client ID (for warm path processing)
---   ARGV[11] = Proof verified flag (1 = verified, 0 = not verified)
---   ARGV[12] = Persist to DB flag (1 = persist to Postgres, 0 = Redis only)
---   ARGV[13] = Client metric TTL (seconds, ~7 days)
---   ARGV[14] = Sender client ID
+-- ARGUMENTS (11 args):
+--   ARGV[1]  = Idempotency key TTL (seconds, 1 hour)
+--   ARGV[2]  = Message stream max length (entries, 100000)
+--   ARGV[3]  = Message ID (UUID)
+--   ARGV[4]  = Message JSON (serialized Message struct)
+--   ARGV[5]  = Content size in bytes
+--   ARGV[6]  = Recipient client ID (for warm path processing)
+--   ARGV[7]  = Proof verified flag (1 = verified, 0 = not verified)
+--   ARGV[8]  = Persist to DB flag (1 = persist to Postgres, 0 = Redis only)
+--   ARGV[9]  = Client metric TTL (seconds, ~7 days)
+--   ARGV[10] = Sender client ID
+--   ARGV[11] = Application ID
 --
 -- RETURN TABLE (always returns table):
 --   {status, counted, remaining_quota, error_details}
 --
 -- STATUS CODES:
 --   "OK"                  = Success, message queued for async processing
---   "QUOTA_EXCEEDED"      = Monthly quota exceeded (app or client), message not sent
+--   "AUTH_CACHE_MISS"     = Auth not in cache, caller must populate and retry
+--   "QUOTA_EXCEEDED"      = Monthly quota exceeded (app or client)
 --   "RATE_LIMIT_EXCEEDED" = Per-minute rate limit exceeded (app or client)
---   "DUPLICATE"           = Message already sent (idempotency), not sent again
+--   "FORBIDDEN"           = Application is deactivated
+--   "DUPLICATE"           = Message already sent (idempotency)
 --   "ERROR"               = Redis error (check error_details)
---
--- ARCHITECTURE:
---   HOT PATH (this script):    ~1ms latency, atomic, single round-trip
---   - Idempotency check via SET NX EX
---   - Application monthly quota validation
---   - Application per-minute rate limit check
---   - Client monthly quota validation
---   - Client per-minute rate limit check
---   - Atomic metrics increment (application + client)
---   - Emit to Redis Stream for warm path
---
---   WARM PATH (separate workers): async, scalable, consumer groups
---   - Store message in cache with TTL
---   - Enqueue to recipient inbox (bounded)
---   - Persist to Postgres if flag is set
---   - Acknowledgment via stream consumer groups
---
--- IDEMPOTENCY:
---   Uses KEYS[4] with SET NX EX - only first sender succeeds
---   Safe to retry on network errors without double-counting
 -- =============================================================================
 
-local app_quota_key = KEYS[1]
-local app_rate_limit_key = KEYS[2]
-local client_rate_limit_key = KEYS[3]
-local idempotency_key = KEYS[4]
-local message_stream_key = KEYS[5]
+local auth_cache_key = KEYS[1]
+local app_quota_key = KEYS[2]
+local app_rate_limit_key = KEYS[3]
+local client_rate_limit_key = KEYS[4]
+local idempotency_key = KEYS[5]
+local message_stream_key = KEYS[6]
+local client_quota_key = KEYS[7]
+local client_metric_key = KEYS[8]
+local client_active_keys_set = KEYS[9]
 
-local client_quota_key = KEYS[6]
-local client_metric_key = KEYS[7]
-local client_active_keys_set = KEYS[8]
+local idempotency_ttl = tonumber(ARGV[1])
+local message_id = ARGV[3]
+local message_json = ARGV[4]
+local size_bytes = tonumber(ARGV[5])
+local recipient_client_id = ARGV[6]
+local proof_verified = tonumber(ARGV[7])
+local persist_to_db = tonumber(ARGV[8])
+local client_metric_ttl = tonumber(ARGV[9])
 
-local app_monthly_limit = tonumber(ARGV[1])
-local app_rate_limit = tonumber(ARGV[2])
-local client_monthly_limit = tonumber(ARGV[3])
-local client_rate_limit = tonumber(ARGV[4])
-local idempotency_ttl = tonumber(ARGV[5])
-local message_id = ARGV[7]
-local message_json = ARGV[8]
-local size_bytes = tonumber(ARGV[9])
-local recipient_client_id = ARGV[10]
-local proof_verified = tonumber(ARGV[11])
-local persist_to_db = tonumber(ARGV[12])
-local client_metric_ttl = tonumber(ARGV[13])
+-- ============================================================================
+-- STEP 0: Load auth config from Redis cache
+-- ============================================================================
+local auth_vals = redis.call('HGETALL', auth_cache_key)
+
+if #auth_vals == 0 then
+    -- Cache miss - signal caller to populate from DB
+    return {"AUTH_CACHE_MISS", 0, 0, "Auth config not in cache"}
+end
+
+-- Parse auth hash into table
+local auth = {}
+for i = 1, #auth_vals, 2 do
+    auth[auth_vals[i]] = auth_vals[i + 1]
+end
+
+-- Validate auth config has required fields
+if not auth.is_active or not auth.quota or not auth.rate_limit then
+    return {"ERROR", 0, 0, "Invalid auth cache format"}
+end
+
+-- Check if application is active
+if auth.is_active ~= "1" then
+    return {"FORBIDDEN", 0, 0, "Application is deactivated"}
+end
+
+-- Extract quota/rate limit values from auth config
+local app_monthly_limit = tonumber(auth.quota)
+local app_rate_limit = tonumber(auth.rate_limit)
+local client_monthly_limit = tonumber(auth.quota)  -- Assuming same for now
+local client_rate_limit = tonumber(auth.rate_limit)
 
 -- ============================================================================
 -- STEP 1: Idempotency check (must be first, using unique value for safe rollback)
@@ -180,10 +186,6 @@ redis.call('HINCRBY', app_rate_limit_key, 'bytes', size_bytes)
 -- ============================================================================
 -- STEP 7: Increment sender client metrics (sender pays for sending)
 -- ============================================================================
--- Client metrics stored as Redis hash with fields:
---   messages_sent, proofs_verified, total_bytes_sent, rate_limit_hits
--- The flusher reads these via HGETALL and persists to client_usage_metrics.
-
 local is_new_client_key = redis.call('EXISTS', client_metric_key) == 0
 if is_new_client_key then
     redis.call('EXPIRE', client_metric_key, client_metric_ttl)
@@ -200,7 +202,6 @@ end
 -- ============================================================================
 -- STEP 8: Emit to message stream (warm path processes storage + inbox)
 -- ============================================================================
--- Note: Stream trimming handled by janitor script (trim_message_stream_v1.lua)
 redis.call('XADD', message_stream_key, '*',
            'message_id', message_id,
            'message_json', message_json,

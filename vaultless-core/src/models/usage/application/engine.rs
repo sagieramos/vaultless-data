@@ -1,7 +1,7 @@
 //! Atomic Redis operations for billing-critical usage metrics.
 //!
 //! All counter mutations use Lua scripts for true atomicity.
-//! Single round-trip for application + client + session metrics.
+//! Single round-trip for application + client metrics.
 //!
 //! # Key Principles
 //!
@@ -15,11 +15,6 @@
 //! - `counted:{msg_id}` - Idempotency key (expires quickly)
 //! - `metric:app:{app_id}:monthly:{year_month}` - App monthly quota (hash)
 //! - `metric:app:{app_id}:hourly:{hour}` - App hourly metrics (hash)
-//! - `metric:session:{session_id}:sent` - Session message count (string)
-//! - `metric:session:{session_id}:bytes_sent` - Session bytes sent (string)
-//! - `metric:session:{session_id}:received` - Session message received (string)
-//! - `metric:session:{session_id}:bytes_received` - Session bytes received (string)
-//! - `metric:session:{session_id}:proved` - Session proofs verified (string)
 
 use crate::cache_key;
 use crate::error::{Result, VaultlessError};
@@ -39,7 +34,6 @@ const RECORD_MESSAGE_SENT_LUA: &str = include_str!("../../../scripts/usage_recor
 const RECORD_MESSAGE_RECEIVED_LUA: &str = include_str!("../../../scripts/usage_record_message_received.lua");
 const RECORD_PROOF_VERIFIED_LUA: &str = include_str!("../../../scripts/usage_record_proof_verified.lua");
 const RECORD_RATE_LIMIT_HIT_LUA: &str = include_str!("../../../scripts/usage_record_rate_limit_hit.lua");
-const INCREMENT_SESSION_LUA: &str = include_str!("../../../scripts/usage_increment_session.lua");
 
 // =============================================================================
 // Key Generation
@@ -63,15 +57,8 @@ pub fn app_monthly_key(application_id: Uuid) -> String {
 #[inline]
 pub fn app_hourly_key(application_id: Uuid, hour: chrono::DateTime<Utc>) -> String {
     AppMetricKey::new(application_id, hour, MetricGranularity::Hour)
-        .expect("Valid metric key")
         .as_str()
         .to_string()
-}
-
-/// Generate session metric key
-#[inline]
-pub fn session_metric_key(session_id: &str, counter_type: &str) -> String {
-    cache_key!("metric", "session", session_id, counter_type)
 }
 
 // =============================================================================
@@ -184,8 +171,6 @@ pub async fn record_message_sent(
     let counted_key = counted_key(input.message_id);
     let monthly_key = app_monthly_key(input.application_id);
     let hourly_key = app_hourly_key(input.application_id, Utc::now());
-    let session_sent_key = session_metric_key(&input.session_id, "sent");
-    let session_bytes_key = session_metric_key(&input.session_id, "bytes_sent");
 
     let result: i64 = tokio::time::timeout(
         std::time::Duration::from_secs(config.operation_timeout_secs),
@@ -193,12 +178,9 @@ pub async fn record_message_sent(
             .key(&counted_key)
             .key(&monthly_key)
             .key(&hourly_key)
-            .key(&session_sent_key)
-            .key(&session_bytes_key)
             .arg(config.counted_ttl_secs)
             .arg(config.monthly_ttl_secs)
             .arg(config.hourly_ttl_secs)
-            .arg(config.session_ttl_secs)
             .arg(input.content_size_bytes)
             .invoke_async(&mut conn),
     )
@@ -226,19 +208,14 @@ pub async fn record_message_received(
 
     let counted_key = counted_key(input.message_id);
     let hourly_key = app_hourly_key(input.application_id, Utc::now());
-    let session_rcvd_key = session_metric_key(&input.session_id, "received");
-    let session_bytes_key = session_metric_key(&input.session_id, "bytes_received");
 
     let result: i64 = tokio::time::timeout(
         std::time::Duration::from_secs(config.operation_timeout_secs),
         redis::Script::new(RECORD_MESSAGE_RECEIVED_LUA)
             .key(&counted_key)
             .key(&hourly_key)
-            .key(&session_rcvd_key)
-            .key(&session_bytes_key)
             .arg(config.counted_ttl_secs)
             .arg(config.hourly_ttl_secs)
-            .arg(config.session_ttl_secs)
             .arg(input.content_size_bytes)
             .invoke_async(&mut conn),
     )
@@ -266,17 +243,14 @@ pub async fn record_proof_verified(
 
     let counted_key = counted_key(input.message_id);
     let hourly_key = app_hourly_key(input.application_id, Utc::now());
-    let session_proved_key = session_metric_key(&input.session_id, "proved");
 
     let result: i64 = tokio::time::timeout(
         std::time::Duration::from_secs(config.operation_timeout_secs),
         redis::Script::new(RECORD_PROOF_VERIFIED_LUA)
             .key(&counted_key)
             .key(&hourly_key)
-            .key(&session_proved_key)
             .arg(config.counted_ttl_secs)
             .arg(config.hourly_ttl_secs)
-            .arg(config.session_ttl_secs)
             .invoke_async(&mut conn),
     )
     .await
@@ -365,87 +339,6 @@ pub async fn record_message_events(
         proof_verified_counted: proved_counted,
         any_counted: sent_counted || received_counted || proved_counted,
     })
-}
-
-// =============================================================================
-// Session-Only Operations (no idempotency, no app metrics)
-// =============================================================================
-
-/// Increment session counters without idempotency or app metrics.
-/// Use this for background/cached updates where you already know the counts.
-#[inline]
-pub async fn increment_session_counters(
-    pool: &RedisPool,
-    session_id: &str,
-    sent_delta: i64,
-    bytes_sent_delta: i64,
-    received_delta: i64,
-    bytes_received_delta: i64,
-    proved_delta: i64,
-    ttl_secs: i64,
-) -> Result<()> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
-    let sent_key = session_metric_key(session_id, "sent");
-    let bytes_sent_key = session_metric_key(session_id, "bytes_sent");
-    let received_key = session_metric_key(session_id, "received");
-    let bytes_received_key = session_metric_key(session_id, "bytes_received");
-    let proved_key = session_metric_key(session_id, "proved");
-
-    let _: () = redis::Script::new(INCREMENT_SESSION_LUA)
-        .key(&sent_key)
-        .key(&bytes_sent_key)
-        .key(&received_key)
-        .key(&bytes_received_key)
-        .key(&proved_key)
-        .arg(sent_delta)
-        .arg(bytes_sent_delta)
-        .arg(received_delta)
-        .arg(bytes_received_delta)
-        .arg(proved_delta)
-        .arg(ttl_secs)
-        .invoke_async(&mut conn)
-        .await
-        .map_err(|e| VaultlessError::Internal(format!("Session increment error: {}", e)))?;
-
-    Ok(())
-}
-
-/// Get current session counters from Redis
-#[inline]
-pub async fn get_session_counters(
-    pool: &RedisPool,
-    session_id: &str,
-) -> Result<Option<(i64, i64, i64, i64, i64)>> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
-    let sent_key = session_metric_key(session_id, "sent");
-    let bytes_sent_key = session_metric_key(session_id, "bytes_sent");
-    let received_key = session_metric_key(session_id, "received");
-    let bytes_received_key = session_metric_key(session_id, "bytes_received");
-    let proved_key = session_metric_key(session_id, "proved");
-
-    let (sent, bytes_sent, received, bytes_received, proved): (i64, i64, i64, i64, i64) = redis::pipe()
-        .get(&sent_key)
-        .get(&bytes_sent_key)
-        .get(&received_key)
-        .get(&bytes_received_key)
-        .get(&proved_key)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
-    if sent == 0 && bytes_sent == 0 && received == 0 && bytes_received == 0 && proved == 0 {
-        Ok(None)
-    } else {
-        Ok(Some((sent, bytes_sent, received, bytes_received, proved)))
-    }
 }
 
 // =============================================================================

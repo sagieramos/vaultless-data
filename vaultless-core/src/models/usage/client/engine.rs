@@ -32,7 +32,6 @@ pub fn counted_key(id: Uuid) -> String {
 #[inline]
 pub fn client_hourly_key(application_id: Uuid, client_id: Uuid, hour: chrono::DateTime<Utc>) -> String {
     ClientMetricKey::new(application_id, client_id, hour, MetricGranularity::Hour)
-        .expect("Valid client metric key")
         .as_str()
         .to_string()
 }

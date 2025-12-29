@@ -62,7 +62,7 @@ async fn restore_from_lookback_period(
         let client_id: Uuid = r.try_get("client_id")?;
         let period_start: DateTime<Utc> = r.try_get("period_start")?;
 
-        let metric_key = ClientMetricKey::new(app_id, client_id, period_start, MetricGranularity::Hour)?;
+        let metric_key = ClientMetricKey::new(app_id, client_id, period_start, MetricGranularity::Hour);
         let key_str = metric_key.as_str();
 
         let mut pipe = redis::pipe();
@@ -123,7 +123,7 @@ async fn restore_incrementally(
 
         for r in rows {
             let period_start: DateTime<Utc> = r.try_get("period_start")?;
-            let metric_key = ClientMetricKey::new(app_id, client_id, period_start, MetricGranularity::Hour)?;
+            let metric_key = ClientMetricKey::new(app_id, client_id, period_start, MetricGranularity::Hour);
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();

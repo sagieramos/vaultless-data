@@ -72,7 +72,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
 
-            let metric_key = AppMetricKey::new(application_id, period_start, MetricGranularity::Hour)?;
+            let metric_key = AppMetricKey::new(application_id, period_start, MetricGranularity::Hour);
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();
@@ -162,7 +162,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
             let period_start: DateTime<Utc> = r
                 .try_get("period_start")
                 .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-            let metric_key = AppMetricKey::new(application_id, period_start, MetricGranularity::Hour)?;
+            let metric_key = AppMetricKey::new(application_id, period_start, MetricGranularity::Hour);
             let key_str = metric_key.as_str();
 
             let mut pipe = redis::pipe();

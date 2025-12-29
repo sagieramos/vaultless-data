@@ -39,9 +39,9 @@ pub use aggregate::{
 
 // Engine - Atomic Lua scripts for billing-critical operations
 pub use engine::{
-    get_session_counters, increment_session_counters, record_message_events,
+    record_message_events,
     record_message_received, record_message_sent, record_proof_verified,
-    record_rate_limit_hit, session_metric_key,
+    record_rate_limit_hit,
     RecordMessageReceivedInput, RecordMessageSentInput, RecordProofVerifiedInput,
     RecordRateLimitHitInput,
 };

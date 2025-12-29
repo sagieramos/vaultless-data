@@ -408,14 +408,7 @@ impl ApiKey {
 
         // 1. Determine the key for the current hourly period
         let now = Utc::now();
-        let period_key = match AppMetricKey::new(api_key_id, now, MetricGranularity::Hour) {
-            Ok(key) => key,
-            Err(e) => {
-                tracing::warn!("Failed to generate metric key: {}", e);
-                // Return default/zero counters on failure
-                return Ok(MetricCounters::default());
-            }
-        };
+        let period_key = AppMetricKey::new(api_key_id, now, MetricGranularity::Hour);
 
         // 2. Define the fields to retrieve from the Redis Hash
         let fields = [
