@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgExecutor, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::app_model::dto::{WebhookEventType, WebhookInput};
+use super::applications::dto::{WebhookEventType, WebhookInput};
 
 /// Database model for webhooks table
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

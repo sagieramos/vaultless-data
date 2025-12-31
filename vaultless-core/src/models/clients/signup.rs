@@ -1,11 +1,11 @@
 use super::dto::*;
-use crate::models::app_model::integrity::AttestationRequest;
+use crate::models::applications::integrity::AttestationRequest;
 use crate::models::session::HybridSessionVerifier;
 use crate::{
     crypto,
     error::{Result, VaultlessError},
     models::{
-        app_model::{dto::ApplicationKeyView, integrity::IntegrityService},
+        applications::{dto::ApplicationKeyView, integrity::IntegrityService},
         session::paseto_session::{self, SessionData, SessionVerifier, verify_session_token},
     },
 };

@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use uuid::Uuid;
-use vaultless_core::models::{Application, app_model::chart::*};
+use vaultless_core::models::{Application, applications::chart::*};
 
 use crate::{
     middleware::{error::ApiError, user::SessionDataUserExt},

@@ -6,7 +6,7 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use vaultless_core::models::{
     Application,
-    app_model::{dto::*, integrity::dto::IntegrityConfig},
+    applications::{dto::*, integrity::dto::IntegrityConfig},
     usage::MetricCounters,
 };
 
@@ -187,7 +187,7 @@ pub struct ApplicationDashboardResponse {
     #[schema(value_type = String)]
     pub updated: DateTime<Utc>,
     /// Application metadata
-    pub meta: vaultless_core::models::app_model::integrity::dto::AppMetaData,
+    pub meta: vaultless_core::models::applications::integrity::dto::AppMetaData,
 
     // Subscription tier info
     /// Subscription tier

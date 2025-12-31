@@ -1,7 +1,7 @@
 # Vaultless Developer Portal - UI/UX Design Specification
 
-> **Version:** 1.0
-> **Last Updated:** 2025-01-18
+> **Version:** 1.1
+> **Last Updated:** 2025-12-31
 > **Status:** Draft
 
 ---
@@ -990,13 +990,72 @@ VAULTLESS DEVELOPER PORTAL
 
 | Aspect | Details |
 |--------|---------|
-| Base URL | `/dev/auth/*` for auth, `/dev/applications/*` for apps |
-| Authentication | JWT Bearer tokens |
+| Base URL | `/dev/auth/*` for auth, `/dev/applications/*` for apps, `/api/*` for client APIs |
+| Authentication | JWT Bearer tokens with PASETO |
 | Token Refresh | Automatic via refresh token |
 | Response Times | Design for 200-500ms typical |
 | Pagination | `page` + `page_size` parameters |
+| Rate Limits | Per-IP login attempts, per-key message rate limiting |
 
-### 8.2 Data Formats
+### 8.2 API Endpoints Reference
+
+#### Authentication Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/dev/auth/register` | Register new user account |
+| POST | `/dev/auth/login` | User login |
+| POST | `/dev/auth/logout` | User logout |
+| POST | `/dev/auth/refresh-token` | Refresh access token |
+| GET | `/dev/auth/me` | Get current user profile |
+| POST | `/dev/auth/verify-email` | Verify email with token |
+| POST | `/dev/auth/resend-verification` | Resend verification email |
+| POST | `/dev/auth/request-password-reset` | Request password reset |
+| POST | `/dev/auth/reset-password` | Reset password with token |
+| GET/POST | `/dev/auth/google` | Google OAuth initiation/callback |
+
+#### Application Management Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/dev/applications` | List user's applications |
+| POST | `/dev/applications` | Create new application |
+| GET | `/dev/applications/{app_id}` | Get application details |
+| PATCH | `/dev/applications/{app_id}` | Update application |
+| DELETE | `/dev/applications/{app_id}` | Delete application |
+
+#### API Key Management Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/dev/applications/{app_id}/keys/secret/rotate` | Rotate secret key |
+| POST | `/dev/applications/{app_id}/keys/publishable/rotate` | Rotate publishable key |
+| POST | `/dev/applications/{app_id}/keys/publishable/add` | Add publishable key |
+| POST | `/dev/applications/{app_id}/keys/publishable/deactivate` | Deactivate publishable key |
+
+#### Analytics & Usage Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/dev/applications/{app_id}/chart` | Get chart data |
+| GET | `/dev/applications/{app_id}/quota-status` | Get quota status |
+| GET | `/dev/applications/usage-summary` | Get usage summary across all apps |
+| GET | `/dev/applications/quota-warnings` | Get quota warning list |
+| GET | `/dev/applications/{app_id}/costs` | Get cost breakdown |
+| GET | `/dev/applications/{app_id}/trends` | Get usage trends |
+| GET | `/dev/applications/{app_id}/export` | Export usage data |
+
+#### Client API Endpoints (for SDKs)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/messages/send` | Send instant message |
+| GET | `/api/messages/inbox` | Fetch inbox messages |
+| POST | `/api/messages/{id}/read` | Mark message as read |
+| GET | `/api/messages/health` | Message service health |
+| GET | `/api/messages/ws` | WebSocket upgrade |
+
+### 8.3 Data Formats
 
 | Data Type | Format | Example |
 |-----------|--------|---------|
@@ -1004,13 +1063,31 @@ VAULTLESS DEVELOPER PORTAL
 | Timestamps | ISO 8601 | `2025-01-15T10:30:00Z` |
 | API Keys | Prefixed | `sk_live_xxx`, `pk_live_xxx` |
 | Currency | USD | `$45.23` |
+| Key Prefixes | Format | `sk_live_xxxx`, `pk_live_xxxx` |
+| Session Tokens | PASETO v2 | `v2.public.xxx...` |
 
-### 8.3 Constraints
+### 8.4 API Key Security
+
+| Key Type | Prefix | Exposure | Usage |
+|----------|--------|----------|-------|
+| Secret Key | `sk_live_` | Server-side only | Server authentication, signing |
+| Publishable Key | `pk_live_` | Client-safe | Client authentication, rate limiting |
+
+#### Key Management UX
+
+- **Secret Key Display**: Shown once on creation/rotation, then hidden
+- **Copy Functionality**: One-click copy with visual confirmation
+- **Key Rotation**: Creates new key, deactivates old after grace period
+- **Multiple Keys**: Support for multiple publishable keys per app
+
+### 8.5 Constraints
 
 - Maximum 200 items per page
 - Chart data: Max 100 daily or 160 weekly buckets
 - Session timeout: Configurable (default 30 min)
 - Rate limiting: Show feedback when hit
+- Message expiry: 7 days (configurable per app)
+- Max message size: 10MB
 
 ---
 
@@ -1018,21 +1095,27 @@ VAULTLESS DEVELOPER PORTAL
 
 | Term | Definition |
 |------|------------|
-| Secret Key | Server-side API key, never exposed to client |
-| Publishable Key | Client-side API key, safe to expose |
-| Quota | Monthly message/usage limit based on plan |
+| Secret Key | Server-side API key (`sk_live_xxx`), never exposed to client applications |
+| Publishable Key | Client-side API key (`pk_live_xxx`), safe to expose in client code |
+| PASETO | Platform-Agnostic SEcurity TOKn - modern token format replacing JWT |
+| Quota | Monthly message/usage limit based on subscription tier |
 | Tier | Subscription level (Free, Pro, Enterprise) |
 | Webhook | HTTP callback for event notifications |
+| Session Token | PASETO token for authenticating client users |
+| JTI | JWT ID - unique identifier for message idempotency |
+| Rate Limit | Per-minute message limit per API key |
+| Key Rotation | Process of creating new API keys and deactivating old ones |
 
 ---
 
 ## Appendix B: Related Documents
 
-- API Documentation
+- API Documentation (`/docs/API.md`)
 - Brand Guidelines
 - Engineering Handoff Guide
 - QA Test Cases
+- Database Schema (`/migrations/`)
 
 ---
 
-*End of Document*
+*End of Document - Version 1.1 (2025-12-31)*

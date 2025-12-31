@@ -101,8 +101,8 @@ pub use models::{
     User,
     UserSession,
     // Application & Integrity
-    app_model::integrity::AttestationService,
-    app_model::{
+    applications::integrity::AttestationService,
+    applications::{
         dto::{
             Application, ApplicationKeyView, CreateApplication, CreateApplicationResponse,
             UpdateApplication,

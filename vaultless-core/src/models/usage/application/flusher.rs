@@ -4,7 +4,7 @@
 //! Metrics are keyed by `application_id` for stability across key rotations.
 
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::material_view_helper::trigger_view_refresh_debounced;
+use crate::models::applications::material_view_helper::trigger_view_refresh_debounced;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use redis::AsyncCommands;
 use sqlx::{PgPool, Postgres, query_builder::QueryBuilder};

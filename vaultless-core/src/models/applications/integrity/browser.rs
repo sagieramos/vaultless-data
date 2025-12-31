@@ -1,7 +1,7 @@
 use crate::{
     cache_key,
     error::{Result, VaultlessError},
-    models::app_model::integrity::captcha::{CaptchaProvider, verify_captcha},
+    models::applications::integrity::captcha::{CaptchaProvider, verify_captcha},
 };
 use chrono::Utc;
 use deadpool_redis::Pool as RedisPool;

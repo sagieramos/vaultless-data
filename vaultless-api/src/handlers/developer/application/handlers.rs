@@ -11,7 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use vaultless_core::{
     Decimal,
-    models::{Application, CreateApplication, UpdateApplication, app_model::dto::*},
+    models::{Application, CreateApplication, UpdateApplication, applications::dto::*},
 };
 
 use crate::{

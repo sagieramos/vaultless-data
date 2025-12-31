@@ -346,7 +346,7 @@ impl InstantMessage {
         auth_cache_key: &str,
         _application_id: Uuid,
     ) -> Result<()> {
-        use crate::models::app_model::{Application, dto::AuthCacheEntry};
+        use crate::models::applications::{Application, dto::AuthCacheEntry};
 
         // Determine if this is a pk or sk key and fetch accordingly
         let auth_view = if auth_cache_key.contains(":pk:") {

@@ -1,5 +1,6 @@
 use crate::AppState;
 use crate::middleware::{
+    application::AuthCacheKey,
     application::ApplicationKeyViewExt,
     client::SessionDataClientExt,
 };
@@ -28,7 +29,8 @@ pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     SessionDataClientExt(client_info): SessionDataClientExt,
-    ApplicationKeyViewExt(app): ApplicationKeyViewExt, 
+    ApplicationKeyViewExt(app): ApplicationKeyViewExt,
+    AuthCacheKey(auth_cache_key): AuthCacheKey,
 ) -> Response {
     tracing::info!(
         client_id = %client_info.client_id,
@@ -37,8 +39,8 @@ pub async fn websocket_handler(
     );
 
     // ✅ Quota already validated by app_auth middleware
-    // Just pass validated app to socket handler
-    ws.on_upgrade(move |socket| handle_socket(socket, state, client_info, app))
+    // Just pass validated app and auth_cache_key to socket handler
+    ws.on_upgrade(move |socket| handle_socket(socket, state, client_info, app, auth_cache_key))
 }
 
 /// Handle individual WebSocket connection
@@ -47,6 +49,7 @@ async fn handle_socket(
     state: AppState,
     client_info: vaultless_core::SessionData,
     app: Arc<vaultless_core::ApplicationKeyView>,
+    auth_cache_key: String,
 ) {
     let client_id = client_info.client_id;
     // Use application_id (stable across API key rotations) for metrics tracking
@@ -160,6 +163,7 @@ async fn handle_socket(
     let redis_pool = Arc::clone(&state.redis_pool);
     let db_pool = Arc::clone(&state.db);
     let ws_sender_for_handler = Arc::clone(&ws_sender);
+    let auth_cache_key_for_handler = auth_cache_key.clone();
 
     while let Some(msg) = receiver.next().await {
         match msg {
@@ -177,6 +181,7 @@ async fn handle_socket(
                             &db_pool,
                             &redis_pool,
                             &ws_sender_for_handler,
+                            auth_cache_key_for_handler.clone(),
                         )
                         .await;
                     }
@@ -272,6 +277,7 @@ async fn handle_inbound_message<S>(
     db_pool: &Arc<sqlx::PgPool>,
     redis_pool: &Arc<RedisPool>,
     ws_sender: &Arc<Mutex<S>>,
+    auth_cache_key: String,
 ) where
     S: futures::Sink<WsMessage> + Unpin,
     S::Error: std::fmt::Debug,
@@ -447,9 +453,9 @@ async fn handle_inbound_message<S>(
                 "Sending instant message via WebSocket"
             );
 
-            // Send message using the InstantMessage service
+            // Send message using the InstantMessage service v2 with auth cache key
             match instant_message
-                .send_instant_message(
+                .send_instant_message_v2_with_auth_key(
                     client_id,
                     recipient.id,
                     ciphertext.clone(),
@@ -462,6 +468,7 @@ async fn handle_inbound_message<S>(
                     require_proof_verification,
                     None, // encryption_algorithm
                     None, // algorithm_version
+                    auth_cache_key.clone(),
                 )
                 .await
             {

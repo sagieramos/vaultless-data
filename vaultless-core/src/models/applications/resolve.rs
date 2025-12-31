@@ -3,7 +3,6 @@ use crate::error::Result;
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 impl Application {

@@ -1,6 +1,7 @@
 use crate::{
     middleware::{
-        application::ApplicationKeyViewExt, client::SessionDataClientExt, error::ApiError,
+        application::AuthCacheKey, application::ApplicationKeyViewExt,
+        client::SessionDataClientExt, error::ApiError,
     },
     services::real_time_message::InstantMessageExt,
     state::AppState,
@@ -15,7 +16,7 @@ use validator::Validate;
 use chrono;
 use utoipa::ToSchema;
 use vaultless_core::Client;
-use vaultless_core::models::message::dto::{HealthStatus, Message, MessageResponse, ReadReceipt};
+use vaultless_core::models::message::dto::{HealthStatus, MessageResponse, ReadReceipt};
 
 // =============================================================================
 // Request Types (UPDATED)
@@ -174,6 +175,7 @@ pub async fn send_message(
     State(state): State<AppState>,
     SessionDataClientExt(sender): SessionDataClientExt,
     ApplicationKeyViewExt(app): ApplicationKeyViewExt,
+    AuthCacheKey(auth_cache_key): AuthCacheKey,
     Json(input): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
     // --- 1. Validate input ---
@@ -220,12 +222,12 @@ pub async fn send_message(
         "Sending instant message"
     );
 
-    // --- 6. Send message (now with signature verification at send time) ---
+    // --- 6. Send message using v2 with auth cache key ---
     // Use app.app_id (application_id) instead of sk_id for metrics tracking
     // Application ID is stable across API key rotations
     let message_id = state
         .instant_message
-        .send_instant_message(
+        .send_instant_message_v2_with_auth_key(
             sender.client_id,
             recipient.id,
             input.ciphertext.clone(),
@@ -238,6 +240,7 @@ pub async fn send_message(
             input.require_proof_verification,
             input.encryption_algorithm.clone(),
             input.algorithm_version,
+            auth_cache_key,
         )
         .await
         .map_err(|e| {

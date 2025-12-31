@@ -97,8 +97,8 @@ use utoipa::openapi::security::SecurityScheme;
             crate::handlers::developer::application::keys::RotatePublishableKeyRequest,
             crate::handlers::developer::application::keys::DeactivatePublishableKeyRequest,
             crate::handlers::developer::application::keys::AddPublishableKeyResponse,
-            vaultless_core::models::app_model::dto::PaginatedApplicationsSummary,
-            vaultless_core::models::app_model::dto::ApplicationSummary,
+            vaultless_core::models::applications::dto::PaginatedApplicationsSummary,
+            vaultless_core::models::applications::dto::ApplicationSummary,
             // Notification schemas
             vaultless_core::models::notification::Notification,
             vaultless_core::models::notification::NotificationType,

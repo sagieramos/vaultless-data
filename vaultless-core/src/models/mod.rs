@@ -1,5 +1,5 @@
 pub mod api_key;
-pub mod app_model;
+pub mod applications;
 pub mod client_token;
 pub mod clients;
 pub mod message;
@@ -13,7 +13,7 @@ pub mod user;
 pub mod webhook;
 
 pub use api_key::{ApiKey, CachedApiKey, CreateApiKey};
-pub use app_model::dto::{
+pub use applications::dto::{
     Application, CreateApplication, CreateApplicationResponse,
     UpdateApplication, WebhookEventType, WebhookInput, MAX_WEBHOOKS_PER_APPLICATION,
 };

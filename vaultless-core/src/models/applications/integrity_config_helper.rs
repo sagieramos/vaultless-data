@@ -1,4 +1,4 @@
-use crate::models::app_model::integrity::dto::*;
+use crate::models::applications::integrity::dto::*;
 
 impl IntegrityConfig {
     pub fn empty() -> Self {

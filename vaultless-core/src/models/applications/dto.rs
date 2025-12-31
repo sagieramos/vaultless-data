@@ -258,6 +258,23 @@ impl ApplicationKeyView {
     pub fn integrity(&self) -> crate::error::Result<IntegrityConfigHandler> {
         IntegrityConfigHandler::new_from_jsonb(&self.app_meta)
     }
+
+    /// Generate the auth cache key for this application key view.
+    ///
+    /// For secret keys, uses the sk_prefix to generate the cache key.
+    /// For publishable keys, returns None (caller should have the pk).
+    ///
+    /// Returns Some(cache_key) if this is a secret key, None if publishable.
+    pub fn auth_cache_key(&self) -> Option<String> {
+        // If sk_key_prefix starts with "sk_", this is a secret key
+        if self.sk_key_prefix.starts_with("sk_") {
+            Some(secret_key_resolution_cache_key(&self.sk_key_prefix))
+        } else {
+            // For publishable keys, we don't have the plaintext pk stored
+            // Caller should use publishable_key_resolution_cache_key with the original pk
+            None
+        }
+    }
 }
 
 // Usage:

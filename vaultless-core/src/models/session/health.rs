@@ -37,9 +37,12 @@ impl PubSubHealth {
 
     /// Mark pub/sub as disconnected
     pub fn mark_disconnected(&self) {
-        self.connected.store(false, Ordering::SeqCst);
-        super::metrics::PUBSUB_HEALTHY.set(0);
-        tracing::warn!("Pub/sub marked as disconnected");
+        // Only log and update metrics if state is actually changing
+        let was_connected = self.connected.swap(false, Ordering::SeqCst);
+        if was_connected {
+            super::metrics::PUBSUB_HEALTHY.set(0);
+            tracing::warn!("Pub/sub marked as disconnected");
+        }
     }
 
     /// Record that a message was received

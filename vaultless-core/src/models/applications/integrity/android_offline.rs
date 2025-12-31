@@ -1,6 +1,6 @@
 use super::types::*;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::integrity::dto::AndroidIntegrityConfig;
+use crate::models::applications::integrity::dto::AndroidIntegrityConfig;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{DecodingKey, Validation, decode, decode_header};
 use once_cell::sync::OnceCell;

@@ -20,7 +20,7 @@ use hyper::header;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
-use vaultless_core::{models::app_model::dto::*, types::SubscriptionTier};
+use vaultless_core::{models::applications::dto::*, types::SubscriptionTier};
 
 // ============================================================================
 // REQUEST/RESPONSE DTOs

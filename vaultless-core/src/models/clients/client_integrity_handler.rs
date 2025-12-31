@@ -1,6 +1,6 @@
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::integrity::AttestationResult;
-use crate::models::app_model::integrity::Platform;
+use crate::models::applications::integrity::AttestationResult;
+use crate::models::applications::integrity::Platform;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as jsonValue;

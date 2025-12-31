@@ -1,6 +1,6 @@
 use super::types::AttestationResult;
 use crate::error::{Result, VaultlessError};
-use crate::models::app_model::integrity::dto::IoTIntegrityConfig;
+use crate::models::applications::integrity::dto::IoTIntegrityConfig;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
