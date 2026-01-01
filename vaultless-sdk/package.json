@@ -1,0 +1,45 @@
+{
+  "name": "@vaultless/sdk",
+  "version": "1.0.0",
+  "description": "Vaultless SDK for secure messaging with XChaCha20-Poly1305 encryption",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "vaultless",
+    "encryption",
+    "xchacha20-poly1305",
+    "secure-messaging",
+    "e2e-encryption"
+  ],
+  "author": "Vaultless",
+  "license": "MIT",
+  "dependencies": {
+    "@noble/ciphers": "^0.5.2",
+    "@noble/curves": "^1.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
