@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { Plus, Search, BarChart3, Key, Settings, Server } from 'lucide-react';
+import { Plus, Search, BarChart3, Key, Settings, Server, Cpu, ShieldCheck, Wifi, MessageSquare } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card } from '../components/ui/card';
@@ -18,7 +18,9 @@ const applications = [
     quota: { used: 65000, limit: 100000 },
     keys: 2,
     webhooks: 3,
-    createdAt: '2 months ago'
+    createdAt: '2 months ago',
+    type: 'messaging',
+    icon: MessageSquare
   },
   {
     id: '2',
@@ -26,13 +28,32 @@ const applications = [
     description: 'Testing and staging deployment',
     tier: 'Free',
     status: 'active',
-    quota: { used: 450, limit: 1000 },
+    quota: { used: 450, limit: 10000 },
     keys: 1,
     webhooks: 1,
-    createdAt: '1 month ago'
+    createdAt: '1 month ago',
+    type: 'messaging',
+    icon: MessageSquare
   },
   {
     id: '3',
+    name: 'Smart Home Hub',
+    description: 'IoT device management and attestation',
+    tier: 'Enterprise',
+    status: 'active',
+    quota: { used: 12500, limit: 500000 },
+    keys: 3,
+    webhooks: 5,
+    createdAt: '3 weeks ago',
+    type: 'iot',
+    iotStats: {
+      devices: 847,
+      attested: 842,
+      trusted: 98
+    }
+  },
+  {
+    id: '4',
     name: 'Mobile App Backend',
     description: 'iOS and Android messaging service',
     tier: 'Pro',
@@ -40,7 +61,9 @@ const applications = [
     quota: { used: 42000, limit: 100000 },
     keys: 2,
     webhooks: 2,
-    createdAt: '3 weeks ago'
+    createdAt: '3 weeks ago',
+    type: 'messaging',
+    icon: MessageSquare
   },
 ];
 
@@ -81,10 +104,19 @@ export default function ApplicationsPage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.1 }}
           >
-            <Card className="p-6 hover:shadow-lg transition-shadow">
+            <Card className={`p-6 hover:shadow-lg transition-shadow ${app.type === 'iot' ? 'border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-900/10' : ''}`}>
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
+                    {app.type === 'iot' ? (
+                      <div className="w-8 h-8 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex items-center justify-center">
+                        <Cpu className="w-4 h-4 text-purple-600" />
+                      </div>
+                    ) : (
+                      <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                        <MessageSquare className="w-4 h-4 text-blue-600" />
+                      </div>
+                    )}
                     <h3 className="font-semibold text-lg text-gray-900 dark:text-white">
                       {app.name}
                     </h3>
@@ -96,12 +128,20 @@ export default function ApplicationsPage() {
                     {app.description}
                   </p>
                 </div>
-                <Badge variant={app.tier === 'Pro' ? 'default' : 'secondary'}>
-                  {app.tier}
-                </Badge>
+                <div className="flex flex-col items-end gap-1">
+                  <Badge variant={app.tier === 'Pro' || app.tier === 'Enterprise' ? 'default' : 'secondary'}>
+                    {app.tier}
+                  </Badge>
+                  {app.type === 'iot' && (
+                    <Badge variant="outline" className="text-xs text-purple-600 border-purple-300">
+                      <Wifi className="w-3 h-3 mr-1" />
+                      IoT
+                    </Badge>
+                  )}
+                </div>
               </div>
 
-              {/* Quota */}
+              {/* Quota (for all apps) */}
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Quota</span>
@@ -114,7 +154,7 @@ export default function ApplicationsPage() {
                   className="h-2"
                 />
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                  {app.quota.used.toLocaleString()} / {app.quota.limit.toLocaleString()} messages
+                  {app.quota.used.toLocaleString()} / {app.quota.limit >= 999999 ? 'Unlimited' : app.quota.limit.toLocaleString()} messages
                 </p>
               </div>
 
@@ -137,7 +177,7 @@ export default function ApplicationsPage() {
                 <Link to={`/applications/${app.id}`} className="flex-1">
                   <Button variant="outline" size="sm" className="w-full">
                     <Settings className="w-4 h-4 mr-2" />
-                    Manage
+                    {app.type === 'iot' ? 'Devices' : 'Manage'}
                   </Button>
                 </Link>
                 <Link to={`/applications/${app.id}/analytics`}>

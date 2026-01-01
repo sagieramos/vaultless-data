@@ -13,6 +13,7 @@ import ApplicationDetailPage from './pages/ApplicationDetailPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ApiKeysPage from './pages/ApiKeysPage';
 import QuotaBillingPage from './pages/QuotaBillingPage';
+import RevenuePage from './pages/RevenuePage';
 import DocsPage from './pages/DocsPage';
 import NotFoundPage from './pages/NotFoundPage';
 
@@ -27,10 +28,11 @@ export default function App() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/applications" element={<ApplicationsPage />} />
           <Route path="/applications/new" element={<CreateAppPage />} />
-          <Route path="/applications/:id" element={<ApplicationDetailPage />} />
           <Route path="/applications/:id/analytics" element={<AnalyticsPage />} />
           <Route path="/applications/:id/keys" element={<ApiKeysPage />} />
+          <Route path="/applications/:id" element={<ApplicationDetailPage />} />
           <Route path="/quota-billing" element={<QuotaBillingPage />} />
+          <Route path="/revenue" element={<RevenuePage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/404" element={<NotFoundPage />} />
           <Route path="*" element={<Navigate to="/404" replace />} />

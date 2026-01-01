@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { Plus, BarChart3, Key, Book, TrendingUp, TrendingDown, MessageSquare, Server, DollarSign, Zap } from 'lucide-react';
+import { Plus, BarChart3, Key, Book, TrendingUp, TrendingDown, MessageSquare, Server, DollarSign, Zap, Users, CreditCard } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import DashboardLayout from '../components/layout/DashboardLayout';
@@ -43,9 +43,9 @@ export default function DashboardPage() {
       >
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Welcome back, Alex!</h1>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Welcome back, Oluwatosin!</h1>
             <p className="text-gray-600 dark:text-gray-400 mt-1">
-              {hasApps ? 'You have 3 active applications' : 'Ready to get started?'}
+              {hasApps ? 'You have 4 active applications' : 'Ready to get started?'}
             </p>
           </div>
           <Link to="/applications/new">
@@ -93,7 +93,7 @@ export default function DashboardPage() {
                   <Server className="w-5 h-5 text-purple-600" />
                 </div>
                 <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold text-gray-900 dark:text-white">3</span>
+                  <span className="text-3xl font-bold text-gray-900 dark:text-white">4</span>
                   <span className="text-sm text-gray-600 flex items-center mb-1">
                     <Zap className="w-4 h-4 mr-1" />
                     All active
@@ -128,21 +128,42 @@ export default function DashboardPage() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
+              transition={{ delay: 0.3 }}
             >
               <Card className="p-6">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Total Cost</span>
-                  <DollarSign className="w-5 h-5 text-orange-600" />
+                  <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Active Subscribers</span>
+                  <Users className="w-5 h-5 text-purple-600" />
                 </div>
                 <div className="flex items-end gap-2">
-                  <span className="text-3xl font-bold text-gray-900 dark:text-white">$45.23</span>
+                  <span className="text-3xl font-bold text-gray-900 dark:text-white">142</span>
                   <span className="text-sm text-green-600 flex items-center mb-1">
-                    <TrendingDown className="w-4 h-4 mr-1" />
-                    8%
+                    <TrendingUp className="w-4 h-4 mr-1" />
+                    +12%
                   </span>
                 </div>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">This month</p>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Across all apps</p>
+              </Card>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4 }}
+            >
+              <Card className="p-6 border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/10">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-green-700 dark:text-green-400">Total Revenue</span>
+                  <CreditCard className="w-5 h-5 text-green-600" />
+                </div>
+                <div className="flex items-end gap-2">
+                  <span className="text-3xl font-bold text-green-800 dark:text-green-300">$1,284</span>
+                  <span className="text-sm text-green-600 flex items-center mb-1">
+                    <TrendingUp className="w-4 h-4 mr-1" />
+                    +24%
+                  </span>
+                </div>
+                <p className="text-sm text-green-600 dark:text-green-500 mt-1">This month</p>
               </Card>
             </motion.div>
           </div>
