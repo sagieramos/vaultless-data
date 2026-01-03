@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Plus, BarChart3, Key, Book, TrendingUp, TrendingDown, MessageSquare, Server, DollarSign, Zap, Users, CreditCard } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
@@ -43,7 +44,24 @@ export default function DashboardPage() {
       >
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Welcome back, Oluwatosin!</h1>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+              Welcome back, Oluwatosin!
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="icon" className="rounded-full h-8 w-8">
+                    <Zap className="h-4 w-4 text-yellow-500" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64">
+                  <div className="space-y-2">
+                    <h4 className="font-medium leading-none">Status: Active</h4>
+                    <p className="text-sm text-gray-500">
+                      Your current plan is Pro. You have 35k messages remaining this month.
+                    </p>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </h1>
             <p className="text-gray-600 dark:text-gray-400 mt-1">
               {hasApps ? 'You have 4 active applications' : 'Ready to get started?'}
             </p>
