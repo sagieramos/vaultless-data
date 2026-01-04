@@ -39,3 +39,5 @@ heaptrack.vaultless-api.517194*
 .brv/
 
 */node_modules
+
+*/.vite
