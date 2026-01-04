@@ -1,4 +1,4 @@
-import RevenuePage from '../../migrated-pages/RevenuePage';
+import RevenuePage from '../../pages/RevenuePage';
 
 export default function Page() {
   return <RevenuePage />;

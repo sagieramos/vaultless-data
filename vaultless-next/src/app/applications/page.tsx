@@ -1,4 +1,4 @@
-import ApplicationsPage from '../../migrated-pages/ApplicationsPage';
+import ApplicationsPage from '../../pages/ApplicationsPage';
 
 export default function Page() {
   return <ApplicationsPage />;

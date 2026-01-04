@@ -1,7 +1,0 @@
-import {
-  inform7
-} from "./chunk-EKLG2RSA.js";
-import "./chunk-V4OQ3NZ2.js";
-export {
-  inform7 as default
-};

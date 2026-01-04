@@ -16,6 +16,12 @@ export default function GoogleCallbackContent() {
 
   useEffect(() => {
     const handleGoogleCallback = async () => {
+      if (!searchParams) {
+        toast.error('Invalid OAuth callback parameters');
+        router.push('/login');
+        return;
+      }
+
       const code = searchParams.get('code');
       const state = searchParams.get('state');
       const error = searchParams.get('error');

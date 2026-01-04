@@ -1,7 +1,0 @@
-import {
-  wasm
-} from "./chunk-FWDZG7IJ.js";
-import "./chunk-V4OQ3NZ2.js";
-export {
-  wasm as default
-};
