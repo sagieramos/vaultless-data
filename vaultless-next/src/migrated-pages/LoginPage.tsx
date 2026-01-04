@@ -3,36 +3,73 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { motion } from 'motion/react';
-import { Shield, Eye, EyeOff } from 'lucide-react';
+import { Shield, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Checkbox } from '../components/ui/checkbox';
 import { Card } from '../components/ui/card';
-import { toast } from 'sonner';
+import { useAuth } from '../contexts/AuthContext';
+import { authApi } from '../lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
+  const { login, isLoading: authLoading, isAuthenticated } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
     remember: false
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Redirect if already authenticated
+  if (isAuthenticated && !authLoading) {
+    router.push('/dashboard');
+    return null;
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Mock authentication
-    if (formData.email && formData.password) {
-      toast.success('Welcome back!');
-      setTimeout(() => {
-        router.push('/dashboard');
-      }, 1000);
-    } else {
-      toast.error('Please fill in all fields');
+
+    if (!formData.email || !formData.password) {
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      await login({
+        email: formData.email,
+        password: formData.password,
+      });
+
+      // Redirect to dashboard on successful login
+      router.push('/dashboard');
+    } catch (error: any) {
+      console.error('Login error:', error);
+      // Error is already handled by AuthContext (toast)
+    } finally {
+      setIsSubmitting(false);
     }
   };
+
+  const handleGoogleLogin = async () => {
+    setIsSubmitting(true);
+
+    try {
+      const response = await authApi.getGoogleAuthUrl();
+
+      // Redirect to Google OAuth flow
+      window.location.href = response.authUrl;
+    } catch (error: any) {
+      console.error('Google OAuth error:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const loading = authLoading || isSubmitting;
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col">
@@ -69,15 +106,17 @@ export default function LoginPage() {
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   placeholder="john@example.com"
                   required
+                  disabled={loading}
+                  autoComplete="email"
                 />
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <Label htmlFor="password">Password</Label>
-                  <a href="#" className="text-sm text-blue-600 hover:underline">
+                  <Link href="#" className="text-sm text-blue-600 hover:underline">
                     Forgot password?
-                  </a>
+                  </Link>
                 </div>
                 <div className="relative">
                   <Input
@@ -87,10 +126,13 @@ export default function LoginPage() {
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                     placeholder="Enter your password"
                     required
+                    disabled={loading}
+                    autoComplete="current-password"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
+                    disabled={loading}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
                   >
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
@@ -103,14 +145,22 @@ export default function LoginPage() {
                   id="remember"
                   checked={formData.remember}
                   onCheckedChange={(checked) => setFormData({ ...formData, remember: checked as boolean })}
+                  disabled={loading}
                 />
                 <Label htmlFor="remember" className="text-sm cursor-pointer">
                   Remember me
                 </Label>
               </div>
 
-              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700">
-                Log In
+              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={loading}>
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Signing in...
+                  </>
+                ) : (
+                  'Log In'
+                )}
               </Button>
             </form>
 
@@ -123,7 +173,13 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <Button variant="outline" className="w-full" type="button">
+            <Button
+              variant="outline"
+              className="w-full"
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={loading}
+            >
               <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
                 <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                 <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>

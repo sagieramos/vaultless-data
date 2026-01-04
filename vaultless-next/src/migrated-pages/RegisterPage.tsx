@@ -3,16 +3,19 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { motion } from 'motion/react';
-import { Shield, Eye, EyeOff, Check, X, Mail, Lock as LockIcon } from 'lucide-react';
+import { Shield, Eye, EyeOff, Check, X, Mail, Loader2 as LoaderIcon } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Checkbox } from '../components/ui/checkbox';
 import { Card } from '../components/ui/card';
 import { Progress } from '../components/ui/progress';
+import { useAuth } from '../contexts/AuthContext';
+import { authApi } from '../lib/api';
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { register, isLoading: authLoading, isAuthenticated } = useAuth();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [formData, setFormData] = useState({
@@ -24,6 +27,13 @@ export default function RegisterPage() {
   });
   const [step, setStep] = useState(1);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Redirect if already authenticated
+  if (isAuthenticated && !authLoading) {
+    router.push('/dashboard');
+    return null;
+  }
 
   const passwordStrength = (password: string) => {
     let strength = 0;
@@ -48,11 +58,9 @@ export default function RegisterPage() {
     return 'Strong';
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    
+  const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
-    
+
     if (!formData.name) newErrors.name = 'Name is required';
     if (!formData.email) newErrors.email = 'Email is required';
     if (!formData.email.includes('@')) newErrors.email = 'Please enter a valid email';
@@ -62,15 +70,50 @@ export default function RegisterPage() {
     if (!/[0-9]/.test(formData.password)) newErrors.password = 'Password must include a number';
     if (!/[^A-Za-z0-9]/.test(formData.password)) newErrors.password = 'Password must include a special character';
     if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords must match';
-    if (!formData.agreeToTerms) newErrors.agreeToTerms = 'You must agree to the terms';
-    
+    if (!formData.agreeToTerms) newErrors.agreeToTerms = 'You must agree to terms';
+
     setErrors(newErrors);
-    
-    if (Object.keys(newErrors).length === 0) {
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!validateForm()) {
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      await register({
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+      });
+
       // Success - show verification message
       setStep(2);
+    } catch (error: any) {
+      console.error('Registration error:', error);
+      // Error is already handled by AuthContext (toast)
+    } finally {
+      setIsSubmitting(false);
     }
   };
+
+  const handleResendEmail = async () => {
+    setIsSubmitting(true);
+    try {
+      await authApi.resendVerificationEmail(formData.email);
+    } catch (error: any) {
+      console.error('Resend email error:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const loading = authLoading || isSubmitting;
 
   if (step === 2) {
     return (
@@ -84,27 +127,35 @@ export default function RegisterPage() {
             <div className="w-16 h-16 bg-green-100 dark:bg-green-900/20 rounded-full flex items-center justify-center mx-auto mb-6">
               <Mail className="w-8 h-8 text-green-600" />
             </div>
-            
+
             <h1 className="text-2xl font-bold mb-2">Check your email!</h1>
             <p className="text-gray-600 dark:text-gray-400 mb-6">
               We've sent a verification link to<br />
               <strong className="text-gray-900 dark:text-white">{formData.email}</strong>
             </p>
-            
+
             <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 mb-6 text-sm text-left">
               <p className="text-gray-700 dark:text-gray-300">
                 💡 <strong>Tip:</strong> Check your spam folder if you don't see it in your inbox
               </p>
             </div>
-            
+
             <Button
               variant="outline"
               className="w-full"
-              onClick={() => alert('Verification email resent!')}
+              onClick={handleResendEmail}
+              disabled={loading}
             >
-              Resend verification email
+              {loading ? (
+                <>
+                  <LoaderIcon className="w-4 h-4 mr-2 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                'Resend verification email'
+              )}
             </Button>
-            
+
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-6">
               <Link href="/login" className="text-blue-600 hover:underline">
                 Return to login
@@ -159,6 +210,7 @@ export default function RegisterPage() {
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   placeholder="John Doe"
                   className={errors.name ? 'border-red-500' : ''}
+                  disabled={loading}
                 />
                 {errors.name && (
                   <p className="text-sm text-red-500 mt-1 flex items-center gap-1">
@@ -176,6 +228,8 @@ export default function RegisterPage() {
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   placeholder="john@example.com"
                   className={errors.email ? 'border-red-500' : ''}
+                  disabled={loading}
+                  autoComplete="email"
                 />
                 {errors.email && (
                   <p className="text-sm text-red-500 mt-1 flex items-center gap-1">
@@ -194,10 +248,13 @@ export default function RegisterPage() {
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                     placeholder="Create a strong password"
                     className={errors.password ? 'border-red-500' : ''}
+                    disabled={loading}
+                    autoComplete="new-password"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
+                    disabled={loading}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
                   >
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
@@ -236,10 +293,13 @@ export default function RegisterPage() {
                     onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
                     placeholder="Confirm your password"
                     className={errors.confirmPassword ? 'border-red-500' : ''}
+                    disabled={loading}
+                    autoComplete="new-password"
                   />
                   <button
                     type="button"
                     onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    disabled={loading}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500"
                   >
                     {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
@@ -257,16 +317,17 @@ export default function RegisterPage() {
                   id="terms"
                   checked={formData.agreeToTerms}
                   onCheckedChange={(checked) => setFormData({ ...formData, agreeToTerms: checked as boolean })}
+                  disabled={loading}
                 />
                 <Label htmlFor="terms" className="text-sm cursor-pointer">
                   I agree to the{' '}
-                  <a href="#" className="text-blue-600 hover:underline">
+                  <Link href="#" className="text-blue-600 hover:underline">
                     Terms of Service
-                  </a>{' '}
+                  </Link>{' '}
                   and{' '}
-                  <a href="#" className="text-blue-600 hover:underline">
+                  <Link href="#" className="text-blue-600 hover:underline">
                     Privacy Policy
-                  </a>
+                  </Link>
                 </Label>
               </div>
               {errors.agreeToTerms && (
@@ -275,8 +336,15 @@ export default function RegisterPage() {
                 </p>
               )}
 
-              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700">
-                Create Account
+              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={loading}>
+                {loading ? (
+                  <>
+                    <LoaderIcon className="w-4 h-4 mr-2 animate-spin" />
+                    Creating Account...
+                  </>
+                ) : (
+                  'Create Account'
+                )}
               </Button>
             </form>
 
