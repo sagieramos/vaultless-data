@@ -1,4 +1,4 @@
-import AnalyticsPage from '../../../../migrated-pages/AnalyticsPage';
+import AnalyticsPage from '../../../../pages/AnalyticsPage';
 
 export default function Page() {
   return <AnalyticsPage />;

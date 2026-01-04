@@ -1,4 +1,4 @@
-import LoginPage from '../../migrated-pages/LoginPage';
+import LoginPage from '../../pages/LoginPage';
 
 export default function Page() {
   return <LoginPage />;
