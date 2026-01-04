@@ -39,6 +39,6 @@ pub fn user_routes(state: AppState) -> Router<AppState> {
         .route("/google/url", get(google_auth_url))
         // GET /auth/google/callback - Handles OAuth callback from Google
         .route("/google/callback", get(google_auth_callback))
-        // POST /dev/auth/test-token - Generate test token (development only)
+        // POST /test-token - Generate test token (development only)
         .route("/test-token", post(generate_test_token))
 }
