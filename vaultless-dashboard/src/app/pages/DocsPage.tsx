@@ -289,26 +289,6 @@ public class Example {
         System.out.println("Message ID: " + message.getId());
     }
 }`,
-  dart: `// Using vaultless-dart package
-import 'package:vaultless/vaultless.dart';
-
-void main() async {
-  final client = VaultlessClient(
-    apiKey: 'YOUR_API_KEY',
-    baseUrl: 'https://api.vaultless.io',
-  );
-
-  // Initialize client (generates keys)
-  await client.initialize();
-
-  // Send message (encryption and signing happen automatically)
-  final message = await client.sendMessage(
-    recipientIdentifier: '+1234567890',
-    content: 'Hello from Vaultless!',
-  );
-
-  print('Message ID: \${message.id}');
-}`,
 };
 
 export default function DocsPage() {
@@ -360,10 +340,11 @@ export default function DocsPage() {
                     setSelectedCategory(category.id);
                     setSelectedArticle(category.articles[0].slug);
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${selectedCategory === category.id
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors ${
+                    selectedCategory === category.id
                       ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
                       : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-                    }`}
+                  }`}
                 >
                   <category.icon className="w-5 h-5" />
                   <div className="flex-1">
@@ -417,10 +398,11 @@ export default function DocsPage() {
                   <button
                     key={article.slug}
                     onClick={() => setSelectedArticle(article.slug)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left transition-colors ${selectedArticle === article.slug
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left transition-colors ${
+                      selectedArticle === article.slug
                         ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
                         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'
-                      }`}
+                    }`}
                   >
                     <span className="text-sm">{article.title}</span>
                     {selectedArticle === article.slug && <Check className="w-4 h-4" />}
@@ -488,8 +470,8 @@ export default function DocsPage() {
                     <TabsTrigger value="rust">Rust</TabsTrigger>
                     <TabsTrigger value="kotlin">Kotlin</TabsTrigger>
                     <TabsTrigger value="java">Java</TabsTrigger>
-                    <TabsTrigger value="c">C/C++</TabsTrigger>
-                    <TabsTrigger value="dart">Dart</TabsTrigger>
+                    <TabsTrigger value="c">C</TabsTrigger>
+                    <TabsTrigger value="cpp">C/C++</TabsTrigger>
                     <TabsTrigger value="curl">cURL</TabsTrigger>
                   </TabsList>
                   {Object.entries(codeExamples).map(([lang, code]) => (
