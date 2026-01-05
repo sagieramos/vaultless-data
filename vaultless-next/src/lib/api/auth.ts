@@ -28,7 +28,7 @@ export const authApi = {
    * POST /dev/auth/register
    */
   register: async (data: RegisterRequest): Promise<RegisterResponse> => {
-    return apiClient.post<RegisterResponse>('/dev/auth/register', data);
+    return apiClient.post<RegisterResponse>('/dev/auth/register', data, { omitAuth: true });
   },
 
   /**
@@ -36,7 +36,7 @@ export const authApi = {
    * POST /dev/auth/login
    */
   login: async (data: LoginRequest): Promise<LoginResponse> => {
-    return apiClient.post<LoginResponse>('/dev/auth/login', data);
+    return apiClient.post<LoginResponse>('/dev/auth/login', data, { omitAuth: true });
   },
 
   /**
@@ -94,7 +94,7 @@ export const authApi = {
   verifyEmailGet: async (token: string): Promise<VerifyEmailResponse> => {
     return apiClient.get<VerifyEmailResponse>('/dev/auth/verify-email', {
       token,
-    });
+    }, { omitAuth: true });
   },
 
   /**
@@ -104,7 +104,7 @@ export const authApi = {
   resendVerificationEmail: async (
     email: string
   ): Promise<{ message: string; email: string }> => {
-    return apiClient.post('/dev/auth/resend-verification-email', { email });
+    return apiClient.post('/dev/auth/resend-verification-email', { email }, { omitAuth: true });
   },
 
   // ============================================================================
@@ -120,7 +120,8 @@ export const authApi = {
   ): Promise<RequestPasswordResetResponse> => {
     return apiClient.post<RequestPasswordResetResponse>(
       '/dev/auth/request-password-reset',
-      data
+      data,
+      { omitAuth: true }
     );
   },
 
@@ -152,9 +153,9 @@ export const authApi = {
     if (redirectAfter) {
       return apiClient.get<GoogleAuthInitResponse>('/auth/google/url', {
         redirectAfter,
-      });
+      }, { omitAuth: true });
     }
-    return apiClient.get<GoogleAuthInitResponse>('/auth/google/url');
+    return apiClient.get<GoogleAuthInitResponse>('/auth/google/url', undefined, { omitAuth: true });
   },
 
   /**
@@ -168,7 +169,7 @@ export const authApi = {
     return apiClient.get<GoogleAuthResponse>('/auth/google/callback', {
       code,
       state,
-    });
+    }, { omitAuth: true });
   },
 };
 

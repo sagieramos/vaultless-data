@@ -15,6 +15,7 @@ import {
   LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer
 } from 'recharts';
+import { useRequireAuth } from '@/contexts/AuthContext';
 
 // Revenue data
 const revenueData = [
@@ -60,6 +61,7 @@ const recentSubscriptions = [
 ];
 
 export default function RevenuePage() {
+  useRequireAuth();
   const [dateRange, setDateRange] = useState('30d');
 
   const totalRevenue = revenueData.reduce((sum, d) => sum + d.revenue, 0);

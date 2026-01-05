@@ -164,6 +164,8 @@ pub struct SecurityConfig {
     pub paseto_previous_key: Option<String>,
     /// Session key manager (constructed from keys)
     pub session_key_manager: Arc<SessionKeyManager>,
+    /// Whether to use secure cookies (true by default for production)
+    pub secure_cookies: bool,
 }
 
 impl fmt::Debug for SecurityConfig {
@@ -189,6 +191,7 @@ impl fmt::Debug for SecurityConfig {
                     .as_ref()
                     .map(|k| format!("<redacted: {} chars>", k.len())),
             )
+            .field("secure_cookies", &self.secure_cookies)
             .finish()
     }
 }
@@ -334,6 +337,10 @@ impl Config {
                 paseto_current_key: paseto_current_key.clone(),
                 paseto_previous_key: paseto_previous_key.clone(),
                 session_key_manager: Arc::new(session_key_manager),
+                secure_cookies: env::var("SECURE_COOKIES")
+                    .unwrap_or_else(|_| "true".to_string())
+                    .parse()
+                    .unwrap_or(true),
             },
 
             // ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Shield, LayoutDashboard, Server, Book, CreditCard, Bell, Settings, LogOut, User, Moon, Sun, Menu, X, DollarSign } from 'lucide-react';
@@ -16,6 +16,7 @@ import {
 import { useTheme } from 'next-themes';
 import { Badge } from '../ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
+import { notificationsApi } from '@/lib/api';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -31,6 +32,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { theme, setTheme } = useTheme();
   const { user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const handleLogout = async () => {
     await logout();
@@ -39,6 +41,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const userDisplayName = user?.name || user?.email?.split('@')[0] || 'User';
   const userInitials = userDisplayName.substring(0, 2).toUpperCase();
+
+  // Fetch unread notifications count
+  useEffect(() => {
+    if (user) {
+      notificationsApi.getUnreadCount()
+        .then(res => setUnreadCount(res.unreadCount))
+        .catch(err => console.error('Failed to fetch notifications:', err));
+    }
+  }, [user]);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
@@ -93,7 +104,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               {/* Notifications */}
               <Button variant="ghost" size="icon" className="relative w-8 h-8 sm:w-9 sm:h-9">
                 <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
-                <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-red-500 rounded-full" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-0.5 right-0.5 flex items-center justify-center min-w-[16px] h-4 bg-red-500 rounded-full text-[10px] text-white font-medium px-1">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
               </Button>
 
               {/* User Menu */}

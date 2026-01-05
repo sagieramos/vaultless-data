@@ -6,7 +6,8 @@ import {
   Server, Cpu, Wifi, Lock, Zap, Users, Mail, ExternalLink,
   Copy, Check, ChevronRight, Search, Menu, X, Handshake
 } from 'lucide-react';
-import DashboardLayout from '../components/layout/DashboardLayout';
+import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -313,6 +314,7 @@ public class Example {
 };
 
 export default function DocsPage() {
+  const { isAuthenticated } = useAuth();
   const [selectedCategory, setSelectedCategory] = useState('getting-started');
   const [selectedArticle, setSelectedArticle] = useState('intro');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -329,7 +331,36 @@ export default function DocsPage() {
   };
 
   return (
-    <DashboardLayout>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+      {/* Public Header */}
+      <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 sticky top-0 z-50">
+        <div className="container mx-auto px-4">
+          <div className="flex items-center justify-between h-16">
+            <Link href="/" className="flex items-center gap-2">
+              <Shield className="w-7 h-7 sm:w-8 sm:h-8 text-blue-600" />
+              <span className="text-lg sm:text-2xl font-bold text-gray-900 dark:text-white">Vaultless</span>
+            </Link>
+            <div className="flex items-center gap-3">
+              {isAuthenticated ? (
+                <Link href="/dashboard">
+                  <Button variant="default">Go to Dashboard</Button>
+                </Link>
+              ) : (
+                <>
+                  <Link href="/login">
+                    <Button variant="ghost">Login</Button>
+                  </Link>
+                  <Link href="/register">
+                    <Button variant="default">Sign Up</Button>
+                  </Link>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto px-4 py-6 sm:py-8">
       <div className="flex flex-col lg:flex-row min-h-[calc(100vh-8rem)]">
         <div className="lg:hidden mb-4">
           <Button
@@ -551,6 +582,7 @@ export default function DocsPage() {
           </Card>
         </motion.main>
       </div>
-    </DashboardLayout>
+      </main>
+    </div>
   );
 }

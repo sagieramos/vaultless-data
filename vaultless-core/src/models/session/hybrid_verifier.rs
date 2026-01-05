@@ -344,9 +344,15 @@ impl HybridSessionVerifier {
 /// Graceful shutdown
 impl Drop for HybridSessionVerifier {
     fn drop(&mut self) {
-        if let Some(handle) = self.pubsub_handle.blocking_write().take() {
-            handle.abort();
-            tracing::info!("Pub/sub listener stopped");
+        // Use try_write instead of blocking_write to avoid blocking during shutdown
+        if let Ok(mut guard) = self.pubsub_handle.try_write() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+                tracing::info!("Pub/sub listener stopped");
+            }
+        } else {
+            // If we can't acquire the lock, log a warning but don't panic
+            tracing::warn!("Could not acquire pubsub handle lock during drop, skipping abort");
         }
     }
 }

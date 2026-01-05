@@ -3,6 +3,7 @@ use crate::config::GoogleOAuthConfig;
 use crate::services::cache::CacheService;
 use crate::services::google_oauth::GoogleOAuthService;
 use crate::services::real_time_message::WsManager;
+use crate::Config;
 use deadpool_redis::Pool as RedisPool;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub attestation_service: Option<Arc<AttestationService>>,
     /// Google OAuth 2.0 service (None if not configured)
     pub google_oauth: Option<Arc<GoogleOAuthService>>,
+    /// Application configuration
+    pub config: Arc<Config>,
 }
 
 impl AppState {
@@ -34,6 +37,7 @@ impl AppState {
         redis_url: String,
         session_key_manager: Arc<SessionKeyManager>,
         google_oauth_config: Option<GoogleOAuthConfig>,
+        config: Config,
     ) -> anyhow::Result<Self> {
         let im_db_clone = db.clone();
         let im_redis_pool_clone = redis_pool.clone();
@@ -91,6 +95,7 @@ impl AppState {
             ws_manager,
             attestation_service: Some(Arc::new(attestation_service)),
             google_oauth,
+            config: Arc::new(config),
         })
     }
 

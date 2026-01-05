@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
         config.cache.connection_url(),
         config.security.session_key_manager.clone(),
         google_oauth_config,
+        config.clone(),
     )?;
 
     //----------------------------------------------------

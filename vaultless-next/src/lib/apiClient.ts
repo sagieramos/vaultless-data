@@ -44,18 +44,29 @@ class ApiClient {
 
       if (contentType?.includes('application/json')) {
         try {
-          const error: ApiError = await response.json();
-          errorMessage = error.message || errorMessage;
-          errorCode = error.code;
-          errorDetails = error.details;
+          const error = await response.json();
+          if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'object') {
+            errorMessage = error.error.message || errorMessage;
+            errorCode = error.error.code;
+            errorDetails = error.error;
+          } else {
+            errorMessage = error.message || error.error || error.details || errorMessage;
+            errorCode = error.code;
+            errorDetails = error.details;
+          }
         } catch {
-          errorMessage = await response.text() || errorMessage;
+          // If JSON parsing fails, fall back to text.
+          try {
+            errorMessage = await response.text() || errorMessage;
+          } catch {}
         }
       } else {
-        errorMessage = await response.text() || errorMessage;
+        try {
+          errorMessage = await response.text() || errorMessage;
+        } catch {}
       }
 
-      throw new ApiException(errorMessage, response.status, errorCode);
+      throw new ApiException(errorMessage, response.status, errorCode, errorDetails);
     }
 
     if (contentType?.includes('application/json')) {
@@ -65,7 +76,7 @@ class ApiClient {
     return undefined as unknown as T;
   }
 
-  async get<T>(path: string, params?: Record<string, string>): Promise<T> {
+  async get<T>(path: string, params?: Record<string, string>, options?: { omitAuth?: boolean }): Promise<T> {
     const url = new URL(`${this.baseUrl}${path}`);
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
@@ -78,7 +89,7 @@ class ApiClient {
     const response = await fetch(url.toString(), {
       method: 'GET',
       headers: this.getHeaders(),
-      credentials: 'include',
+      credentials: options?.omitAuth ? undefined : 'include',
     });
 
     return this.handleResponse<T>(response);
@@ -104,7 +115,7 @@ class ApiClient {
       method: 'POST',
       headers,
       body: data ? JSON.stringify(data) : undefined,
-      credentials: 'include',
+      credentials: options?.omitAuth ? undefined : 'include',
     });
 
     return this.handleResponse<T>(response);

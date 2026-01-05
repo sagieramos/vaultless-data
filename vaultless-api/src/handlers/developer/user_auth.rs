@@ -187,17 +187,18 @@ pub async fn login(
     );
 
     // Create cookies
+    let secure_cookie = state.config.security.secure_cookies;
     let access_cookie = Cookie::build(("access_token", token_pair.access_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .secure(secure_cookie)
         .same_site(SameSite::Strict)
         .build();
 
     let refresh_cookie = Cookie::build(("refresh_token", token_pair.refresh_token.clone()))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .secure(secure_cookie)
         .same_site(SameSite::Strict)
         .build();
 

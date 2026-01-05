@@ -423,11 +423,13 @@ export interface ApiError {
 export class ApiException extends Error {
   public status?: number;
   public code?: string;
+  public details?: any;
 
-  constructor(message: string, status?: number, code?: string) {
+  constructor(message: string, status?: number, code?: string, details?: any) {
     super(message);
     this.name = 'ApiException';
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
