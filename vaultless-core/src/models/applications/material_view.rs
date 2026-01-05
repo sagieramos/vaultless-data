@@ -43,7 +43,7 @@ impl Application {
         let app = sqlx::query_as::<_, ApplicationWithUsage>(
             r#"
             SELECT
-                application_id, user_id, name, description, is_active,
+                application_id, developer_id AS user_id, name, description, is_active,
                 created_at, updated_at, app_meta,
                 subscription_id, tier::text AS "tier", 
                 monthly_message_quota, rate_limit_per_minute, message_retention_seconds,
@@ -58,7 +58,7 @@ impl Application {
                 quota_usage_percentage,
                 lifetime_messages_sent, lifetime_cost_cents
             FROM mv_applications_with_usage
-            WHERE application_id = $1 AND user_id = $2
+            WHERE application_id = $1 AND developer_id = $2
             "#,
         )
         .bind(application_id)
@@ -91,7 +91,7 @@ impl Application {
                 webhook_count, client_count, quota_usage_percentage,
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
-            WHERE user_id = $1
+            WHERE developer_id = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
             "#,

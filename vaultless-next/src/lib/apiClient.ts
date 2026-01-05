@@ -41,6 +41,54 @@ class ApiClient {
     return headers;
   }
 
+  // Attempt to refresh access token (client-only). Returns true on success.
+  private async refreshAccessToken(): Promise<boolean> {
+    if (typeof window === 'undefined') return false; // only run in browser
+
+    try {
+      const response = await fetch(`${this.baseUrl}/dev/auth/refresh-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+
+      if (!response.ok) return false;
+
+      const data = await response.json().catch(() => null);
+      if (data && data.accessToken) {
+        try {
+          localStorage.setItem('access_token', data.accessToken);
+        } catch (e) {
+          // ignore storage errors
+        }
+        return true;
+      }
+
+      return false;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // Fetch wrapper that retries once after a successful token refresh when encountering 401
+  private async fetchWithRefresh(url: string, options: RequestInit, omitAuth?: boolean): Promise<Response> {
+    let response = await fetch(url, options);
+
+    if (response.status === 401 && !omitAuth && typeof window !== 'undefined') {
+      const refreshed = await this.refreshAccessToken();
+      if (refreshed) {
+        // rebuild headers so Authorization header (from localStorage via getHeaders) is up to date
+        if (!omitAuth) {
+          options.headers = this.getHeaders();
+        }
+        options.credentials = 'include';
+        response = await fetch(url, options);
+      }
+    }
+
+    return response;
+  }
+
   private async handleResponse<T>(response: Response): Promise<T> {
     const contentType = response.headers.get('content-type');
 
@@ -96,11 +144,11 @@ class ApiClient {
     const headers = options?.omitAuth ? { 'Content-Type': 'application/json' } : this.getHeaders();
 
     // Always include credentials so the server can set or receive HttpOnly cookies (login/refresh flows require this)
-    const response = await fetch(url.toString(), {
+    const response = await this.fetchWithRefresh(url.toString(), {
       method: 'GET',
       headers,
       credentials: 'include',
-    });
+    }, options?.omitAuth);
 
     return this.handleResponse<T>(response);
   }
@@ -124,12 +172,12 @@ class ApiClient {
     }
 
     // Always include credentials so the server can set or receive HttpOnly cookies (login/refresh flows require this)
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchWithRefresh(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers,
       body: data ? JSON.stringify(data) : undefined,
       credentials: 'include',
-    });
+    }, options?.omitAuth);
 
     return this.handleResponse<T>(response);
   }
@@ -137,7 +185,7 @@ class ApiClient {
   async patch<T>(path: string, data?: unknown): Promise<T> {
     const headers = this.getHeaders();
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchWithRefresh(`${this.baseUrl}${path}`, {
       method: 'PATCH',
       headers,
       body: data ? JSON.stringify(data) : undefined,
@@ -150,7 +198,7 @@ class ApiClient {
   async put<T>(path: string, data?: unknown): Promise<T> {
     const headers = this.getHeaders();
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchWithRefresh(`${this.baseUrl}${path}`, {
       method: 'PUT',
       headers,
       body: data ? JSON.stringify(data) : undefined,
@@ -163,7 +211,7 @@ class ApiClient {
   async delete<T>(path: string): Promise<T> {
     const headers = this.getHeaders();
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchWithRefresh(`${this.baseUrl}${path}`, {
       method: 'DELETE',
       headers,
       credentials: 'include',
@@ -178,7 +226,7 @@ class ApiClient {
 
     const headers: HeadersInit = {};
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchWithRefresh(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers,
       body: formData,
