@@ -3,16 +3,23 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'motion/react';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function Main() {
   const router = useRouter();
 
+  const { isAuthenticated, isLoading } = useAuth();
+
   // Redirect to landing page or dashboard based on auth status
   useEffect(() => {
-    // For now, redirect to landing page
-    // In a real implementation, you'd check auth status and redirect accordingly
-    router.push('/landing');
-  }, [router]);
+    if (!isLoading) {
+      if (isAuthenticated) {
+        router.push('/dashboard');
+      } else {
+        router.push('/landing');
+      }
+    }
+  }, [router, isAuthenticated, isLoading]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-white dark:bg-gray-950">

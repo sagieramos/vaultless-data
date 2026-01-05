@@ -69,6 +69,7 @@ async-trait = "0.1.89"
 
 # Web framework
 axum = { version = "0.8.6", features = ["macros", "ws"] }
+axum-extra = { version = "0.12.5", features = ["cookie"] }
 
 # Base64 encoding (keep for convenience)
 base64 = "0.22.1"

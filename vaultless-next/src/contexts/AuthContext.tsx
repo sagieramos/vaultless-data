@@ -9,6 +9,7 @@ import React, {
   ReactNode,
 } from 'react';
 import { toast } from 'sonner';
+import Cookies from 'js-cookie';
 import { authApi } from '@/lib/api';
 import type {
   UserInfo,
@@ -68,17 +69,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load tokens and user from localStorage on mount
+  // Load user from localStorage on mount (tokens handled by browser cookies)
   useEffect(() => {
     const loadStoredAuth = () => {
       try {
-        const storedToken = localStorage.getItem(ACCESS_TOKEN_KEY);
-        const storedRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
         const storedUser = localStorage.getItem(USER_KEY);
 
-        if (storedToken) setAccessToken(storedToken);
-        if (storedRefreshToken) setRefreshToken(storedRefreshToken);
-        if (storedUser) setUser(JSON.parse(storedUser));
+        if (storedUser) {
+          const parsedUser = JSON.parse(storedUser);
+          setUser(parsedUser);
+        }
       } catch (error) {
         console.error('Error loading auth state:', error);
       } finally {
@@ -89,23 +89,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     loadStoredAuth();
   }, []);
 
-  // Save tokens to localStorage whenever they change
-  useEffect(() => {
-    if (accessToken) {
-      localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-    } else {
-      localStorage.removeItem(ACCESS_TOKEN_KEY);
-    }
-  }, [accessToken]);
-
-  useEffect(() => {
-    if (refreshToken) {
-      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
-    } else {
-      localStorage.removeItem(REFRESH_TOKEN_KEY);
-    }
-  }, [refreshToken]);
-
+  // Save user to localStorage
   useEffect(() => {
     if (user) {
       localStorage.setItem(USER_KEY, JSON.stringify(user));
@@ -119,6 +103,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setIsLoading(true);
     try {
       const response = await authApi.login(credentials);
+
+      // Set tokens in cookies instead of localStorage
+      // Note: Secure and HttpOnly should ideally be set by the server response
+      // But we set them here as client-side fallback/infrastructure
+      Cookies.set(ACCESS_TOKEN_KEY, response.accessToken, { secure: true, sameSite: 'strict' });
+      Cookies.set(REFRESH_TOKEN_KEY, response.refreshToken, { secure: true, sameSite: 'strict' });
 
       setAccessToken(response.accessToken);
       setRefreshToken(response.refreshToken);
@@ -154,6 +144,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
+      Cookies.remove(ACCESS_TOKEN_KEY);
+      Cookies.remove(REFRESH_TOKEN_KEY);
       setAccessToken(null);
       setRefreshToken(null);
       setUser(null);
@@ -163,14 +155,18 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Refresh tokens
   const refreshTokens = useCallback(async (): Promise<RefreshTokenResponse> => {
-    if (!refreshToken) {
+    const currentRefreshToken = Cookies.get(REFRESH_TOKEN_KEY);
+    if (!currentRefreshToken) {
       throw new Error('No refresh token available');
     }
 
     try {
       const response = await authApi.refreshToken({
-        refreshToken,
+        refreshToken: currentRefreshToken,
       });
+
+      Cookies.set(ACCESS_TOKEN_KEY, response.accessToken, { secure: true, sameSite: 'strict' });
+      Cookies.set(REFRESH_TOKEN_KEY, response.refreshToken, { secure: true, sameSite: 'strict' });
 
       setAccessToken(response.accessToken);
       setRefreshToken(response.refreshToken);
@@ -182,12 +178,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
       await logout();
       throw error;
     }
-  }, [refreshToken, logout]);
+  }, [logout]);
 
   // Set OAuth tokens directly (for Google OAuth callback)
   const setOAuthTokens = useCallback((
     tokens: { accessToken: string; refreshToken: string; user: UserInfo }
   ) => {
+    Cookies.set(ACCESS_TOKEN_KEY, tokens.accessToken, { secure: true, sameSite: 'strict' });
+    Cookies.set(REFRESH_TOKEN_KEY, tokens.refreshToken, { secure: true, sameSite: 'strict' });
+
     setAccessToken(tokens.accessToken);
     setRefreshToken(tokens.refreshToken);
     setUser(tokens.user);

@@ -3,7 +3,9 @@ use axum::{
     Extension, Json,
     extract::{ConnectInfo, State},
     http::StatusCode,
+    response::IntoResponse,
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{self, json};
@@ -113,9 +115,10 @@ pub async fn register(
 )]
 pub async fn login(
     State(state): State<AppState>,
+    jar: CookieJar,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     // Validate request
     req.validate()
         .map_err(|e| ApiError::bad_request(format!("Validation error: {}", e)))?;
@@ -183,7 +186,22 @@ pub async fn login(
         "User logged in successfully"
     );
 
-    Ok(Json(LoginResponse {
+    // Create cookies
+    let access_cookie = Cookie::build(("access_token", token_pair.access_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .build();
+
+    let refresh_cookie = Cookie::build(("refresh_token", token_pair.refresh_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .build();
+
+    let response = Json(LoginResponse {
         access_token: token_pair.access_token,
         refresh_token: token_pair.refresh_token,
         token_type: token_pair.token_type,
@@ -194,7 +212,9 @@ pub async fn login(
             email_verified: user.email_verified,
             is_admin: user.is_admin,
         },
-    }))
+    });
+
+    Ok((jar.add(access_cookie).add(refresh_cookie), response))
 }
 
 /// Resend verification email to user
@@ -246,18 +266,35 @@ pub async fn resend_verification_email(
 )]
 pub async fn refresh_token(
     State(state): State<AppState>,
+    jar: CookieJar,
     Json(req): Json<RefreshTokenRequest>,
-) -> Result<Json<RefreshTokenResponse>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
     let token_pair = token_service.refresh_token(&req.refresh_token).await?;
 
-    Ok(Json(RefreshTokenResponse {
+    let access_cookie = Cookie::build(("access_token", token_pair.access_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .build();
+
+    let refresh_cookie = Cookie::build(("refresh_token", token_pair.refresh_token.clone()))
+        .path("/")
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Strict)
+        .build();
+
+    let response = Json(RefreshTokenResponse {
         access_token: token_pair.access_token,
         refresh_token: token_pair.refresh_token,
         token_type: token_pair.token_type,
         expires_in: token_pair.expires_in,
-    }))
+    });
+
+    Ok((jar.add(access_cookie).add(refresh_cookie), response))
 }
 
 /// User logout
@@ -276,8 +313,9 @@ pub async fn refresh_token(
 )]
 pub async fn logout(
     State(state): State<AppState>,
+    jar: CookieJar,
     Extension(session): Extension<SessionData>,
-) -> Result<Json<LogoutResponse>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     let token_service = TokenService::new(state.db.clone(), state.redis_pool.clone());
 
     // Revoke all tokens for this user
@@ -286,9 +324,21 @@ pub async fn logout(
 
     tracing::info!(user_id = %session.user_id, "User logged out");
 
-    Ok(Json(LogoutResponse {
+    let access_cookie = Cookie::build("access_token")
+        .path("/")
+        .removal()
+        .build();
+
+    let refresh_cookie = Cookie::build("refresh_token")
+        .path("/")
+        .removal()
+        .build();
+
+    let response = Json(LogoutResponse {
         message: "Logged out successfully".to_string(),
-    }))
+    });
+
+    Ok((jar.remove(access_cookie).remove(refresh_cookie), response))
 }
 
 /// GET HANDLER (For email link click)

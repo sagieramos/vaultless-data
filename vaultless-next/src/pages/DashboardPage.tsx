@@ -1,12 +1,13 @@
 "use client";
 import Link from 'next/link';
 import { motion } from 'motion/react';
-import { Plus, BarChart3, Key, Book, TrendingUp, TrendingDown, MessageSquare, Server, DollarSign, Zap, Users, CreditCard } from 'lucide-react';
+import { Plus, BarChart3, Key, Book, TrendingUp, MessageSquare, Server, Zap, Users, CreditCard } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { useRequireAuth } from '@/contexts/AuthContext';
 
 const data = [
   { name: 'Mon', messages: 4000 },
@@ -33,7 +34,10 @@ const quickActions = [
 ];
 
 export default function DashboardPage() {
+  const { user } = useRequireAuth();
   const hasApps = true; // Change to false to see empty state
+
+  const userDisplayName = user?.name || user?.email?.split('@')[0] || 'User';
 
   return (
     <DashboardLayout>
@@ -46,7 +50,7 @@ export default function DashboardPage() {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-              Welcome back, Oluwatosin!
+              Welcome back, {userDisplayName}!
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="icon" className="rounded-full h-8 w-8">
@@ -223,8 +227,8 @@ export default function DashboardPage() {
               <Card className="p-6">
                 <h2 className="text-xl font-semibold mb-6 text-gray-900 dark:text-white">Recent Activity</h2>
                 <div className="space-y-4">
-                  {recentActivity.map((activity, index) => (
-                    <div key={index} className="flex items-start gap-3">
+                  {recentActivity.map((activity) => (
+                    <div key={activity.text} className="flex items-start gap-3">
                       <div className="w-2 h-2 rounded-full bg-blue-600 mt-2" />
                       <div className="flex-1">
                         <p className="text-sm text-gray-900 dark:text-white">{activity.text}</p>

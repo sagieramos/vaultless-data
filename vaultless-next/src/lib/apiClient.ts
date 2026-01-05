@@ -31,11 +31,6 @@ class ApiClient {
       'Content-Type': 'application/json',
     };
 
-    const token = this.getAuthToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
     return headers;
   }
 
@@ -83,6 +78,7 @@ class ApiClient {
     const response = await fetch(url.toString(), {
       method: 'GET',
       headers: this.getHeaders(),
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
@@ -108,6 +104,7 @@ class ApiClient {
       method: 'POST',
       headers,
       body: data ? JSON.stringify(data) : undefined,
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
@@ -118,6 +115,7 @@ class ApiClient {
       method: 'PATCH',
       headers: this.getHeaders(),
       body: data ? JSON.stringify(data) : undefined,
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
@@ -128,6 +126,7 @@ class ApiClient {
       method: 'PUT',
       headers: this.getHeaders(),
       body: data ? JSON.stringify(data) : undefined,
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
@@ -137,6 +136,7 @@ class ApiClient {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'DELETE',
       headers: this.getHeaders(),
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
@@ -146,16 +146,13 @@ class ApiClient {
     const formData = new FormData();
     formData.append('file', file);
 
-    const token = this.getAuthToken();
     const headers: HeadersInit = {};
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
 
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers,
       body: formData,
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);

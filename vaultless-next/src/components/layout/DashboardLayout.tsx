@@ -15,6 +15,7 @@ import {
 } from '../ui/dropdown-menu';
 import { useTheme } from 'next-themes';
 import { Badge } from '../ui/badge';
+import { useAuth } from '@/contexts/AuthContext';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -28,11 +29,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
+  const { user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await logout();
     router.push('/login');
   };
+
+  const userDisplayName = user?.name || user?.email?.split('@')[0] || 'User';
+  const userInitials = userDisplayName.substring(0, 2).toUpperCase();
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
@@ -95,17 +101,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <DropdownMenuTrigger asChild>
                   <button className="flex items-center gap-1.5 sm:gap-2 hover:opacity-80 transition-opacity p-1 rounded-lg">
                     <Avatar className="w-7 h-7 sm:w-8 sm:h-8">
-                      <AvatarFallback className="bg-blue-600 text-white text-xs sm:text-sm">OT</AvatarFallback>
+                      <AvatarFallback className="bg-blue-600 text-white text-xs sm:text-sm">{userInitials}</AvatarFallback>
                     </Avatar>
                     <span className="hidden sm:block text-sm font-medium text-gray-900 dark:text-white">
-                      Oluwatosin
+                      {userDisplayName}
                     </span>
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <div className="px-2 py-1.5">
-                    <p className="text-sm font-medium text-gray-900 dark:text-white">Oluwatosin</p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">oluwatosin@example.com</p>
+                    <p className="text-sm font-medium text-gray-900 dark:text-white">{userDisplayName}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">{user?.email}</p>
                   </div>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem>
