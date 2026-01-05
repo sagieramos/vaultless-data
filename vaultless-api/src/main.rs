@@ -1,6 +1,6 @@
 // api/src/main.rs
-use axum::extract::State;
-use axum::{Router, middleware as axum_middleware, routing::get};
+use hyper::http;
+use axum::{Router, extract::State, middleware as axum_middleware, routing::get};
 use deadpool_redis::Config as RedisConfig;
 use sqlx::postgres::PgPoolOptions;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -139,9 +139,28 @@ async fn main() -> anyhow::Result<()> {
         .merge(client_swagger_ui)
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
+                .allow_origin([
+                    "http://localhost:3000"
+                        .parse::<http::HeaderValue>()
+                        .unwrap(),
+                    "http://127.0.0.1:3000"
+                        .parse::<http::HeaderValue>()
+                        .unwrap(),
+                    "http://localhost:3001"
+                        .parse::<http::HeaderValue>()
+                        .unwrap(), // Alternative port
+                    "http://127.0.0.1:3001"
+                        .parse::<http::HeaderValue>()
+                        .unwrap(), // Alternative port
+                ])
+                .allow_methods([http::Method::GET, http::Method::POST, http::Method::PUT, http::Method::DELETE, http::Method::OPTIONS, http::Method::HEAD])
+                .allow_headers([
+                    http::header::CONTENT_TYPE,
+                    http::header::AUTHORIZATION,
+                    http::header::ACCEPT,
+                    http::header::ORIGIN,
+                ])
+                .allow_credentials(true),
         )
         .layer(CompressionLayer::new())
         .layer(axum_middleware::from_fn(track_metrics))

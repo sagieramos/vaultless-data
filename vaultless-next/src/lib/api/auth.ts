@@ -52,7 +52,7 @@ export const authApi = {
    * POST /dev/auth/refresh-token
    */
   refreshToken: async (
-    data: RefreshTokenRequest
+    data?: RefreshTokenRequest
   ): Promise<RefreshTokenResponse> => {
     return apiClient.post<RefreshTokenResponse>(
       '/dev/auth/refresh-token',

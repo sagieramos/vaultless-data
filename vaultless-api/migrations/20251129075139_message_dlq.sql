@@ -1,5 +1,5 @@
 -- 1. Update content_size_bytes to BIGINT
-ALTER TABLE messages 
+ALTER TABLE messages
 ALTER COLUMN content_size_bytes TYPE BIGINT;
 
 -- 2. Create DLQ table
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS message_dlq (
     reason TEXT NOT NULL,
     retry_count INTEGER NOT NULL DEFAULT 0,
     original_data TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at TIMESTAMPTZ
 );
 

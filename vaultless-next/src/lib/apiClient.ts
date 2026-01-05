@@ -6,6 +6,7 @@ import type { ApiError } from '@/types/api';
 // ============================================================================
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const USE_SECURE_COOKIES = process.env.NEXT_PUBLIC_USE_SECURE_COOKIES?.toLowerCase() === 'true';
 
 // ============================================================================
 // API CLIENT CLASS
@@ -30,6 +31,12 @@ class ApiClient {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
     };
+
+    // Add authorization header if available
+    const accessToken = this.getAuthToken();
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
 
     return headers;
   }
@@ -86,14 +93,19 @@ class ApiClient {
       });
     }
 
+    const headers = options?.omitAuth ? { 'Content-Type': 'application/json' } : this.getHeaders();
+
+    // Always include credentials so the server can set or receive HttpOnly cookies (login/refresh flows require this)
     const response = await fetch(url.toString(), {
       method: 'GET',
-      headers: this.getHeaders(),
-      credentials: options?.omitAuth ? undefined : 'include',
+      headers,
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
   }
+
+
 
   async post<T>(
     path: string,
@@ -111,20 +123,23 @@ class ApiClient {
       Object.assign(headers, options.headers);
     }
 
+    // Always include credentials so the server can set or receive HttpOnly cookies (login/refresh flows require this)
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers,
       body: data ? JSON.stringify(data) : undefined,
-      credentials: options?.omitAuth ? undefined : 'include',
+      credentials: 'include',
     });
 
     return this.handleResponse<T>(response);
   }
 
   async patch<T>(path: string, data?: unknown): Promise<T> {
+    const headers = this.getHeaders();
+
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'PATCH',
-      headers: this.getHeaders(),
+      headers,
       body: data ? JSON.stringify(data) : undefined,
       credentials: 'include',
     });
@@ -133,9 +148,11 @@ class ApiClient {
   }
 
   async put<T>(path: string, data?: unknown): Promise<T> {
+    const headers = this.getHeaders();
+
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'PUT',
-      headers: this.getHeaders(),
+      headers,
       body: data ? JSON.stringify(data) : undefined,
       credentials: 'include',
     });
@@ -144,9 +161,11 @@ class ApiClient {
   }
 
   async delete<T>(path: string): Promise<T> {
+    const headers = this.getHeaders();
+
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: 'DELETE',
-      headers: this.getHeaders(),
+      headers,
       credentials: 'include',
     });
 

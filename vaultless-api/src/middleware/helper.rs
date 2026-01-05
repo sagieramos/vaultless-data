@@ -3,28 +3,47 @@ use axum::http::{HeaderMap, HeaderName};
 use hyper::header;
 
 pub fn extract_bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
-    let auth_header = headers.get(header::AUTHORIZATION).ok_or_else(|| {
-        ApiError::unauthorized("Missing Authorization header").with_code("MISSING_AUTH_HEADER")
-    })?;
+    // First try Authorization header
+    if let Some(auth_header) = headers.get(header::AUTHORIZATION) {
+        let auth_str = auth_header
+            .to_str()
+            .map_err(|_| ApiError::unauthorized("Invalid Authorization header"))?;
 
-    let auth_str = auth_header
-        .to_str()
-        .map_err(|_| ApiError::unauthorized("Invalid Authorization header"))?;
+        let prefix = "Bearer ";
+        if !auth_str.starts_with(prefix) {
+            return Err(ApiError::unauthorized(
+                "Invalid Authorization format. Expected: Bearer <token>",
+            ));
+        }
 
-    let prefix = "Bearer ";
-    if !auth_str.starts_with(prefix) {
-        return Err(ApiError::unauthorized(
-            "Invalid Authorization format. Expected: Bearer <token>",
-        ));
+        let token = auth_str.trim_start_matches(prefix).trim();
+
+        if token.is_empty() {
+            return Err(ApiError::unauthorized("Empty bearer token").with_code("EMPTY_TOKEN"));
+        }
+
+        return Ok(token);
     }
 
-    let token = auth_str.trim_start_matches(prefix).trim();
-
-    if token.is_empty() {
-        return Err(ApiError::unauthorized("Empty bearer token").with_code("EMPTY_TOKEN"));
+    // Fallback to access_token cookie if present
+    if let Some(cookie_header) = headers.get(header::COOKIE) {
+        if let Ok(cookie_str) = cookie_header.to_str() {
+            // cookie_str like "key1=val1; key2=val2"
+            for part in cookie_str.split(';') {
+                let kv = part.trim();
+                if let Some(val) = kv.strip_prefix("access_token=") {
+                    let token = val.trim();
+                    if !token.is_empty() {
+                        return Ok(token);
+                    } else {
+                        return Err(ApiError::unauthorized("Empty bearer token").with_code("EMPTY_TOKEN"));
+                    }
+                }
+            }
+        }
     }
 
-    Ok(token)
+    Err(ApiError::unauthorized("Missing Authorization header").with_code("MISSING_AUTH_HEADER"))
 }
 
 pub fn extract_api_key(headers: &HeaderMap) -> Result<&str, ApiError> {

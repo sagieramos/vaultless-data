@@ -104,15 +104,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       const response = await authApi.login(credentials);
 
-      // Set tokens in cookies instead of localStorage
-      // Note: Secure and HttpOnly should ideally be set by the server response
-      // But we set them here as client-side fallback/infrastructure
-      Cookies.set(ACCESS_TOKEN_KEY, response.accessToken, { secure: true, sameSite: 'strict' });
-      Cookies.set(REFRESH_TOKEN_KEY, response.refreshToken, { secure: true, sameSite: 'strict' });
+      // The authentication cookies (access_token, refresh_token) are HttpOnly and set by the server response
+      // The browser automatically includes these cookies in subsequent requests when credentials: 'include' is used
+      // We don't manually set them here to avoid conflicts with server-set HttpOnly cookies
+      // Instead, we store the tokens in component state for UI purposes
 
       setAccessToken(response.accessToken);
       setRefreshToken(response.refreshToken);
       setUser(response.user);
+
+      // Persist access token so ApiClient can attach Authorization header if needed
+      try {
+        localStorage.setItem(ACCESS_TOKEN_KEY, response.accessToken);
+      } catch (err) {
+        // ignore storage errors
+      }
 
       toast.success(`Welcome back, ${response.user.name || response.user.email}!`);
     } catch (error: any) {
@@ -127,8 +133,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const register = useCallback(async (data: RegisterRequest) => {
     setIsLoading(true);
     try {
-      await authApi.register(data);
-      toast.success('Registration successful! Please check your email to verify your account.');
+      let res = await authApi.register(data);
+      toast.success(res.message || 'Registration successful! Please check your email to verify your account.');
     } catch (error: any) {
       toast.error(error.message || 'Registration failed');
       throw error;
@@ -146,6 +152,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       Cookies.remove(ACCESS_TOKEN_KEY);
       Cookies.remove(REFRESH_TOKEN_KEY);
+      try {
+        localStorage.removeItem(ACCESS_TOKEN_KEY);
+        localStorage.removeItem(REFRESH_TOKEN_KEY);
+      } catch (err) {
+        // ignore
+      }
       setAccessToken(null);
       setRefreshToken(null);
       setUser(null);
@@ -155,21 +167,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Refresh tokens
   const refreshTokens = useCallback(async (): Promise<RefreshTokenResponse> => {
-    const currentRefreshToken = Cookies.get(REFRESH_TOKEN_KEY);
-    if (!currentRefreshToken) {
-      throw new Error('No refresh token available');
-    }
-
     try {
-      const response = await authApi.refreshToken({
-        refreshToken: currentRefreshToken,
-      });
+      // Call refresh without passing tokens; server should read refresh token from HttpOnly cookie
+      const response = await authApi.refreshToken();
 
-      Cookies.set(ACCESS_TOKEN_KEY, response.accessToken, { secure: true, sameSite: 'strict' });
-      Cookies.set(REFRESH_TOKEN_KEY, response.refreshToken, { secure: true, sameSite: 'strict' });
+      // The authentication cookies are HttpOnly and set by the server response
+      // The browser automatically includes these cookies in subsequent requests when credentials: 'include' is used
+      // We don't manually set them here to avoid conflicts with server-set HttpOnly cookies
 
       setAccessToken(response.accessToken);
       setRefreshToken(response.refreshToken);
+
+      // Persist access token so ApiClient can attach Authorization header if needed
+      try {
+        localStorage.setItem(ACCESS_TOKEN_KEY, response.accessToken);
+      } catch (err) {
+        // ignore storage errors
+      }
 
       return response;
     } catch (error) {
@@ -184,8 +198,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const setOAuthTokens = useCallback((
     tokens: { accessToken: string; refreshToken: string; user: UserInfo }
   ) => {
-    Cookies.set(ACCESS_TOKEN_KEY, tokens.accessToken, { secure: true, sameSite: 'strict' });
-    Cookies.set(REFRESH_TOKEN_KEY, tokens.refreshToken, { secure: true, sameSite: 'strict' });
+    // The authentication cookies are HttpOnly and set by the server response
+    // The browser automatically includes these cookies in subsequent requests when credentials: 'include' is used
+    // We don't manually set them here to avoid conflicts with server-set HttpOnly cookies
 
     setAccessToken(tokens.accessToken);
     setRefreshToken(tokens.refreshToken);
