@@ -103,7 +103,7 @@ export function ApplicationsFilter({
         </Select>
 
         {/* Filter Button */}
-        <Popover open={isOpen} onOpenChange={setIsOpen}>
+        <Popover open={isOpen} onOpenChange={setIsOpen} placement="right-end">
           <PopoverTrigger asChild>
             <Button variant="outline" className="relative">
               <SlidersHorizontal className="w-4 h-4 mr-2" />
@@ -115,7 +115,7 @@ export function ApplicationsFilter({
               )}
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-80" align="end">
+          <PopoverContent className="w-80">
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <h4 className="font-semibold">Filters</h4>

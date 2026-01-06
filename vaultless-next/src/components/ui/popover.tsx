@@ -99,12 +99,13 @@ function usePopoverContext() {
 export function Popover({
   children,
   modal = false,
+  placement,
   ...restOptions
 }: {
   children: React.ReactNode;
 } & PopoverOptions) {
   // This can accept each prop as a separate prop, or accept a config object.
-  const popover = usePopover({ modal, ...restOptions });
+  const popover = usePopover({ modal, placement, ...restOptions });
   return (
     <PopoverContext.Provider value={popover}>
       {children}
