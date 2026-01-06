@@ -130,6 +130,39 @@ impl Application {
             _ => ("created_at", "DESC"),
         };
 
+        // Use sequential parameter indices so they are contiguous regardless of which optional
+        // filters are present. $1 is user_id; start next index at 2.
+        let mut next_param = 2;
+        let mut where_sql_parts: Vec<String> = vec!["developer_id = $1".to_string()];
+
+        if let Some(_search) = search {
+            where_sql_parts.push(format!("lower(name) LIKE lower(${})", next_param));
+            next_param += 1;
+        }
+
+        if let Some(active) = filter_active {
+            if active {
+                where_sql_parts.push("is_active = true".to_string());
+            }
+        }
+
+        if let Some(inactive) = filter_inactive {
+            if inactive {
+                where_sql_parts.push("is_active = false".to_string());
+            }
+        }
+
+        if let Some(_tier) = tier {
+            where_sql_parts.push(format!("lower(tier::text) = lower(${})", next_param));
+            next_param += 1;
+        }
+
+        let where_sql = where_sql_parts.join(" AND ");
+
+        // LIMIT and OFFSET use the next available parameters
+        let limit_param = next_param;
+        let offset_param = next_param + 1;
+
         let sql = format!(
             r#"
             SELECT
@@ -141,20 +174,22 @@ impl Application {
             FROM mv_applications_with_usage
             WHERE {}
             ORDER BY {} {}
-            LIMIT $3 OFFSET $4
+            LIMIT ${} OFFSET ${}
             "#,
-            where_clause, order_field, order_direction
+            where_sql, order_field, order_direction, limit_param, offset_param
         );
 
         let mut query = sqlx::query_as::<_, ApplicationSummaryFromView>(&sql);
 
-        // Bind parameters: $1=user_id, $2=search/tier, $3=page_size, $4=offset
+        // Bind in the same order: user_id, (search?), (tier?), page_size, offset
         query = query.bind(user_id);
 
         if let Some(_search) = search {
             let search_pattern = format!("%{}%", _search);
             query = query.bind(search_pattern);
-        } else if let Some(_tier) = tier {
+        }
+
+        if let Some(_tier) = tier {
             let tier_lower = _tier.to_lowercase();
             query = query.bind(tier_lower);
         }
@@ -263,5 +298,124 @@ impl Application {
         .await?;
 
         Ok(summary)
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use regex::Regex;
+
+    // Helper to build the same SQL as in list_user_applications so we can test placeholder numbering
+    pub(crate) fn build_list_sql_for_test(
+        search: Option<&str>,
+        filter_active: Option<bool>,
+        filter_inactive: Option<bool>,
+        tier: Option<&str>,
+        sort: Option<&str>,
+        sort_order: Option<&str>,
+    ) -> String {
+        let mut where_sql_parts: Vec<String> = vec!["developer_id = $1".to_string()];
+        let mut next_param = 2;
+
+        if let Some(_search) = search {
+            where_sql_parts.push(format!("lower(name) LIKE lower(${})", next_param));
+            next_param += 1;
+        }
+
+        if let Some(active) = filter_active {
+            if active {
+                where_sql_parts.push("is_active = true".to_string());
+            }
+        }
+
+        if let Some(inactive) = filter_inactive {
+            if inactive {
+                where_sql_parts.push("is_active = false".to_string());
+            }
+        }
+
+        if let Some(_tier) = tier {
+            where_sql_parts.push(format!("lower(tier::text) = lower(${})", next_param));
+            next_param += 1;
+        }
+
+        let where_sql = where_sql_parts.join(" AND ");
+
+        let (order_field, order_direction) = match (sort, sort_order) {
+            (Some("name"), Some("asc")) => ("name", "ASC"),
+            (Some("name"), Some("desc") | None) => ("name", "DESC"),
+            (Some("createdAt"), Some("asc") | None) => ("created_at", "ASC"),
+            (Some("createdAt"), Some("desc")) => ("created_at", "DESC"),
+            (Some("updatedAt"), Some("asc") | None) => ("updated_at", "ASC"),
+            (Some("updatedAt"), Some("desc")) => ("updated_at", "DESC"),
+            (Some("quotaUsage"), Some("asc") | None) => ("CAST(quota_usage_percentage AS NUMERIC)", "ASC"),
+            (Some("quotaUsage"), Some("desc")) => ("CAST(quota_usage_percentage AS NUMERIC)", "DESC"),
+            _ => ("created_at", "DESC"),
+        };
+
+        let limit_param = next_param;
+        let offset_param = next_param + 1;
+
+        format!(
+            r#"
+            SELECT
+                application_id, name, description, is_active,
+                created_at, updated_at, tier::text AS "tier",
+                monthly_message_quota, publishable_key_count,
+                webhook_count, client_count, quota_usage_percentage,
+                COUNT(*) OVER() AS total_count
+            FROM mv_applications_with_usage
+            WHERE {}
+            ORDER BY {} {}
+            LIMIT ${} OFFSET ${}
+            "#,
+            where_sql, order_field, order_direction, limit_param, offset_param
+        )
+    }
+
+    fn extract_placeholders(sql: &str) -> Vec<usize> {
+        let re = Regex::new(r"\$(\d+)").unwrap();
+        let mut nums: Vec<usize> = re.captures_iter(sql).map(|c| c[1].parse::<usize>().unwrap()).collect();
+        nums.sort_unstable();
+        nums.dedup();
+        nums
+    }
+
+    fn assert_placeholders_contiguous(sql: &str, expected_max: usize) {
+        let nums = extract_placeholders(sql);
+        let max = *nums.last().unwrap();
+        assert_eq!(max, expected_max);
+        let expected: Vec<usize> = (1..=max).collect();
+        assert_eq!(nums, expected, "placeholders are not contiguous: {:?}", nums);
+    }
+
+    #[test]
+    fn placeholders_no_filters_are_contiguous() {
+        let sql = build_list_sql_for_test(None, None, None, None, None, None);
+        // expected placeholders: $1 (user), $2 (limit), $3 (offset)
+        assert_placeholders_contiguous(&sql, 3);
+    }
+
+    #[test]
+    fn placeholders_search_only_are_contiguous() {
+        let sql = build_list_sql_for_test(Some("foo"), None, None, None, None, None);
+        // expected placeholders: $1 (user), $2 (search), $3 (limit), $4 (offset)
+        assert_placeholders_contiguous(&sql, 4);
+    }
+
+    #[test]
+    fn placeholders_tier_only_are_contiguous() {
+        let sql = build_list_sql_for_test(None, None, None, Some("pro"), None, None);
+        // expected placeholders: $1 (user), $2 (tier), $3 (limit), $4 (offset)
+        assert_placeholders_contiguous(&sql, 4);
+    }
+
+    #[test]
+    fn placeholders_search_and_tier_are_contiguous() {
+        let sql = build_list_sql_for_test(Some("foo"), None, None, Some("pro"), None, None);
+        // expected placeholders: $1 (user), $2 (search), $3 (tier), $4 (limit), $5 (offset)
+        assert_placeholders_contiguous(&sql, 5);
     }
 }
