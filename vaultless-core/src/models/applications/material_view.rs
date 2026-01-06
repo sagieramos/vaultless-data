@@ -90,11 +90,9 @@ impl Application {
 
         // Build WHERE clause - using expression index for search
         let mut where_conditions: Vec<String> = vec!["developer_id = $1".to_string()];
-        let mut param_index = 1;
 
-        if let Some(s) = search {
-            param_index += 1;
-            where_conditions.push("LOWER(name) = LOWER($2)".to_string());
+        if let Some(_search) = search {
+            where_conditions.push("lower(name) = lower($2)".to_string());
         }
 
         if let Some(active) = filter_active {
@@ -109,9 +107,8 @@ impl Application {
             }
         }
 
-        if let Some(t) = tier {
-            param_index += 1;
-            where_conditions.push("LOWER(tier::text) = LOWER($2)".to_string());
+        if let Some(_tier) = tier {
+            where_conditions.push("lower(tier::text) = lower($2)".to_string());
         }
 
         let where_clause = if where_conditions.len() == 1 {
@@ -144,27 +141,26 @@ impl Application {
             FROM mv_applications_with_usage
             WHERE {}
             ORDER BY {} {}
-            LIMIT $2 OFFSET $3
+            LIMIT $3 OFFSET $4
             "#,
             where_clause, order_field, order_direction
         );
 
         let mut query = sqlx::query_as::<_, ApplicationSummaryFromView>(&sql);
 
-        // Bind parameters
+        // Bind parameters: $1=user_id, $2=search/tier, $3=page_size, $4=offset
         query = query.bind(user_id);
-        query = query.bind(page_size);
-        query = query.bind(offset);
 
-        if let Some(s) = search {
-            let search_pattern = format!("%{}%", s);
+        if let Some(_search) = search {
+            let search_pattern = format!("%{}%", _search);
             query = query.bind(search_pattern);
-        }
-
-        if let Some(t) = tier {
-            let tier_lower = t.to_lowercase();
+        } else if let Some(_tier) = tier {
+            let tier_lower = _tier.to_lowercase();
             query = query.bind(tier_lower);
         }
+
+        query = query.bind(page_size);
+        query = query.bind(offset);
 
         let rows = query.fetch_all(exec).await?;
 
