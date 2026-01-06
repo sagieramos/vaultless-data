@@ -1052,7 +1052,7 @@ impl Notification {
         // Returns (app_id, user_id, app_name)
         let result = sqlx::query_as::<_, (Uuid, Uuid, String)>(
             r#"
-            SELECT a.id, a.user_id, a.name
+            SELECT a.id, a.developer_id, a.name
             FROM applications a
             WHERE a.secret_key_id = $1
             "#,

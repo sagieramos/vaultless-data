@@ -11,6 +11,8 @@ import { Card } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
 import { toast } from 'sonner';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import { useRequireAuth } from '@/contexts/AuthContext';
+import { applicationsApi } from '@/lib/api';
 
 export default function CreateAppPage() {
   const router = useRouter();
@@ -19,19 +21,41 @@ export default function CreateAppPage() {
     name: '',
     description: ''
   });
-  const [keys] = useState({
-    secret: 'sk_live_abc123xyz789def456ghi012jkl345mno678pqr901stu234vwx567yza890',
-    publishable: 'pk_live_def456uvw789abc123xyz456def789abc012xyz345def678abc901xyz234'
-  });
+  useRequireAuth();
+
+  const [keys, setKeys] = useState({ secret: '', publishable: '' });
+  const [createdAppId, setCreatedAppId] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState(false);
   const [copied, setCopied] = useState({ secret: false, publishable: false });
   const [savedConfirmation, setSavedConfirmation] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (formData.name) {
+
+    if (!formData.name) return;
+
+    setIsSubmitting(true);
+    try {
+      const res = await applicationsApi.create({
+        name: formData.name,
+        description: formData.description || undefined,
+      });
+
+      // Use returned keys from the server
+      setKeys({ secret: res.secretKey || '', publishable: res.publishableKey || '' });
+      setCreatedAppId(res.application?.id || null);
+      setSavedConfirmation(false);
+
+      toast.success(res.message || 'Application created successfully!');
+
+      // Show the success step so user can copy keys
       setStep(2);
-      toast.success('Application created successfully!');
+    } catch (err: any) {
+      console.error('Create application failed:', err);
+      toast.error(err?.message || 'Failed to create application');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -43,7 +67,11 @@ export default function CreateAppPage() {
   };
 
   const handleContinue = () => {
-    if (savedConfirmation) {
+    if (!savedConfirmation) return;
+
+    if (createdAppId) {
+      router.push(`/applications/${createdAppId}`);
+    } else {
       router.push('/applications');
     }
   };
@@ -113,6 +141,7 @@ export default function CreateAppPage() {
                       size="icon"
                       onClick={() => handleCopy(keys.secret, 'secret')}
                       className="flex-shrink-0"
+                      disabled={!keys.secret}
                     >
                       {copied.secret ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                     </Button>
@@ -142,6 +171,7 @@ export default function CreateAppPage() {
                       size="icon"
                       onClick={() => handleCopy(keys.publishable, 'publishable')}
                       className="flex-shrink-0"
+                      disabled={!keys.publishable}
                     >
                       {copied.publishable ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                     </Button>
@@ -235,11 +265,12 @@ export default function CreateAppPage() {
                   variant="outline"
                   className="flex-1"
                   onClick={() => router.push('/applications')}
+                  disabled={isSubmitting}
                 >
                   Cancel
                 </Button>
-                <Button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-700">
-                  Create Application
+                <Button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-700" disabled={isSubmitting}>
+                  {isSubmitting ? 'Creating…' : 'Create Application'}
                 </Button>
               </div>
             </form>

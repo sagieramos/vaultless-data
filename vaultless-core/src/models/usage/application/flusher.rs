@@ -334,7 +334,7 @@ async fn get_subscription_ids_batch(
             a.id as application_id,
             s.id as subscription_id
         FROM applications a
-        JOIN subscriptions s ON a.user_id = s.user_id AND s.is_active = true
+        JOIN subscriptions s ON a.developer_id = s.user_id AND s.is_active = true
         WHERE a.id = ANY($1)
         "#,
     )

@@ -11,6 +11,7 @@ import React, {
 import { toast } from 'sonner';
 import Cookies from 'js-cookie';
 import { authApi } from '@/lib/api';
+import { apiClient } from '@/lib/apiClient';
 import type {
   UserInfo,
   LoginRequest,
@@ -226,6 +227,45 @@ export function AuthProvider({ children }: AuthProviderProps) {
       console.error('Failed to fetch user info:', error);
     }
   }, []);
+
+  // Register handler so the AuthContext is notified when apiClient auto-refreshes tokens
+  useEffect(() => {
+    const handler = async (data: any) => {
+      if (data?.accessToken) {
+        setAccessToken(data.accessToken);
+        try {
+          localStorage.setItem(ACCESS_TOKEN_KEY, data.accessToken);
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (data?.refreshToken) {
+        setRefreshToken(data.refreshToken);
+      }
+
+      // Optionally re-sync user info after refresh
+      try {
+        await updateUserInfo();
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    try {
+      apiClient.setOnTokenRefresh(handler);
+    } catch (e) {
+      // ignore
+    }
+
+    return () => {
+      try {
+        apiClient.setOnTokenRefresh(undefined);
+      } catch (e) {
+        // ignore
+      }
+    };
+  }, [updateUserInfo]);
 
   const value: AuthContextType = {
     // State

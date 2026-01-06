@@ -101,6 +101,24 @@ pub struct PaginationParams {
     /// Page size (default: 20)
     #[schema(example = 20)]
     pub page_size: Option<i64>,
+    /// Search applications by name
+    #[schema(example = "My App")]
+    pub search: Option<String>,
+    /// Sort field: name, createdAt, updatedAt, quotaUsage
+    #[schema(example = "createdAt")]
+    pub sort: Option<String>,
+    /// Sort order: asc or desc
+    #[schema(example = "desc")]
+    pub sort_order: Option<String>,
+    /// Filter by active status
+    #[schema(example = true)]
+    pub filter_active: Option<bool>,
+    /// Filter by inactive status
+    #[schema(example = false)]
+    pub filter_inactive: Option<bool>,
+    /// Filter by tier (free, pro, enterprise)
+    #[schema(example = "pro")]
+    pub tier: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]

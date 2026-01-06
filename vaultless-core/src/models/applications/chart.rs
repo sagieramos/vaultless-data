@@ -252,7 +252,7 @@ impl Application {
                 -- Range Bounding: Only join metrics within the time range
                 AND m.{time_column} >= $1
                 AND m.{time_column} <= $2
-            WHERE a.id = $3 AND a.user_id = $4 AND a.is_active = true
+            WHERE a.id = $3 AND a.developer_id = $4 AND a.is_active = true
             GROUP BY a.name, timestamp
             ORDER BY timestamp ASC
             LIMIT $5

@@ -1,6 +1,7 @@
 use super::dto::*;
 use super::integrity::dto::*;
 use crate::error::{Result, VaultlessError};
+use crate::models::applications::application::PROJECTION;
 use crate::models::webhook::WebhookRecord;
 use deadpool_redis::Pool as RedisPool;
 use serde_json::Value as JsonValue;
@@ -87,7 +88,13 @@ impl Application {
                 app
             } else {
                 sqlx::query_as::<_, Application>(
-                    "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
+                    &format!(
+                        r#"
+                            SELECT {}
+                            FROM applications WHERE id = $1 AND developer_id = $2
+                            "#,
+                        PROJECTION
+                    )
                 )
                 .bind(application_id)
                 .bind(user_id)
@@ -166,9 +173,13 @@ impl Application {
             Self::build_update_fields(&mut qb, &update, &integrity_patch_opt);
 
             if Self::is_empty_update(qb.sql()) {
-                sqlx::query_as::<_, Application>(
-                    "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
-                )
+                sqlx::query_as::<_, Application>(&format!(
+                    r#"
+                        SELECT {}
+                        FROM applications WHERE id = $1 AND developer_id = $2
+                        "#,
+                    PROJECTION
+                ))
                 .bind(application_id)
                 .bind(user_id)
                 .fetch_one(&mut **tx)
@@ -187,9 +198,13 @@ impl Application {
                 app
             }
         } else {
-            sqlx::query_as::<_, Application>(
-                "SELECT * FROM applications WHERE id = $1 AND user_id = $2",
-            )
+                sqlx::query_as::<_, Application>(&format!(
+                    r#"
+                        SELECT {}
+                        FROM applications WHERE id = $1 AND developer_id = $2
+                        "#,
+                    PROJECTION
+                ))
             .bind(application_id)
             .bind(user_id)
             .fetch_one(&mut **tx)
@@ -257,9 +272,9 @@ impl Application {
     fn finalize_update_query(qb: &mut QueryBuilder<'_, Postgres>, application_id: Uuid, user_id: Uuid) {
         qb.push(" , updated_at = NOW() WHERE id = ")
             .push_bind(application_id)
-            .push(" AND user_id = ")
+            .push(" AND developer_id = ")
             .push_bind(user_id)
-            .push(" RETURNING *");
+            .push(" RETURNING id, developer_id AS user_id, subscription_id, name, description, is_active, created_at, updated_at, max_ttl_seconds, is_key_rotation_forced, deletion_requested_at, internal_notes, app_meta");
     }
 
     fn validate_app_meta<T: serde::Serialize>(config: &T) -> Result<()> {

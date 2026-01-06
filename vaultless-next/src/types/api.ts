@@ -251,6 +251,15 @@ export interface PaginationParams {
   pageSize?: number;
 }
 
+export interface ApplicationListParams extends PaginationParams {
+  search?: string;
+  sort?: 'name' | 'createdAt' | 'updatedAt' | 'quotaUsage';
+  sortOrder?: 'asc' | 'desc';
+  filterActive?: boolean;
+  filterInactive?: boolean;
+  tier?: string;
+}
+
 export interface PaginatedResponse<T> {
   data: T[];
   totalCount: number;

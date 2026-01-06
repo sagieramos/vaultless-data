@@ -9,7 +9,7 @@ import type {
   QuotaWarning,
   PaginatedApplicationsSummary,
   PaginatedQuotaWarnings,
-  PaginationParams,
+  ApplicationListParams,
   RotateSecretKeyResponse,
   RotatePublishableKeyRequest,
   RotatePublishableKeyResponse,
@@ -27,16 +27,24 @@ export const applicationsApi = {
   // ============================================================================
 
   /**
-   * List user's applications with pagination
+   * List user's applications with pagination, search, filter, and sort
    * GET /dev/applications
    */
   list: async (
-    params?: PaginationParams
+    params?: ApplicationListParams
   ): Promise<PaginatedApplicationsSummary> => {
-    return apiClient.get<PaginatedApplicationsSummary>('/dev/applications', {
-      ...(params?.page && { page: String(params.page) }),
-      ...(params?.pageSize && { pageSize: String(params.pageSize) }),
-    });
+    const queryParams: Record<string, string> = {};
+    if (params) {
+      if (params.page !== undefined) queryParams.page = String(params.page);
+      if (params.pageSize !== undefined) queryParams.pageSize = String(params.pageSize);
+      if (params.search) queryParams.search = params.search;
+      if (params.sort) queryParams.sort = params.sort;
+      if (params.sortOrder) queryParams.sortOrder = params.sortOrder;
+      if (params.filterActive !== undefined) queryParams.filterActive = String(params.filterActive);
+      if (params.filterInactive !== undefined) queryParams.filterInactive = String(params.filterInactive);
+      if (params.tier) queryParams.tier = params.tier;
+    }
+    return apiClient.get<PaginatedApplicationsSummary>('/dev/applications', queryParams);
   },
 
   /**

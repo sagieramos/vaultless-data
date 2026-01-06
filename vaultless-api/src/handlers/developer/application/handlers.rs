@@ -85,7 +85,13 @@ pub async fn create_application(
     path = "/dev/applications",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
-        ("page_size" = Option<i64>, Query, description = "Page size (default: 20)")
+        ("page_size" = Option<i64>, Query, description = "Page size (default: 20)"),
+        ("search" = Option<String>, Query, description = "Search applications by name"),
+        ("sort" = Option<String>, Query, description = "Sort field: name, createdAt, updatedAt, quotaUsage"),
+        ("sort_order" = Option<String>, Query, description = "Sort order: asc or desc"),
+        ("filter_active" = Option<bool>, Query, description = "Filter by active status"),
+        ("filter_inactive" = Option<bool>, Query, description = "Filter by inactive status"),
+        ("tier" = Option<String>, Query, description = "Filter by tier: free, pro, enterprise")
     ),
     responses(
         (status = 200, description = "List of applications retrieved successfully", body = PaginatedApplicationsSummary),
@@ -104,9 +110,20 @@ pub async fn list_applications(
     let page_size = params.page_size.unwrap_or(20).clamp(1, 200);
 
     let paged =
-        Application::list_user_applications(state.db.as_ref(), user.user_id, page, page_size)
-            .await
-            .map_err(ApiError::from)?;
+        Application::list_user_applications(
+            state.db.as_ref(),
+            user.user_id,
+            page,
+            page_size,
+            params.search.as_deref(),
+            params.sort.as_deref(),
+            params.sort_order.as_deref(),
+            params.filter_active,
+            params.filter_inactive,
+            params.tier.as_deref(),
+        )
+        .await
+        .map_err(ApiError::from)?;
 
     Ok(Json(paged))
 }

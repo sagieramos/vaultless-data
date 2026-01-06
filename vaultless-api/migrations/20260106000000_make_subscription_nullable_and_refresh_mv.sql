@@ -1,17 +1,12 @@
--- ============================================================================
--- Migration: Unified Applications with Shared Subscriptions, Clients & Full Metrics
--- ============================================================================
 BEGIN;
 
--- 1. Pre-requisites & Indexing
-CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_one_secret_per_app
-    ON public.api_keys (application_id)
-    WHERE key_type = 'secret' AND is_active = true;
+-- Allow applications to exist without an attached subscription
+ALTER TABLE public.applications
+    ALTER COLUMN subscription_id DROP NOT NULL;
 
--- 2. Clean Slate for the View
+-- Recreate the unified materialized view so apps without a subscription are included
 DROP MATERIALIZED VIEW IF EXISTS public.mv_applications_with_usage CASCADE;
 
--- 3. The Unified View
 CREATE MATERIALIZED VIEW public.mv_applications_with_usage AS
 SELECT 
     -- APPLICATION METADATA
@@ -24,7 +19,7 @@ SELECT
     a.updated_at,
     a.app_meta,
     
-    -- SHARED SUBSCRIPTION POOL
+    -- SHARED SUBSCRIPTION POOL (nullable)
     s.id AS subscription_id,
     s.tier,
     s.monthly_message_quota,
@@ -119,33 +114,12 @@ LEFT JOIN LATERAL (
     WHERE w.application_id = a.id AND w.is_active = true
 ) webhook_data ON true;
 
--- 4. Recreate Indexes
-CREATE UNIQUE INDEX idx_mv_app_usage_app_id ON public.mv_applications_with_usage (application_id);
-CREATE INDEX idx_mv_app_usage_developer_id ON public.mv_applications_with_usage (developer_id);
-CREATE INDEX idx_mv_app_usage_client_count ON public.mv_applications_with_usage (developer_id, client_count DESC);
-CREATE INDEX idx_mv_app_usage_quota_warning ON public.mv_applications_with_usage (developer_id, quota_usage_percentage DESC) WHERE quota_usage_percentage >= 80;
+-- Recreate Indexes
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_app_usage_app_id ON public.mv_applications_with_usage (application_id);
+CREATE INDEX IF NOT EXISTS idx_mv_app_usage_developer_id ON public.mv_applications_with_usage (developer_id);
+CREATE INDEX IF NOT EXISTS idx_mv_app_usage_client_count ON public.mv_applications_with_usage (developer_id, client_count DESC);
+CREATE INDEX IF NOT EXISTS idx_mv_app_usage_quota_warning ON public.mv_applications_with_usage (developer_id, quota_usage_percentage DESC) WHERE quota_usage_percentage >= 80;
 
--- 5. Helper Functions (Referencing updated view)
-
-CREATE OR REPLACE FUNCTION public.get_user_usage_summary(p_developer_id UUID)
-RETURNS TABLE (
-    total_apps INTEGER,
-    total_monthly_messages BIGINT,
-    total_clients BIGINT,
-    total_monthly_cost BIGINT,
-    critical_quota_apps INTEGER
-) LANGUAGE sql STABLE AS $$
-    SELECT 
-        COUNT(*)::INTEGER,
-        COALESCE(SUM(current_month_messages_sent), 0)::BIGINT,
-        COALESCE(SUM(client_count), 0)::BIGINT,
-        COALESCE(SUM(current_month_cost_cents), 0)::BIGINT,
-        COUNT(*) FILTER (WHERE quota_usage_percentage >= 90)::INTEGER
-    FROM mv_applications_with_usage
-    WHERE developer_id = p_developer_id;
-$$;
-
--- 6. Refresh and Permissions
 GRANT SELECT ON public.mv_applications_with_usage TO vaultless;
 REFRESH MATERIALIZED VIEW public.mv_applications_with_usage;
 

@@ -51,7 +51,7 @@ impl Application {
                    updated_at, max_ttl_seconds, is_key_rotation_forced,
                    deletion_requested_at, internal_notes, app_meta
             FROM applications
-            WHERE id = $1 AND user_id = $2
+            WHERE id = $1 AND developer_id = $2
             "#,
         )
         .bind(app_id)
@@ -190,7 +190,7 @@ impl Application {
                    updated_at, max_ttl_seconds, is_key_rotation_forced,
                    deletion_requested_at, internal_notes, app_meta
             FROM applications
-            WHERE id = $1 AND user_id = $2
+            WHERE id = $1 AND developer_id = $2
             "#,
         )
         .bind(app_id)
@@ -356,7 +356,7 @@ impl Application {
                    updated_at, max_ttl_seconds, is_key_rotation_forced,
                    deletion_requested_at, internal_notes, app_meta
             FROM applications
-            WHERE id = $1 AND user_id = $2
+            WHERE id = $1 AND developer_id = $2
             "#,
         )
         .bind(app_id)
@@ -464,7 +464,7 @@ impl Application {
 
         // 1. Verify application exists and belongs to user
         let _app = sqlx::query_scalar::<_, Uuid>(
-            r#"SELECT id FROM applications WHERE id = $1 AND user_id = $2"#,
+            r#"SELECT id FROM applications WHERE id = $1 AND developer_id = $2"#,
         )
         .bind(app_id)
         .bind(user_id)

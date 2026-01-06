@@ -8,7 +8,7 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS public.applications (
     id uuid NOT NULL DEFAULT uuid_generate_v4(),
     developer_id uuid NOT NULL,
-    subscription_id uuid NOT NULL REFERENCES developer_subscriptions(id),
+    subscription_id uuid REFERENCES developer_subscriptions(id),
     name character varying(255) NOT NULL,
     description text,
     -- Status and timestamps

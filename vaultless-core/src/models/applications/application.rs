@@ -11,7 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-const PROJECTION: &str = "id, user_id, subscription_id, name,
+pub(crate) const PROJECTION: &str = "id, developer_id AS user_id, subscription_id, name,
     description, is_active, created_at,
     updated_at, max_ttl_seconds, is_key_rotation_forced,
     deletion_requested_at,
@@ -37,14 +37,14 @@ impl Application {
         let app = sqlx::query_as::<_, Application>(
             r#"
             INSERT INTO applications (
-                user_id,
+                developer_id,
                 name,
                 description,
                 max_ttl_seconds,
                 is_key_rotation_forced
             )
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING *
+            RETURNING id, developer_id AS user_id, subscription_id, name, description, is_active, created_at, updated_at, max_ttl_seconds, is_key_rotation_forced, deletion_requested_at, internal_notes, app_meta
             "#,
         )
         .bind(input.user_id)
@@ -150,7 +150,7 @@ impl Application {
         sqlx::query_as::<_, Application>(&format!(
             r#"
                 SELECT {}
-                FROM applications WHERE id = $1 AND user_id = $2
+                FROM applications WHERE id = $1 AND developer_id = $2
                 "#,
             PROJECTION
         ))
@@ -217,7 +217,7 @@ impl Application {
         user_id: Uuid,
     ) -> Result<()> {
         let row = sqlx::query(
-        "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2",
+        "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1 AND developer_id = $2",
         )
         .bind(app_id)
         .bind(user_id)
@@ -316,7 +316,7 @@ impl Application {
     where
         E: Executor<'c, Database = Postgres> + Clone + 'static,
     {
-        let result = sqlx::query("DELETE FROM applications WHERE id = $1 AND user_id = $2")
+        let result = sqlx::query("DELETE FROM applications WHERE id = $1 AND developer_id = $2")
             .bind(app_id)
             .bind(user_id)
             .execute(exec.as_ref())

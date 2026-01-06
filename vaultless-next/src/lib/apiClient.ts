@@ -15,6 +15,8 @@ const USE_SECURE_COOKIES = process.env.NEXT_PUBLIC_USE_SECURE_COOKIES?.toLowerCa
 class ApiClient {
   private baseUrl: string;
   private getAuthToken: () => string | null;
+  // Optional callback invoked when an automatic token refresh succeeds
+  private onTokenRefresh?: (data: any) => void;
 
   constructor(
     baseUrl: string,
@@ -41,6 +43,11 @@ class ApiClient {
     return headers;
   }
 
+  // Register a callback to be notified when tokens are refreshed automatically
+  public setOnTokenRefresh(cb?: (data: any) => void) {
+    this.onTokenRefresh = cb;
+  }
+
   // Attempt to refresh access token (client-only). Returns true on success.
   private async refreshAccessToken(): Promise<boolean> {
     if (typeof window === 'undefined') return false; // only run in browser
@@ -60,6 +67,12 @@ class ApiClient {
           localStorage.setItem('access_token', data.accessToken);
         } catch (e) {
           // ignore storage errors
+        }
+        // Notify subscriber (AuthContext) so UI state can be kept in sync
+        try {
+          this.onTokenRefresh?.(data);
+        } catch (e) {
+          // swallow errors from handler
         }
         return true;
       }

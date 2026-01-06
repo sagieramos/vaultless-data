@@ -20,7 +20,7 @@ use validator::Validate;
 pub struct Application {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub subscription_id: Uuid,
+    pub subscription_id: Option<Uuid>,
     pub name: String,
     pub description: Option<String>,
     pub is_active: bool,
@@ -494,7 +494,7 @@ pub struct ApplicationWithUsage {
 
     // Subscription Pool (Shared)
     #[serde(skip_serializing)]
-    pub subscription_id: Uuid,
+    pub subscription_id: Option<Uuid>,
     pub tier: Option<String>,
     pub monthly_message_quota: i64,
     pub rate_limit_per_minute: i32,

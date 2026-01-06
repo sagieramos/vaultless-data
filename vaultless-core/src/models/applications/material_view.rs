@@ -70,19 +70,70 @@ impl Application {
         Ok(app)
     }
 
-    /// List applications with summary data for pagination
+    /// List applications with summary data for pagination with optional filters
     pub async fn list_user_applications<'c, E>(
         exec: E,
         user_id: Uuid,
         page: i64,
         page_size: i64,
+        search: Option<&str>,
+        sort: Option<&str>,
+        sort_order: Option<&str>,
+        filter_active: Option<bool>,
+        filter_inactive: Option<bool>,
+        tier: Option<&str>,
     ) -> Result<PaginatedApplicationsSummary>
     where
         E: Executor<'c, Database = Postgres>,
     {
         let offset = (page - 1).max(0) * page_size;
 
-        let rows = sqlx::query_as::<_, ApplicationSummaryFromView>(
+        // Build WHERE clause - using expression index for search
+        let mut where_conditions: Vec<String> = vec!["developer_id = $1".to_string()];
+        let mut param_index = 1;
+
+        if let Some(s) = search {
+            param_index += 1;
+            where_conditions.push("LOWER(name) = LOWER($2)".to_string());
+        }
+
+        if let Some(active) = filter_active {
+            if active {
+                where_conditions.push("is_active = true".to_string());
+            }
+        }
+
+        if let Some(inactive) = filter_inactive {
+            if inactive {
+                where_conditions.push("is_active = false".to_string());
+            }
+        }
+
+        if let Some(t) = tier {
+            param_index += 1;
+            where_conditions.push("LOWER(tier::text) = LOWER($2)".to_string());
+        }
+
+        let where_clause = if where_conditions.len() == 1 {
+            where_conditions[0].clone()
+        } else {
+            where_conditions.join(" AND ")
+        };
+
+        // Build ORDER BY clause
+        let (order_field, order_direction) = match (sort, sort_order) {
+            (Some("name"), Some("asc")) => ("name", "ASC"),
+            (Some("name"), Some("desc") | None) => ("name", "DESC"),
+            (Some("createdAt"), Some("asc") | None) => ("created_at", "ASC"),
+            (Some("createdAt"), Some("desc")) => ("created_at", "DESC"),
+            (Some("updatedAt"), Some("asc") | None) => ("updated_at", "ASC"),
+            (Some("updatedAt"), Some("desc")) => ("updated_at", "DESC"),
+            (Some("quotaUsage"), Some("asc") | None) => ("CAST(quota_usage_percentage AS NUMERIC)", "ASC"),
+            (Some("quotaUsage"), Some("desc")) => ("CAST(quota_usage_percentage AS NUMERIC)", "DESC"),
+            _ => ("created_at", "DESC"),
+        };
+
+        let sql = format!(
             r#"
             SELECT
                 application_id, name, description, is_active,
@@ -91,16 +142,31 @@ impl Application {
                 webhook_count, client_count, quota_usage_percentage,
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
-            WHERE developer_id = $1
-            ORDER BY created_at DESC
+            WHERE {}
+            ORDER BY {} {}
             LIMIT $2 OFFSET $3
             "#,
-        )
-        .bind(user_id)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(exec)
-        .await?;
+            where_clause, order_field, order_direction
+        );
+
+        let mut query = sqlx::query_as::<_, ApplicationSummaryFromView>(&sql);
+
+        // Bind parameters
+        query = query.bind(user_id);
+        query = query.bind(page_size);
+        query = query.bind(offset);
+
+        if let Some(s) = search {
+            let search_pattern = format!("%{}%", s);
+            query = query.bind(search_pattern);
+        }
+
+        if let Some(t) = tier {
+            let tier_lower = t.to_lowercase();
+            query = query.bind(tier_lower);
+        }
+
+        let rows = query.fetch_all(exec).await?;
 
         let total_count = rows.first().map(|r| r.total_count).unwrap_or(0);
         let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
