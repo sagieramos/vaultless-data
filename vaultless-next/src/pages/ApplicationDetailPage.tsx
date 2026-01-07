@@ -10,13 +10,14 @@ import { Progress } from '../components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import DashboardLayout from '../components/layout/DashboardLayout';
+import { formatRelativeTime } from '@/lib/date';
 
 // Mock application data
 const applicationsData: Record<string, { name: string; description: string; tier: string; status: string; createdAt: string; type: string; iotStats?: { devices: number; attested: number; trusted: number } }> = {
-  '1': { name: 'Production API', description: 'Main production messaging service', tier: 'Pro', status: 'active', createdAt: '2 months ago', type: 'messaging' },
-  '2': { name: 'Staging Environment', description: 'Testing and staging deployment', tier: 'Free', status: 'active', createdAt: '1 month ago', type: 'messaging' },
-  '3': { name: 'Smart Home Hub', description: 'IoT device management and attestation', tier: 'Enterprise', status: 'active', createdAt: '3 weeks ago', type: 'iot', iotStats: { devices: 847, attested: 842, trusted: 98 } },
-  '4': { name: 'Mobile App Backend', description: 'iOS and Android messaging service', tier: 'Pro', status: 'active', createdAt: '3 weeks ago', type: 'messaging' },
+  '1': { name: 'Production API', description: 'Main production messaging service', tier: 'Pro', status: 'active', createdAt: '2025-11-07T12:00:00Z', type: 'messaging' },
+  '2': { name: 'Staging Environment', description: 'Testing and staging deployment', tier: 'Free', status: 'active', createdAt: '2025-12-07T12:00:00Z', type: 'messaging' },
+  '3': { name: 'Smart Home Hub', description: 'IoT device management and attestation', tier: 'Enterprise', status: 'active', createdAt: '2025-12-17T12:00:00Z', type: 'iot', iotStats: { devices: 847, attested: 842, trusted: 98 } },
+  '4': { name: 'Mobile App Backend', description: 'iOS and Android messaging service', tier: 'Pro', status: 'active', createdAt: '2025-12-17T12:00:00Z', type: 'messaging' },
 };
 
 // Available plans
@@ -79,7 +80,9 @@ export default function ApplicationDetailPage() {
               </div>
             </div>
             <p className="text-gray-600 dark:text-gray-400">{appDescription}</p>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Created {appCreatedAt}</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              Created {(appData?.createdAt || (appData as any)?.created_at) ? formatRelativeTime(appData?.createdAt ?? (appData as any)?.created_at) : 'Unknown'}
+            </p>
           </div>
 
           <div className="flex gap-2">

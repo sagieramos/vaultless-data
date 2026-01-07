@@ -9,16 +9,28 @@ import {
 } from 'recharts';
 import {
   Calendar, Download, TrendingUp, TrendingDown,
-  MessageSquare, Clock, Activity, DollarSign, Users, CreditCard, ArrowLeft
+  MessageSquare, Clock, Activity, DollarSign, Users, CreditCard, ArrowLeft,
+  AlertCircle, ChevronRight, ShieldCheck
 } from 'lucide-react';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
+import { Progress } from '../components/ui/progress';
+import { formatRelativeTime } from '@/lib/date';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 
 // Mock data
+const quotaStatus = {
+  messagesUsed: 42500,
+  messagesLimit: 50000,
+  usagePercentage: 85.0,
+  isOverQuota: false,
+  overageCount: 0,
+  resetsAt: '2026-02-01T00:00:00Z',
+  alertLevel: 'warning'
+};
 const messageData = [
   { date: 'Jan 1', messages: 2400, sent: 1200, received: 1200 },
   { date: 'Jan 2', messages: 1398, sent: 700, received: 698 },
@@ -217,6 +229,100 @@ export default function AnalyticsPage() {
             </Button>
           </div>
         </div>
+      </div>
+
+      {/* Quota Status Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+        <Card className="lg:col-span-2 p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                Monthly Quota Usage
+                {quotaStatus.alertLevel === 'critical' || quotaStatus.isOverQuota ? (
+                  <AlertCircle className="w-5 h-5 text-red-500" />
+                ) : quotaStatus.alertLevel === 'warning' ? (
+                  <AlertCircle className="w-5 h-5 text-amber-500" />
+                ) : (
+                  <ShieldCheck className="w-5 h-5 text-green-500" />
+                )}
+              </h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Resets on {new Date(quotaStatus.resetsAt).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="text-2xl font-bold text-gray-900 dark:text-white">
+                {quotaStatus.usagePercentage.toFixed(1)}%
+              </span>
+              <p className="text-xs text-gray-600 dark:text-gray-400 uppercase tracking-wider font-semibold">
+                Used
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className={
+              quotaStatus.usagePercentage >= 90 ? 'bg-red-500' :
+              quotaStatus.usagePercentage >= 75 ? 'bg-amber-500' :
+              'bg-blue-600'
+            }>
+              <Progress
+                value={quotaStatus.usagePercentage}
+                className="h-3"
+              />
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-600 dark:text-gray-400">
+                <span className="font-semibold text-gray-900 dark:text-white">{formatNumber(quotaStatus.messagesUsed)}</span> messages used
+              </span>
+              <span className="text-gray-600 dark:text-gray-400">
+                Quota: <span className="font-semibold text-gray-900 dark:text-white">{formatNumber(quotaStatus.messagesLimit)}</span>
+              </span>
+            </div>
+          </div>
+
+          {quotaStatus.isOverQuota && (
+            <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/50 rounded-lg flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-red-900 dark:text-red-400">
+                  Quota Exceeded
+                </p>
+                <p className="text-xs text-red-700 dark:text-red-300">
+                  You are {formatNumber(quotaStatus.overageCount)} messages over your monthly limit. Extra messages are being billed at overage rates.
+                </p>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-6 flex flex-col justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              Plan Limit
+            </h2>
+            <div className="flex items-center gap-2 mb-4">
+              <Badge className="px-3 py-1 text-sm">{appTier}</Badge>
+              <span className="text-sm text-gray-600 dark:text-gray-400">Subscription</span>
+            </div>
+            <ul className="space-y-3">
+              {[
+                { label: 'Monthly Messages', value: formatNumber(quotaStatus.messagesLimit) },
+                { label: 'Analytics History', value: appTier === 'Pro' ? '90 days' : '7 days' },
+                { label: 'Team Members', value: appTier === 'Pro' ? 'Unlimited' : '3' },
+              ].map((item) => (
+                <li key={item.label} className="flex justify-between text-sm">
+                  <span className="text-gray-600 dark:text-gray-400">{item.label}</span>
+                  <span className="font-medium text-gray-900 dark:text-white">{item.value}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <Button variant="outline" className="w-full mt-6 group">
+            Upgrade Plan
+            <ChevronRight className="w-4 h-4 ml-2 transition-transform group-hover:translate-x-1" />
+          </Button>
+        </Card>
       </div>
 
       {/* Stats Cards */}
