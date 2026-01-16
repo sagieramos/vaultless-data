@@ -212,11 +212,14 @@ pub struct ApplicationDashboardResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
     /// Monthly message quota
-    pub monthly_quota: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_quota: Option<i64>,
     /// Rate limit per minute
-    pub rate_limit: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<i32>,
     /// Message retention in seconds
-    pub retention_seconds: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention_seconds: Option<i64>,
 
     /// List of publishable keys
     #[schema(value_type = Vec<Object>)]

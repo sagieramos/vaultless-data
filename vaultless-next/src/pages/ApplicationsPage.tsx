@@ -221,6 +221,7 @@ export default function ApplicationsPage() {
         <>
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {applications.map((app, index) => {
+              console.log(app);
               const isActive = (app as any).isActive ?? (app as any).is_active ?? (app as any).active ?? ((app as any).status === 'active');
               const quotaLimit = (app as any).quota?.limit ?? null;
               const quotaUsed = (app as any).quota?.used ?? null;

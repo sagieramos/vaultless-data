@@ -496,9 +496,9 @@ pub struct ApplicationWithUsage {
     #[serde(skip_serializing)]
     pub subscription_id: Option<Uuid>,
     pub tier: Option<String>,
-    pub monthly_message_quota: i64,
-    pub rate_limit_per_minute: i32,
-    pub message_retention_seconds: i64,
+    pub monthly_message_quota: Option<i64>,
+    pub rate_limit_per_minute: Option<i32>,
+    pub message_retention_seconds: Option<i64>,
 
     // Keys
     #[serde(skip_serializing)]
@@ -720,6 +720,7 @@ pub struct PaginatedApplicationsSummary {
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationSummary {
+     #[serde(rename = "id")]
     pub application_id: Uuid,
     pub name: String,
     pub description: Option<String>,

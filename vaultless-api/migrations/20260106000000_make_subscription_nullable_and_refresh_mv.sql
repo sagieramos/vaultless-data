@@ -72,7 +72,7 @@ LEFT JOIN public.api_keys sk ON (sk.application_id = a.id AND sk.key_type = 'sec
 -- LATERAL: Publishable Keys
 LEFT JOIN LATERAL (
     SELECT COUNT(pk.id) AS count,
-           jsonb_agg(jsonb_build_object('id', pk.id, 'key_prefix', pk.key_prefix, 'is_active', pk.is_active) 
+           jsonb_agg(jsonb_build_object('id', pk.id, 'keyPrefix', pk.key_prefix, 'isActive', pk.is_active)
            ORDER BY pk.created_at DESC) AS keys_json
     FROM public.api_keys pk
     WHERE pk.application_id = a.id AND pk.key_type = 'publishable' AND pk.is_active = true
@@ -112,7 +112,7 @@ LEFT JOIN LATERAL (
 -- LATERAL: Webhooks
 LEFT JOIN LATERAL (
     SELECT COUNT(w.id) AS count,
-           jsonb_agg(jsonb_build_object('id', w.id, 'url', w.url, 'event_type', w.event_type)) AS webhooks_json
+           jsonb_agg(jsonb_build_object('id', w.id, 'url', w.url, 'eventType', w.event_type)) AS webhooks_json
     FROM public.webhooks w
     WHERE w.application_id = a.id AND w.is_active = true
 ) webhook_data ON true;

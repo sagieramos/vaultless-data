@@ -326,7 +326,7 @@ export interface DeactivatePublishableKeyRequest {
 export interface QuotaStatusResponse {
   applicationId: string;
   messagesUsed: number;
-  messagesLimit: number;
+  messagesLimit?: number;
   usagePercentage: number;
   isOverQuota: boolean;
   overageCount: number;

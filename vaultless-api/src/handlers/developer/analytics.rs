@@ -85,7 +85,8 @@ pub struct AnalyticsResponse<T: ToSchema> {
 pub struct QuotaStatusResponse {
     pub application_id: Uuid,
     pub messages_used: i64,
-    pub messages_limit: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages_limit: Option<i64>,
     pub usage_percentage: f64,
     pub is_over_quota: bool,
     pub overage_count: i64,
@@ -123,10 +124,12 @@ pub async fn get_application_quota_status(
         .parse::<f64>()
         .unwrap_or(0.0);
 
-    let is_over_quota = app.current_month_messages_sent > app.monthly_message_quota;
+    // Handle nullable monthly_message_quota (when there's no subscription)
+    let messages_limit = app.monthly_message_quota.unwrap_or(0);
+    let is_over_quota = messages_limit > 0 && app.current_month_messages_sent > messages_limit;
 
     let overage_count = if is_over_quota {
-        app.current_month_messages_sent - app.monthly_message_quota
+        app.current_month_messages_sent - messages_limit
     } else {
         0
     };

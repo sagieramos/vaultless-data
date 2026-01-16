@@ -1,0 +1,5 @@
+# Decrypt
+# sops -d --input-type dotenv --output-type dotenv .env.enc > .env
+creation_rules:
+  - encrypted_regex: '^(.*)$'
+    age: age1ysmctpkr0d5wl704898x9evu7zgd0juhutxa7vd03x7avesy0yfszp89e8
