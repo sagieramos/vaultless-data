@@ -70,15 +70,22 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load user from localStorage on mount (tokens handled by browser cookies)
+  // Load auth state from localStorage on mount
   useEffect(() => {
     const loadStoredAuth = () => {
       try {
         const storedUser = localStorage.getItem(USER_KEY);
+        const storedAccessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
+        const storedRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
 
         if (storedUser) {
-          const parsedUser = JSON.parse(storedUser);
-          setUser(parsedUser);
+          setUser(JSON.parse(storedUser));
+        }
+        if (storedAccessToken) {
+          setAccessToken(storedAccessToken);
+        }
+        if (storedRefreshToken) {
+          setRefreshToken(storedRefreshToken);
         }
       } catch (error) {
         console.error('Error loading auth state:', error);
@@ -105,18 +112,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       const response = await authApi.login(credentials);
 
-      // The authentication cookies (access_token, refresh_token) are HttpOnly and set by the server response
-      // The browser automatically includes these cookies in subsequent requests when credentials: 'include' is used
-      // We don't manually set them here to avoid conflicts with server-set HttpOnly cookies
-      // Instead, we store the tokens in component state for UI purposes
-
       setAccessToken(response.accessToken);
       setRefreshToken(response.refreshToken);
       setUser(response.user);
 
-      // Persist access token so ApiClient can attach Authorization header if needed
+      // Persist tokens so ApiClient can use them
       try {
         localStorage.setItem(ACCESS_TOKEN_KEY, response.accessToken);
+        localStorage.setItem(REFRESH_TOKEN_KEY, response.refreshToken);
       } catch (err) {
         // ignore storage errors
       }
@@ -168,20 +171,22 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Refresh tokens
   const refreshTokens = useCallback(async (): Promise<RefreshTokenResponse> => {
-    try {
-      // Call refresh without passing tokens; server should read refresh token from HttpOnly cookie
-      const response = await authApi.refreshToken();
+    const tokenToRefresh = refreshToken || localStorage.getItem(REFRESH_TOKEN_KEY);
+    if (!tokenToRefresh) {
+      await logout();
+      throw new Error('No refresh token available');
+    }
 
-      // The authentication cookies are HttpOnly and set by the server response
-      // The browser automatically includes these cookies in subsequent requests when credentials: 'include' is used
-      // We don't manually set them here to avoid conflicts with server-set HttpOnly cookies
+    try {
+      const response = await authApi.refreshToken({ refreshToken: tokenToRefresh });
 
       setAccessToken(response.accessToken);
       setRefreshToken(response.refreshToken);
 
-      // Persist access token so ApiClient can attach Authorization header if needed
+      // Persist tokens so ApiClient can use them
       try {
         localStorage.setItem(ACCESS_TOKEN_KEY, response.accessToken);
+        localStorage.setItem(REFRESH_TOKEN_KEY, response.refreshToken);
       } catch (err) {
         // ignore storage errors
       }
@@ -193,19 +198,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
       await logout();
       throw error;
     }
-  }, [logout]);
+  }, [logout, refreshToken]);
 
   // Set OAuth tokens directly (for Google OAuth callback)
   const setOAuthTokens = useCallback((
     tokens: { accessToken: string; refreshToken: string; user: UserInfo }
   ) => {
-    // The authentication cookies are HttpOnly and set by the server response
-    // The browser automatically includes these cookies in subsequent requests when credentials: 'include' is used
-    // We don't manually set them here to avoid conflicts with server-set HttpOnly cookies
-
     setAccessToken(tokens.accessToken);
     setRefreshToken(tokens.refreshToken);
     setUser(tokens.user);
+
+    // Persist tokens so ApiClient can use them
+    try {
+      localStorage.setItem(ACCESS_TOKEN_KEY, tokens.accessToken);
+      localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken);
+    } catch (err) {
+      // ignore storage errors
+    }
   }, []);
 
   // Get access token
@@ -242,6 +251,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       if (data?.refreshToken) {
         setRefreshToken(data.refreshToken);
+        try {
+          localStorage.setItem(REFRESH_TOKEN_KEY, data.refreshToken);
+        } catch (e) {
+          // ignore
+        }
       }
 
       // Optionally re-sync user info after refresh

@@ -52,11 +52,17 @@ class ApiClient {
   private async refreshAccessToken(): Promise<boolean> {
     if (typeof window === 'undefined') return false; // only run in browser
 
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (!refreshToken) {
+      return false;
+    }
+
     try {
       const response = await fetch(`${this.baseUrl}/dev/auth/refresh-token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
+        body: JSON.stringify({ refreshToken }),
       });
 
       if (!response.ok) return false;
