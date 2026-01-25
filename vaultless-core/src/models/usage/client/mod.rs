@@ -34,7 +34,10 @@ pub use super::counters::{ClientFlusherMetrics, ClientMetricCounters, ClientMetr
 pub use flusher::start_client_redis_flusher;
 
 // Queries
-pub use queries::{ClientUsageAggregate, get_aggregate_by_client_id};
+pub use queries::{
+    ClientUsageAggregate, get_aggregate_by_client_id,
+    get_active_clients_count, get_active_client_ids,
+};
 
 // Aggregate queries
 pub use aggregate::{

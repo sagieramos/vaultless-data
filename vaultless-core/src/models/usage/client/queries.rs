@@ -1,8 +1,11 @@
 //! Postgres queries for client usage metrics aggregation.
 
-use crate::error::Result;
+use crate::error::{Result, VaultlessError};
+use crate::models::usage::config::active_clients_key;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, Postgres};
+use std::sync::Arc;
 use uuid::Uuid;
 
 // =============================================================================
@@ -54,4 +57,66 @@ where
     .await?;
 
     Ok(result.unwrap_or_default())
+}
+
+// =============================================================================
+// Active Clients Count (Redis) - O(1) using SCARD
+// =============================================================================
+
+/// Count the number of unique active clients for an application from Redis.
+///
+/// This is an O(1) operation using Redis SCARD command on the per-application
+/// active clients set: `metric:app:{app_id}:active_clients`
+///
+/// Active clients are added to this set when they send a message (via Lua scripts).
+/// The set has a 24-hour TTL that refreshes on activity.
+pub async fn get_active_clients_count(
+    redis_pool: Arc<deadpool_redis::Pool>,
+    application_id: Uuid,
+) -> Result<i64> {
+    let mut conn = redis_pool
+        .get()
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis pool error: {}", e)))?;
+
+    let key = active_clients_key(&application_id);
+
+    // SCARD is O(1) - returns the set cardinality (number of elements)
+    let count: i64 = conn
+        .scard(&key)
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis SCARD error: {}", e)))?;
+
+    Ok(count)
+}
+
+/// Get the list of unique active client IDs for an application from Redis.
+///
+/// Uses SMEMBERS on the per-application active clients set.
+/// Note: This is O(N) where N is the number of active clients, but typically
+/// this set is bounded and much smaller than scanning all metric keys.
+pub async fn get_active_client_ids(
+    redis_pool: Arc<deadpool_redis::Pool>,
+    application_id: Uuid,
+) -> Result<Vec<Uuid>> {
+    let mut conn = redis_pool
+        .get()
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis pool error: {}", e)))?;
+
+    let key = active_clients_key(&application_id);
+
+    // SMEMBERS returns all members of the set
+    let client_ids: Vec<String> = conn
+        .smembers(&key)
+        .await
+        .map_err(|e| VaultlessError::Internal(format!("Redis SMEMBERS error: {}", e)))?;
+
+    // Parse UUIDs, filtering out any invalid entries
+    let uuids: Vec<Uuid> = client_ids
+        .iter()
+        .filter_map(|s| Uuid::parse_str(s).ok())
+        .collect();
+
+    Ok(uuids)
 }

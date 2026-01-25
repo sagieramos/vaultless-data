@@ -268,17 +268,22 @@ export interface PaginatedResponse<T> {
   totalPages: number;
 }
 
-export type PaginatedApplicationsSummary = PaginatedResponse<{
+export interface ApplicationSummary {
   id: string;
   name: string;
-  description?: string;
+  description: string | null;
   isActive: boolean;
-  monthlyMessageQuota: number;
-  currentMonthMessagesSent: number;
-  quotaUsagePercentage: string;
+  monthlyMessageQuota: number | null;
+  clientCount: number;
+  publishableKeyCount: number;
+  webhookCount: number;
+  quotaUsagePercentage: number;
+  tier: string | null;
   createdAt: string;
   updatedAt: string;
-}>;
+}
+
+export type PaginatedApplicationsSummary = PaginatedResponse<ApplicationSummary>;
 
 export type PaginatedQuotaWarnings = PaginatedResponse<QuotaWarning>;
 
@@ -356,6 +361,18 @@ export type ExportFormat = 'json' | 'csv';
 
 export interface ExportQuery {
   format: ExportFormat;
+}
+
+export interface UsagePoint {
+  date: string;
+  messages_sent: number;
+  proofs_verified: number;
+  quota_used_pct: number;
+}
+
+export interface UsageOverTime {
+  data: UsagePoint[];
+  total_quota: number;
 }
 
 // ============================================================================

@@ -1568,9 +1568,8 @@ Returns all applications approaching/exceeding quota.
     {
       "application_id": "550e8400-e29b-41d4-a716-446655440000",
       "name": "My Payment App",
-      "usage_percentage": 92.5,
-      "messages_used": 92500,
-      "messages_limit": 100000
+      "quota_usage_percentage": 92.5,
+      "bandwidth_quota_usage_percentage": 45.2
     }
   ],
   "page": 1,
@@ -1589,7 +1588,8 @@ Returns all applications approaching/exceeding quota.
 ┌─────────────────────────────────────────────────────────┐
 │  ⚠️ 1 application approaching quota limit              │
 │                                                         │
-│  My Payment App: 92.5% used (92,500 / 100,000)         │
+│  My Payment App: 92.5% of message quota used,         │
+│                45.2% of bandwidth quota used           │
 │                                                         │
 │                              [View] [Upgrade Plan]      │
 └─────────────────────────────────────────────────────────┘
@@ -1597,7 +1597,62 @@ Returns all applications approaching/exceeding quota.
 
 ---
 
-## 4.7 Get Usage Summary
+## 4.7 Get Bandwidth Quota Warnings
+
+Returns all applications approaching/exceeding bandwidth quota.
+
+| Property | Value |
+|----------|-------|
+| **Method** | `GET` |
+| **Path** | `/dev/applications/bandwidth-quota-warnings` |
+| **Auth Required** | **Yes** |
+| **Caching** | ETag supported |
+
+### Query Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `threshold` | float | No | 80.0 | Minimum bandwidth usage % to include |
+| `page` | integer | No | 1 | Page number |
+| `page_size` | integer | No | 20 | Items per page |
+
+### Response (200 OK)
+
+```json
+{
+  "data": [
+    {
+      "applicationId": "550e8400-e29b-41d4-a716-446655440000",
+      "applicationName": "My Video Streaming App",
+      "quotaUsagePercentage": 0,
+      "bandwidthQuotaUsagePercentage": 85.3
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "totalCount": 1,
+  "totalPages": 1
+}
+```
+
+### UI Implementation
+
+**Component:** Dashboard Warning Banner
+
+**Design:**
+```
+┌─────────────────────────────────────────────────────────┐
+│  ⚠️ 1 application approaching bandwidth limit          │
+│                                                         │
+│  My Video Streaming App: 85.3% of bandwidth quota used │
+│                                                         │
+│                              [View] [Upgrade Plan]      │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4.8 Get Usage Summary
 
 Returns aggregated usage across all applications.
 

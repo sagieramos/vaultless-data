@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::models::usage::client::{ClientMetricKey, MetricGranularity};
+use crate::models::usage::config::{active_clients_key, ACTIVE_CLIENTS_SET_TTL_SECS};
 
 /// Default monthly message quota (100,000 messages per month)
 const DEFAULT_MONTHLY_QUOTA: i64 = 100_000;
@@ -24,6 +25,18 @@ const DEFAULT_APP_RATE_LIMIT: i64 = 1000;
 
 /// Default per-minute rate limit for clients (100 messages/min)
 const DEFAULT_CLIENT_RATE_LIMIT: i64 = 100;
+
+/// Default monthly bandwidth quota for applications (1TB)
+const DEFAULT_APP_BANDWIDTH_MONTHLY_QUOTA_BYTES: i64 = 1 * 1024 * 1024 * 1024 * 1024; // 1TB
+
+/// Default monthly bandwidth quota for clients (100GB)
+const DEFAULT_CLIENT_BANDWIDTH_MONTHLY_QUOTA_BYTES: i64 = 100 * 1024 * 1024 * 1024; // 100GB
+
+/// Default per-minute bandwidth rate limit for applications (500MB/min)
+const DEFAULT_APP_BANDWIDTH_RATE_LIMIT_BYTES: i64 = 500 * 1024 * 1024; // 500MB/min
+
+/// Default per-minute bandwidth rate limit for clients (50MB/min)
+const DEFAULT_CLIENT_BANDWIDTH_RATE_LIMIT_BYTES: i64 = 50 * 1024 * 1024; // 50MB/min
 
 /// Lua script for atomic message sending (v1 - legacy)
 const SEND_MESSAGE_V1_LUA: &str = include_str!("../../scripts/send_message_v1.lua");
@@ -422,6 +435,7 @@ impl InstantMessage {
             MetricGranularity::Hour
         ).as_str().to_string();
         let client_active_keys_set = cache_key!("metric", "client", "active_keys");
+        let app_active_clients_set = active_clients_key(&msg.application_id);
 
         // Serialize message
         let message_json = serde_json::to_string(msg)
@@ -440,6 +454,7 @@ impl InstantMessage {
                 .key(&client_quota_key)                      // KEYS[7]
                 .key(&client_metric_key)                     // KEYS[8]
                 .key(&client_active_keys_set)                // KEYS[9]
+                .key(&app_active_clients_set)                // KEYS[10]: per-app active clients set
                 .arg(3600)                                    // ARGV[1]: idempotency TTL
                 .arg(100000)                                  // ARGV[2]: stream max length
                 .arg(msg.id.to_string())                      // ARGV[3]: message_id
@@ -451,6 +466,7 @@ impl InstantMessage {
                 .arg(7 * 24 * 60 * 60)                        // ARGV[9]: client metric TTL
                 .arg(msg.sender_client_id.to_string())        // ARGV[10]: sender client ID
                 .arg(msg.application_id.to_string())          // ARGV[11]: application ID
+                .arg(ACTIVE_CLIENTS_SET_TTL_SECS)             // ARGV[12]: active clients set TTL
                 .invoke_async(&mut conn),
         )
         .await
@@ -501,6 +517,7 @@ impl InstantMessage {
             MetricGranularity::Hour
         ).as_str().to_string();
         let client_active_keys_set = cache_key!("metric", "client", "active_keys");
+        let app_active_clients_set = active_clients_key(&msg.application_id);
 
         // Serialize message
         let message_json = serde_json::to_string(msg)
@@ -518,6 +535,7 @@ impl InstantMessage {
                 .key(&client_quota_key)
                 .key(&client_metric_key)
                 .key(&client_active_keys_set)
+                .key(&app_active_clients_set)                // KEYS[9]: per-app active clients set
                 .arg(DEFAULT_MONTHLY_QUOTA)                  // ARGV[1]: app monthly quota
                 .arg(DEFAULT_APP_RATE_LIMIT)                 // ARGV[2]: app rate limit per minute
                 .arg(DEFAULT_CLIENT_MONTHLY_QUOTA)           // ARGV[3]: client monthly quota
@@ -532,6 +550,8 @@ impl InstantMessage {
                 .arg(if persist_to_db { 1 } else { 0 })       // ARGV[12]: persist_to_db
                 .arg(7 * 24 * 60 * 60)                        // ARGV[13]: client metric TTL (7 days)
                 .arg(msg.sender_client_id.to_string())        // ARGV[14]: sender client ID
+                .arg(msg.application_id.to_string())          // ARGV[15]: application ID
+                .arg(ACTIVE_CLIENTS_SET_TTL_SECS)             // ARGV[16]: active clients set TTL
                 .invoke_async(&mut conn),
         )
         .await

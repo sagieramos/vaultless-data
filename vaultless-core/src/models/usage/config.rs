@@ -36,6 +36,19 @@ pub static ACTIVE_CLIENT_KEYS_SET: Lazy<String> = Lazy::new(|| cache_key!("metri
 /// Field name to mark a key as being processed
 pub const PROCESSING_FLAG: &str = "_processing";
 
+/// TTL for per-application active clients set (24 hours)
+/// Clients are considered "active" if they've sent a message within this window.
+pub const ACTIVE_CLIENTS_SET_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Generate the Redis key for an application's active clients set.
+/// Format: `metric:app:{app_id}:active_clients`
+/// This set contains client_ids that have sent messages recently.
+/// Use SCARD for O(1) count retrieval.
+#[inline]
+pub fn active_clients_key(app_id: &uuid::Uuid) -> String {
+    cache_key!("metric", "app", app_id, "active_clients")
+}
+
 // =============================================================================
 // Configuration
 // =============================================================================

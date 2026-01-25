@@ -14,6 +14,8 @@ use utoipa::openapi::security::SecurityScheme;
         crate::handlers::developer::application::charts::get_chart_data,
         crate::handlers::developer::application::handlers::get_user_usage_summary,
         crate::handlers::developer::application::handlers::get_quota_warnings,
+        crate::handlers::developer::application::handlers::get_bandwidth_quota_warnings,
+        crate::handlers::developer::application::handlers::get_monthly_revenue_chart,
         crate::handlers::developer::application::handlers::get_application_with_keys,
         // Key rotation handlers
         crate::handlers::developer::application::keys::rotate_secret_key,

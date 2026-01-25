@@ -8,7 +8,7 @@
 --
 -- luacheck: globals KEYS ARGV redis
 --
--- KEY STRUCTURE (8 keys):
+-- KEY STRUCTURE (9 keys):
 --   KEYS[1] = Application monthly quota key (e.g., "quota:app:{app_id}:monthly")
 --   KEYS[2] = Application per-minute rate limit key (e.g., "metric:app:{app_id}:minute:{min_key}")
 --   KEYS[3] = Client per-minute rate limit key (e.g., "metric:client:{client_id}:minute:{min_key}")
@@ -17,8 +17,9 @@
 --   KEYS[6] = Client monthly quota key (e.g., "quota:client:{client_id}:monthly")
 --   KEYS[7] = Client metric key (hash, e.g., "metric:client:hour:{app_id}:{client_id}:{window}")
 --   KEYS[8] = Client active keys set (for flusher tracking, e.g., "metric:client:active_keys")
+--   KEYS[9] = App active clients set (e.g., "metric:app:{app_id}:active_clients") - for O(1) SCARD
 --
--- ARGUMENTS (14 args):
+-- ARGUMENTS (16 args):
 --   ARGV[1]  = Application monthly quota limit (messages)
 --   ARGV[2]  = Application per-minute rate limit
 --   ARGV[3]  = Client monthly quota limit (messages)
@@ -33,6 +34,8 @@
 --   ARGV[12] = Persist to DB flag (1 = persist to Postgres, 0 = Redis only)
 --   ARGV[13] = Client metric TTL (seconds, ~7 days)
 --   ARGV[14] = Sender client ID
+--   ARGV[15] = Application ID
+--   ARGV[16] = Active clients set TTL (seconds, 24 hours)
 --
 -- RETURN TABLE (always returns table):
 --   {status, counted, remaining_quota, error_details}
@@ -74,10 +77,14 @@ local message_stream_key = KEYS[5]
 local client_quota_key = KEYS[6]
 local client_metric_key = KEYS[7]
 local client_active_keys_set = KEYS[8]
+local app_active_clients_set = KEYS[9]
 
 local app_monthly_limit = tonumber(ARGV[1])
 local app_rate_limit = tonumber(ARGV[2])
 local client_monthly_limit = tonumber(ARGV[3])
+local sender_client_id = ARGV[14]
+local application_id = ARGV[15]
+local active_clients_ttl = tonumber(ARGV[16])
 local client_rate_limit = tonumber(ARGV[4])
 local idempotency_ttl = tonumber(ARGV[5])
 local message_id = ARGV[7]
@@ -190,6 +197,11 @@ if is_new_client_key then
 end
 redis.call('SADD', client_active_keys_set, client_metric_key)
 
+-- Track sender in per-app active clients set for O(1) count via SCARD
+-- Set contains only client_ids (not full metric keys) for space efficiency
+redis.call('SADD', app_active_clients_set, sender_client_id)
+redis.call('EXPIRE', app_active_clients_set, active_clients_ttl)
+
 -- Increment sender metrics
 redis.call('HINCRBY', client_metric_key, 'messages_sent', 1)
 redis.call('HINCRBY', client_metric_key, 'total_bytes_sent', size_bytes)
@@ -206,6 +218,7 @@ redis.call('XADD', message_stream_key, '*',
            'message_json', message_json,
            'size_bytes', tostring(size_bytes),
            'recipient_client_id', recipient_client_id,
+           'application_id', application_id,
            'persist_to_db', tostring(persist_to_db),
            'cache_ttl', '600')  -- 10 minutes for message cache
 

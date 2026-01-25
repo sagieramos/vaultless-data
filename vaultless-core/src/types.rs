@@ -108,6 +108,26 @@ impl SubscriptionTier {
     pub fn proof_required(&self) -> bool {
         matches!(self, Self::Enterprise)
     }
+
+    /// Get default monthly bandwidth quota in bytes
+    pub fn default_bandwidth_quota_bytes(&self) -> i64 {
+        match self {
+            Self::Free => 10 * 1024 * 1024 * 1024,        // 10 GB
+            Self::Starter => 100 * 1024 * 1024 * 1024,     // 100 GB
+            Self::Pro => 1 * 1024 * 1024 * 1024 * 1024,   // 1 TB
+            Self::Enterprise => i64::MAX,                  // Unlimited
+        }
+    }
+
+    /// Get default bandwidth rate limit in bytes per minute
+    pub fn default_bandwidth_rate_limit_bytes(&self) -> i64 {
+        match self {
+            Self::Free => 10 * 1024 * 1024,        // 10 MB/min
+            Self::Starter => 50 * 1024 * 1024,      // 50 MB/min
+            Self::Pro => 500 * 1024 * 1024,         // 500 MB/min
+            Self::Enterprise => 10 * 1024 * 1024 * 1024, // 10 GB/min
+        }
+    }
 }
 
 impl Default for SubscriptionTier {

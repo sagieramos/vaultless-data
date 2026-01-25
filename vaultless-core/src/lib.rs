@@ -131,6 +131,8 @@ pub use models::{
         UsageTrends, get_aggregate_by_application_id, get_realtime_usage, get_usage_trends,
         record_rate_limit_hit, RecordRateLimitHitInput, start_redis_flusher,
     },
+    // Client Usage
+    usage::client::{get_active_clients_count, get_active_client_ids},
 };
 
 // =============================================================================

@@ -5,6 +5,7 @@ import type {
   TrendsResponse,
   ExportQuery,
   ExportFormat,
+  UsageOverTime,
 } from '@/types/api';
 
 // ============================================================================
@@ -90,6 +91,14 @@ export const analyticsApi = {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
+  },
+
+  /**
+   * Get usage over time for charts
+   * GET /dev/usage/charts
+   */
+  getUsageOverTime: async (period: '7d' | '30d' | '90d' = '30d'): Promise<UsageOverTime> => {
+    return apiClient.get<UsageOverTime>(`/dev/usage/charts`, { period });
   },
 };
 

@@ -11,6 +11,9 @@ use hyper::{StatusCode, header};
 use std::sync::Arc;
 use vaultless_core::get_global_mv_etag;
 
+use crate::handlers::developer::application::handlers::{get_user_usage_summary, get_quota_warnings, get_bandwidth_quota_warnings};
+
+
 /// Middleware that adds ETag support for materialized view endpoints
 ///
 /// This middleware:
@@ -216,6 +219,7 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
         .route("/applications", get(list_applications))
         .route("/applications/usage-summary", get(get_user_usage_summary))
         .route("/applications/quota-warnings", get(get_quota_warnings))
+        .route("/applications/bandwidth-quota-warnings", get(get_bandwidth_quota_warnings))
         // Apply middleware to all routes in this group
         .layer(middleware::from_fn_with_state(
             state.clone(),

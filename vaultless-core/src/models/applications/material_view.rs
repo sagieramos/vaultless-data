@@ -10,6 +10,7 @@ struct QuotaWarningWithCount {
     pub application_id: Uuid,
     pub application_name: String,
     pub quota_usage_percentage: Decimal,
+    pub bandwidth_quota_usage_percentage: Decimal,
     pub total_count: i64,
 }
 
@@ -27,6 +28,9 @@ struct ApplicationSummaryFromView {
     pub webhook_count: i64,
     pub client_count: i64,
     pub quota_usage_percentage: Decimal,
+    pub bandwidth_quota_usage_percentage: Decimal,
+    pub current_month_revenue_cents: i64,
+    pub billable_clients_count: i32,
     pub total_count: i64,
 }
 
@@ -55,7 +59,8 @@ impl Application {
                 current_month_proofs_verified, current_month_bytes_stored,
                 current_month_bytes_sent, current_month_bytes_received,
                 current_month_rate_limit_hits, current_month_cost_cents,
-                quota_usage_percentage,
+                quota_usage_percentage, bandwidth_quota_usage_percentage,
+                current_month_revenue_cents, billable_clients_count,
                 lifetime_messages_sent, lifetime_cost_cents
             FROM mv_applications_with_usage
             WHERE application_id = $1 AND developer_id = $2
@@ -169,7 +174,8 @@ impl Application {
                 application_id, name, description, is_active,
                 created_at, updated_at, tier::text AS "tier",
                 monthly_message_quota, publishable_key_count,
-                webhook_count, client_count, quota_usage_percentage,
+                webhook_count, client_count, quota_usage_percentage, bandwidth_quota_usage_percentage,
+                current_month_revenue_cents, billable_clients_count,
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
             WHERE {}
@@ -217,6 +223,9 @@ impl Application {
                 webhook_count: r.webhook_count,
                 client_count: r.client_count,
                 quota_usage_percentage: r.quota_usage_percentage,
+                bandwidth_quota_usage_percentage: r.bandwidth_quota_usage_percentage,
+                current_month_revenue_cents: r.current_month_revenue_cents,
+                billable_clients_count: r.billable_clients_count,
             })
             .collect();
 
@@ -239,12 +248,17 @@ impl Application {
         let threshold = threshold.unwrap_or_else(|| Decimal::from(80));
         let offset = (page - 1).max(0) * page_size;
 
+        // Since there's no get_quota_warnings function in the database,
+        // we query the materialized view directly
         let rows = sqlx::query_as::<_, QuotaWarningWithCount>(
             r#"
-            SELECT 
-                application_id, application_name, quota_usage_percentage,
+            SELECT
+                application_id, name as application_name, quota_usage_percentage, bandwidth_quota_usage_percentage,
                 COUNT(*) OVER() AS total_count
-            FROM get_quota_warnings($1, $2)
+            FROM mv_applications_with_usage
+            WHERE developer_id = $1
+                AND quota_usage_percentage >= $2
+                AND is_active = true
             ORDER BY quota_usage_percentage DESC
             LIMIT $3 OFFSET $4
             "#,
@@ -265,6 +279,59 @@ impl Application {
                 application_id: r.application_id,
                 application_name: r.application_name,
                 quota_usage_percentage: r.quota_usage_percentage,
+                bandwidth_quota_usage_percentage: r.bandwidth_quota_usage_percentage,
+            })
+            .collect();
+
+        Ok(PaginatedQuotaWarnings {
+            data,
+            total_count,
+            page,
+            page_size,
+            total_pages,
+        })
+    }
+
+    pub async fn get_bandwidth_quota_warnings(
+        db: &sqlx::PgPool,
+        user_id: Uuid,
+        threshold: Option<Decimal>,
+        page: i64,
+        page_size: i64,
+    ) -> Result<PaginatedQuotaWarnings> {
+        let threshold = threshold.unwrap_or_else(|| Decimal::from(80));
+        let offset = (page - 1).max(0) * page_size;
+
+        let rows = sqlx::query_as::<_, QuotaWarningWithCount>(
+            r#"
+            SELECT
+                application_id, name as application_name, quota_usage_percentage, bandwidth_quota_usage_percentage,
+                COUNT(*) OVER() AS total_count
+            FROM mv_applications_with_usage
+            WHERE developer_id = $1
+                AND bandwidth_quota_usage_percentage >= $2
+                AND is_active = true
+            ORDER BY bandwidth_quota_usage_percentage DESC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(user_id)
+        .bind(threshold)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+
+        let total_count = rows.first().map(|r| r.total_count).unwrap_or(0);
+        let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
+
+        let data = rows
+            .into_iter()
+            .map(|r| QuotaWarning {
+                application_id: r.application_id,
+                application_name: r.application_name,
+                quota_usage_percentage: r.quota_usage_percentage,
+                bandwidth_quota_usage_percentage: r.bandwidth_quota_usage_percentage,
             })
             .collect();
 
@@ -289,7 +356,9 @@ impl Application {
             total_monthly_messages AS "total_monthly_messages!",
             total_clients AS "total_clients!",
             total_monthly_cost AS "total_monthly_cost!",
-            critical_quota_apps AS "critical_quota_apps!"
+            critical_quota_apps AS "critical_quota_apps!",
+            critical_bandwidth_quota_apps AS "critical_bandwidth_quota_apps!",
+            total_monthly_revenue_cents AS "total_monthly_revenue_cents!"
         FROM get_user_usage_summary($1)
         "#,
             user_id
@@ -364,7 +433,8 @@ mod tests {
                 application_id, name, description, is_active,
                 created_at, updated_at, tier::text AS "tier",
                 monthly_message_quota, publishable_key_count,
-                webhook_count, client_count, quota_usage_percentage,
+                webhook_count, client_count, quota_usage_percentage, bandwidth_quota_usage_percentage,
+                current_month_revenue_cents, billable_clients_count,
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
             WHERE {}

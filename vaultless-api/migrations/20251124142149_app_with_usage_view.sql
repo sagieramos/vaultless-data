@@ -125,26 +125,6 @@ CREATE INDEX idx_mv_app_usage_developer_id ON public.mv_applications_with_usage 
 CREATE INDEX idx_mv_app_usage_client_count ON public.mv_applications_with_usage (developer_id, client_count DESC);
 CREATE INDEX idx_mv_app_usage_quota_warning ON public.mv_applications_with_usage (developer_id, quota_usage_percentage DESC) WHERE quota_usage_percentage >= 80;
 
--- 5. Helper Functions (Referencing updated view)
-
-CREATE OR REPLACE FUNCTION public.get_user_usage_summary(p_developer_id UUID)
-RETURNS TABLE (
-    total_apps INTEGER,
-    total_monthly_messages BIGINT,
-    total_clients BIGINT,
-    total_monthly_cost BIGINT,
-    critical_quota_apps INTEGER
-) LANGUAGE sql STABLE AS $$
-    SELECT 
-        COUNT(*)::INTEGER,
-        COALESCE(SUM(current_month_messages_sent), 0)::BIGINT,
-        COALESCE(SUM(client_count), 0)::BIGINT,
-        COALESCE(SUM(current_month_cost_cents), 0)::BIGINT,
-        COUNT(*) FILTER (WHERE quota_usage_percentage >= 90)::INTEGER
-    FROM mv_applications_with_usage
-    WHERE developer_id = p_developer_id;
-$$;
-
 -- 6. Refresh and Permissions
 GRANT SELECT ON public.mv_applications_with_usage TO vaultless;
 REFRESH MATERIALIZED VIEW public.mv_applications_with_usage;

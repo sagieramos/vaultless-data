@@ -18,6 +18,7 @@
 pub mod aggregate;
 pub mod engine;
 pub mod flusher;
+pub mod monthly_revenue;
 pub mod queries;
 pub mod restoration;
 

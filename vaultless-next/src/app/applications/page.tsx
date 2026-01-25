@@ -15,7 +15,7 @@ import DashboardLayout from '@/components/layout/DashboardLayout';
 import { useRequireAuth } from '@/contexts/AuthContext';
 import { applicationsApi } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/date';
-import type { ApplicationListParams, PaginatedApplicationsSummary } from '@/types/api';
+import type { ApplicationListParams, PaginatedApplicationsSummary, ApplicationSummary } from '@/types/api';
 import { ApplicationsFilter, type FilterState } from '@/components/applications/ApplicationsFilter';
 import {
   Pagination,
@@ -204,30 +204,24 @@ export default function ApplicationsPage() {
       {!applicationsLoading && !applicationsError && applications.length > 0 && (
         <>
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {applications.map((app: any, index) => {
-              const isActive = (app as any).isActive ?? false;
-              const rawQuotaUsage = (app as any).quotaUsagePercentage;
-              const tierRaw = (app as any).tier ?? 'Free';
+            {applications.map((app: ApplicationSummary, index) => {
+              const isActive = app.isActive ?? false;
+                            const tierRaw = app.tier ?? 'Free';
               const tier = String(tierRaw).toLowerCase();
               const isPremiumTier = ['pro', 'enterprise'].includes(tier);
               const tierLabel = tierRaw?.charAt(0).toUpperCase() + tierRaw?.slice(1) || 'Free';
 
-              let quotaUsagePercentageNumber = 0;
-              if (typeof rawQuotaUsage === 'string') {
-                quotaUsagePercentageNumber = parseFloat(rawQuotaUsage.replace('%', '')) || 0;
-              } else if (typeof rawQuotaUsage === 'number') {
-                quotaUsagePercentageNumber = rawQuotaUsage * 100;
-              }
-              quotaUsagePercentageNumber = Math.min(100, Math.max(0, Math.round(quotaUsagePercentageNumber)));
+              let quotaUsagePercentageNumber = Math.round(app.quotaUsagePercentage * 100);
+              quotaUsagePercentageNumber = Math.min(100, Math.max(0, quotaUsagePercentageNumber));
 
               return (
                 <motion.div
-                  key={app.application_id || app.id}
+                  key={app.id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.1 }}
                 >
-                  <Card className={`p-6 hover:shadow-lg transition-shadow ${((app as any).type === 'iot' || (app as any).internal_notes?.includes('iot')) ? 'border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-purple-900/10' : ''}`}>
+                  <Card className="p-6 hover:shadow-lg transition-shadow">
                     <div className="flex items-start justify-between mb-4">
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
@@ -269,25 +263,25 @@ export default function ApplicationsPage() {
 
                     <div className="flex items-center gap-4 mb-4 text-sm text-gray-600 dark:text-gray-400">
                       <span className="flex items-center gap-1">
-                        <Key className="w-4 h-4" /> {(app as any).publishable_key_count || 0} keys
+                        <Key className="w-4 h-4" /> {app.publishableKeyCount || 0} keys
                       </span>
                       <span className="flex items-center gap-1">
-                        <Server className="w-4 h-4" /> {(app as any).webhook_count || 0} webhooks
+                        <Server className="w-4 h-4" /> {app.webhookCount || 0} webhooks
                       </span>
                     </div>
 
                     <p className="text-xs text-gray-600 dark:text-gray-400 mb-4">
-                      Created {app.created_at ? formatRelativeTime(app.created_at) : 'Unknown'}
+                      Created {app.createdAt ? formatRelativeTime(app.createdAt) : 'Unknown'}
                     </p>
 
                     <div className="flex gap-2">
-                      <Link href={`/applications/${app.application_id || app.id}`} className="flex-1">
+                      <Link href={`/applications/${app.id}`} className="flex-1">
                         <Button variant="outline" size="sm" className="w-full">
                           <Settings className="w-4 h-4 mr-2" />
                           Manage
                         </Button>
                       </Link>
-                      <Link href={`/applications/${app.application_id || app.id}/analytics`}>
+                      <Link href={`/applications/${app.id}/analytics`}>
                         <Button variant="outline" size="sm">
                           <BarChart3 className="w-4 h-4" />
                         </Button>

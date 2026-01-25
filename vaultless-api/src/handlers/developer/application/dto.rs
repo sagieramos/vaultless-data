@@ -14,6 +14,33 @@ use vaultless_core::models::{
 // Application DTOs
 // =============================================================================
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyRevenueResponse {
+    pub labels: Vec<String>,
+    pub datasets: Vec<RevenueDataset>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RevenueDataset {
+    pub label: String,
+    pub data: Vec<i64>,
+    pub background_color: String,
+    pub border_color: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyRevenueByApplicationResponse {
+    pub application_id: Uuid,
+    pub application_name: String,
+    pub month: String,
+    pub revenue_cents: i64,
+    pub messages: i64,
+    pub bytes_transferred: i64,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApplicationRequest {

@@ -525,6 +525,12 @@ pub struct ApplicationWithUsage {
     pub current_month_cost_cents: i64,
     #[schema(value_type = f64)]
     pub quota_usage_percentage: Decimal,
+    #[schema(value_type = f64)]
+    pub bandwidth_quota_usage_percentage: Decimal,
+
+    // NEW: Revenue Information
+    pub current_month_revenue_cents: i64,
+    pub billable_clients_count: i32,
 
     // Totals
     pub lifetime_messages_sent: i64,
@@ -547,6 +553,8 @@ pub struct AuthCacheEntry {
     pub rate_limit_per_minute: i32,
     pub monthly_quota: i64,
     pub retention_seconds: i64,
+    pub bandwidth_quota_bytes: i64,
+    pub bandwidth_rate_limit_bytes: i64,
 }
 
 /// Redis field names for AuthCacheEntry HASH storage
@@ -561,6 +569,8 @@ pub mod auth_cache_field {
     pub const RATE_LIMIT: &str = "rate_limit";
     pub const QUOTA: &str = "quota";
     pub const RETENTION: &str = "retention";
+    pub const BANDWIDTH_QUOTA: &str = "bandwidth_quota";
+    pub const BANDWIDTH_RATE_LIMIT: &str = "bandwidth_rate_limit";
 }
 
 impl AuthCacheEntry {
@@ -581,13 +591,15 @@ impl AuthCacheEntry {
             rate_limit_per_minute: vals.get(auth_cache_field::RATE_LIMIT)?.parse().ok()?,
             monthly_quota: vals.get(auth_cache_field::QUOTA)?.parse().ok()?,
             retention_seconds: vals.get(auth_cache_field::RETENTION)?.parse().ok()?,
+            bandwidth_quota_bytes: vals.get(auth_cache_field::BANDWIDTH_QUOTA)?.parse().ok()?,
+            bandwidth_rate_limit_bytes: vals.get(auth_cache_field::BANDWIDTH_RATE_LIMIT)?.parse().ok()?,
         })
     }
 
     /// Convert to Redis HASH compatible values for hset_multiple
     /// Returns Vec of String for redis pipe
     pub fn to_redis_args(&self) -> Vec<String> {
-        let mut args = Vec::with_capacity(20);
+        let mut args = Vec::with_capacity(24);
         args.push(auth_cache_field::APP_ID.to_string());
         args.push(self.app_id.to_string());
         args.push(auth_cache_field::USER_ID.to_string());
@@ -608,6 +620,10 @@ impl AuthCacheEntry {
         args.push(self.monthly_quota.to_string());
         args.push(auth_cache_field::RETENTION.to_string());
         args.push(self.retention_seconds.to_string());
+        args.push(auth_cache_field::BANDWIDTH_QUOTA.to_string());
+        args.push(self.bandwidth_quota_bytes.to_string());
+        args.push(auth_cache_field::BANDWIDTH_RATE_LIMIT.to_string());
+        args.push(self.bandwidth_rate_limit_bytes.to_string());
         args
     }
 
@@ -624,6 +640,8 @@ impl AuthCacheEntry {
             rate_limit_per_minute: view.sub_rate_limit_per_minute,
             monthly_quota: view.sub_monthly_message_quota,
             retention_seconds: view.sub_message_retention_seconds,
+            bandwidth_quota_bytes: view.sub_tier.default_bandwidth_quota_bytes() as i64,
+            bandwidth_rate_limit_bytes: view.sub_tier.default_bandwidth_rate_limit_bytes() as i64,
         }
     }
 
@@ -688,6 +706,8 @@ pub struct QuotaWarning {
     pub application_name: String,
     #[schema(value_type = f64)]
     pub quota_usage_percentage: Decimal,
+    #[schema(value_type = f64)]
+    pub bandwidth_quota_usage_percentage: Decimal,
     // Note: detailed fields like remaining_quota are now calculated
     // in the frontend or specialized detailed views to keep this summary fast.
 }
@@ -705,6 +725,10 @@ pub struct UserUsageSummary {
     pub total_monthly_cost: i64,
     /// Number of applications that have exceeded 90% of their shared quota
     pub critical_quota_apps: i32,
+    /// Number of applications that have exceeded 90% of their bandwidth quota
+    pub critical_bandwidth_quota_apps: i32,
+    /// NEW: Total revenue across all applications for the current month
+    pub total_monthly_revenue_cents: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
@@ -735,6 +759,12 @@ pub struct ApplicationSummary {
     // Using Decimal to maintain precision for billing calculations
     #[schema(value_type = f64)]
     pub quota_usage_percentage: Decimal,
+    #[schema(value_type = f64)]
+    pub bandwidth_quota_usage_percentage: Decimal,
+
+    // NEW: Revenue Information
+    pub current_month_revenue_cents: i64,
+    pub billable_clients_count: i32,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]

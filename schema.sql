@@ -606,6 +606,27 @@ $$;
 ALTER FUNCTION public.fetch_auth_config_by_secret_hash(sk_hash_hex text) OWNER TO vaultless;
 
 --
+-- Name: get_bandwidth_quota_warnings(uuid, numeric); Type: FUNCTION; Schema: public; Owner: vaultless
+--
+
+CREATE FUNCTION public.get_bandwidth_quota_warnings(p_user_id uuid, p_threshold numeric DEFAULT 80) RETURNS TABLE(application_id uuid, application_name character varying, bandwidth_quota_usage_percentage numeric)
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT 
+        application_id,
+        name AS application_name,
+        bandwidth_quota_usage_percentage
+    FROM mv_applications_with_usage
+    WHERE developer_id = p_user_id
+        AND bandwidth_quota_usage_percentage >= p_threshold
+        AND is_active = true
+    ORDER BY bandwidth_quota_usage_percentage DESC;
+$$;
+
+
+ALTER FUNCTION public.get_bandwidth_quota_warnings(p_user_id uuid, p_threshold numeric) OWNER TO vaultless;
+
+--
 -- Name: get_encrypted_group_key_for_client(uuid, uuid); Type: FUNCTION; Schema: public; Owner: vaultless
 --
 
@@ -697,6 +718,51 @@ $$;
 
 
 ALTER FUNCTION public.get_group_member_addresses(p_group_id uuid) OWNER TO vaultless;
+
+--
+-- Name: get_monthly_revenue_chart_data(uuid, uuid, integer); Type: FUNCTION; Schema: public; Owner: vaultless
+--
+
+CREATE FUNCTION public.get_monthly_revenue_chart_data(p_application_id uuid DEFAULT NULL::uuid, p_developer_id uuid DEFAULT NULL::uuid, p_months_back integer DEFAULT 12) RETURNS TABLE(month_label text, revenue_cents bigint, revenue_usd numeric, messages bigint, bytes_transferred bigint)
+    LANGUAGE sql STABLE
+    AS $_$
+    WITH date_range AS (
+        SELECT generate_series(
+            date_trunc('month', now()) - ((p_months_back - 1) || ' months')::interval,
+            date_trunc('month', now()),
+            '1 month'::interval
+        ) AS month
+    ),
+    revenue_data AS (
+        SELECT 
+            time_bucket('1 month', period_start) AS month,
+            SUM(estimated_cost_cents) AS revenue_cents,
+            SUM(messages_sent + messages_received) AS messages,
+            SUM(total_bytes_sent + total_bytes_received) AS bytes_transferred
+        FROM usage_metrics
+        WHERE 
+            ($1 IS NULL OR application_id = $1)  -- application filter
+            AND ($2 IS NULL OR EXISTS (
+                SELECT 1 FROM applications a 
+                WHERE a.id = usage_metrics.application_id 
+                AND a.developer_id = $2
+            ))  -- developer filter
+            AND period_start >= date_trunc('month', now()) - (($3 - 1) || ' months')::interval
+        GROUP BY time_bucket('1 month', period_start)
+    )
+    SELECT 
+        TO_CHAR(dr.month, 'YYYY-MM') AS month_label,
+        COALESCE(rd.revenue_cents, 0) AS revenue_cents,
+        (COALESCE(rd.revenue_cents, 0) / 100.0)::DECIMAL(10,2) AS revenue_usd,
+        COALESCE(rd.messages, 0) AS messages,
+        COALESCE(rd.bytes_transferred, 0) AS bytes_transferred
+    FROM date_range dr
+    LEFT JOIN revenue_data rd ON dr.month = rd.month
+    ORDER BY dr.month;
+$_$;
+
+
+ALTER FUNCTION public.get_monthly_revenue_chart_data(p_application_id uuid, p_developer_id uuid, p_months_back integer) OWNER TO vaultless;
 
 --
 -- Name: get_or_create_client(character varying, text, uuid, jsonb); Type: FUNCTION; Schema: public; Owner: vaultless
@@ -834,15 +900,17 @@ ALTER FUNCTION public.get_unread_notification_count(p_user_id uuid) OWNER TO vau
 -- Name: get_user_usage_summary(uuid); Type: FUNCTION; Schema: public; Owner: vaultless
 --
 
-CREATE FUNCTION public.get_user_usage_summary(p_developer_id uuid) RETURNS TABLE(total_apps integer, total_monthly_messages bigint, total_clients bigint, total_monthly_cost bigint, critical_quota_apps integer)
+CREATE FUNCTION public.get_user_usage_summary(p_developer_id uuid) RETURNS TABLE(total_apps integer, total_monthly_messages bigint, total_clients bigint, total_monthly_cost bigint, critical_quota_apps integer, critical_bandwidth_quota_apps integer, total_monthly_revenue_cents bigint)
     LANGUAGE sql STABLE
     AS $$
-    SELECT 
+    SELECT
         COUNT(*)::INTEGER,
         COALESCE(SUM(current_month_messages_sent), 0)::BIGINT,
         COALESCE(SUM(client_count), 0)::BIGINT,
         COALESCE(SUM(current_month_cost_cents), 0)::BIGINT,
-        COUNT(*) FILTER (WHERE quota_usage_percentage >= 90)::INTEGER
+        COUNT(*) FILTER (WHERE quota_usage_percentage >= 90)::INTEGER,
+        COUNT(*) FILTER (WHERE bandwidth_quota_usage_percentage >= 90)::INTEGER,
+        COALESCE(SUM(current_month_revenue_cents), 0)::BIGINT
     FROM mv_applications_with_usage
     WHERE developer_id = p_developer_id;
 $$;
@@ -1350,6 +1418,70 @@ CREATE VIEW _timescaledb_internal._direct_view_6 AS
 ALTER VIEW _timescaledb_internal._direct_view_6 OWNER TO vaultless;
 
 --
+-- Name: _direct_view_7; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._direct_view_7 AS
+ SELECT application_id,
+    public.time_bucket('1 mon'::interval, period_start) AS month,
+    sum(estimated_cost_cents) AS total_revenue_cents,
+    sum((messages_sent + messages_received)) AS total_messages,
+    sum((total_bytes_sent + total_bytes_received)) AS total_bytes,
+    sum(proofs_verified) AS total_proofs,
+    count(*) AS billing_records_count,
+    avg(estimated_cost_cents) AS avg_cost_per_record,
+    min(estimated_cost_cents) AS min_cost_record,
+    max(estimated_cost_cents) AS max_cost_record
+   FROM public.usage_metrics
+  GROUP BY application_id, (public.time_bucket('1 mon'::interval, period_start));
+
+
+ALTER VIEW _timescaledb_internal._direct_view_7 OWNER TO vaultless;
+
+--
+-- Name: applications; Type: TABLE; Schema: public; Owner: vaultless
+--
+
+CREATE TABLE public.applications (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    developer_id uuid NOT NULL,
+    subscription_id uuid,
+    name character varying(255) NOT NULL,
+    description text,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    max_ttl_seconds integer DEFAULT 604800 NOT NULL,
+    is_key_rotation_forced boolean DEFAULT false NOT NULL,
+    deletion_requested_at timestamp with time zone,
+    internal_notes text,
+    app_meta jsonb DEFAULT '{"IntegrityConfig": {"ios": {"apple_team_id": "ABCD123456", "min_version_code": 100, "allowed_bundle_ids": ["com.example.app"], "reject_untrusted_device": true, "allowed_certificate_hashes": []}, "iot": {"require_cn_match": true, "reject_future_certificates": true, "allowed_certificate_authorities": ["Example Root CA"], "require_valid_certificate_expiry": true}, "android": {"google_api_key": null, "min_version_code": 100, "google_cloud_project": "project-123", "allowed_package_names": ["com.example.app"], "max_token_age_seconds": 60, "reject_untrusted_device": true, "allowed_certificate_sha256": [], "reject_unrecognized_version": true}, "browser": {"captcha_provider": "turnstile", "captcha_site_key": null, "cors_strict_mode": true, "authorized_origins": ["https://app.example.com"], "captcha_secret_key": null, "max_clients_per_ip": 5, "alert_on_usage_spike": true, "track_origin_changes": true, "usage_baseline_hours": 24, "bind_client_to_origin": true, "require_origin_header": true, "usage_spike_threshold": 2.0, "require_referer_header": true, "max_requests_per_ip_per_hour": 1000, "max_origin_changes_per_client": 3, "require_captcha_on_registration": true, "max_registrations_per_ip_per_hour": 10}, "rate_limits": {"max_attestations_per_user_per_hour": 100, "max_failed_attempts_before_lockout": 5}, "allow_unauthenticated": false}, "PlatformFingerPrint": {"ios": "00000000-0000-0000-0000-000000000000", "iot": "00000000-0000-0000-0000-000000000000", "android": "00000000-0000-0000-0000-000000000000", "browser": "00000000-0000-0000-0000-000000000000"}}'::jsonb NOT NULL,
+    CONSTRAINT valid_name CHECK ((char_length((name)::text) > 0))
+);
+
+
+ALTER TABLE public.applications OWNER TO vaultless;
+
+--
+-- Name: _direct_view_8; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._direct_view_8 AS
+ SELECT a.developer_id,
+    public.time_bucket('1 mon'::interval, um.period_start) AS month,
+    sum(um.estimated_cost_cents) AS total_revenue_cents,
+    count(DISTINCT um.application_id) AS applications_count,
+    count(DISTINCT um.api_key_id) AS api_keys_count,
+    sum((um.messages_sent + um.messages_received)) AS total_messages,
+    sum((um.total_bytes_sent + um.total_bytes_received)) AS total_bytes
+   FROM (public.usage_metrics um
+     JOIN public.applications a ON ((um.application_id = a.id)))
+  GROUP BY a.developer_id, (public.time_bucket('1 mon'::interval, um.period_start));
+
+
+ALTER VIEW _timescaledb_internal._direct_view_8 OWNER TO vaultless;
+
+--
 -- Name: _materialized_hypertable_3; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
 --
 
@@ -1406,6 +1538,43 @@ CREATE TABLE _timescaledb_internal._materialized_hypertable_6 (
 
 
 ALTER TABLE _timescaledb_internal._materialized_hypertable_6 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_7; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_7 (
+    application_id uuid,
+    month timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    billing_records_count bigint,
+    avg_cost_per_record numeric,
+    min_cost_record bigint,
+    max_cost_record bigint
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_7 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_8; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_8 (
+    developer_id uuid,
+    month timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    applications_count bigint,
+    api_keys_count bigint,
+    total_messages numeric,
+    total_bytes numeric
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_8 OWNER TO vaultless;
 
 --
 -- Name: _partial_view_3; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
@@ -1468,6 +1637,46 @@ CREATE VIEW _timescaledb_internal._partial_view_6 AS
 
 
 ALTER VIEW _timescaledb_internal._partial_view_6 OWNER TO vaultless;
+
+--
+-- Name: _partial_view_7; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._partial_view_7 AS
+ SELECT application_id,
+    public.time_bucket('1 mon'::interval, period_start) AS month,
+    sum(estimated_cost_cents) AS total_revenue_cents,
+    sum((messages_sent + messages_received)) AS total_messages,
+    sum((total_bytes_sent + total_bytes_received)) AS total_bytes,
+    sum(proofs_verified) AS total_proofs,
+    count(*) AS billing_records_count,
+    avg(estimated_cost_cents) AS avg_cost_per_record,
+    min(estimated_cost_cents) AS min_cost_record,
+    max(estimated_cost_cents) AS max_cost_record
+   FROM public.usage_metrics
+  GROUP BY application_id, (public.time_bucket('1 mon'::interval, period_start));
+
+
+ALTER VIEW _timescaledb_internal._partial_view_7 OWNER TO vaultless;
+
+--
+-- Name: _partial_view_8; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._partial_view_8 AS
+ SELECT a.developer_id,
+    public.time_bucket('1 mon'::interval, um.period_start) AS month,
+    sum(um.estimated_cost_cents) AS total_revenue_cents,
+    count(DISTINCT um.application_id) AS applications_count,
+    count(DISTINCT um.api_key_id) AS api_keys_count,
+    sum((um.messages_sent + um.messages_received)) AS total_messages,
+    sum((um.total_bytes_sent + um.total_bytes_received)) AS total_bytes
+   FROM (public.usage_metrics um
+     JOIN public.applications a ON ((um.application_id = a.id)))
+  GROUP BY a.developer_id, (public.time_bucket('1 mon'::interval, um.period_start));
+
+
+ALTER VIEW _timescaledb_internal._partial_view_8 OWNER TO vaultless;
 
 --
 -- Name: _sqlx_migrations; Type: TABLE; Schema: public; Owner: vaultless
@@ -1621,30 +1830,6 @@ CREATE TABLE public.application_pricing_plans (
 ALTER TABLE public.application_pricing_plans OWNER TO vaultless;
 
 --
--- Name: applications; Type: TABLE; Schema: public; Owner: vaultless
---
-
-CREATE TABLE public.applications (
-    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
-    developer_id uuid NOT NULL,
-    subscription_id uuid,
-    name character varying(255) NOT NULL,
-    description text,
-    is_active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    max_ttl_seconds integer DEFAULT 604800 NOT NULL,
-    is_key_rotation_forced boolean DEFAULT false NOT NULL,
-    deletion_requested_at timestamp with time zone,
-    internal_notes text,
-    app_meta jsonb DEFAULT '{"IntegrityConfig": {"ios": {"apple_team_id": "ABCD123456", "min_version_code": 100, "allowed_bundle_ids": ["com.example.app"], "reject_untrusted_device": true, "allowed_certificate_hashes": []}, "iot": {"require_cn_match": true, "reject_future_certificates": true, "allowed_certificate_authorities": ["Example Root CA"], "require_valid_certificate_expiry": true}, "android": {"google_api_key": null, "min_version_code": 100, "google_cloud_project": "project-123", "allowed_package_names": ["com.example.app"], "max_token_age_seconds": 60, "reject_untrusted_device": true, "allowed_certificate_sha256": [], "reject_unrecognized_version": true}, "browser": {"captcha_provider": "turnstile", "captcha_site_key": null, "cors_strict_mode": true, "authorized_origins": ["https://app.example.com"], "captcha_secret_key": null, "max_clients_per_ip": 5, "alert_on_usage_spike": true, "track_origin_changes": true, "usage_baseline_hours": 24, "bind_client_to_origin": true, "require_origin_header": true, "usage_spike_threshold": 2.0, "require_referer_header": true, "max_requests_per_ip_per_hour": 1000, "max_origin_changes_per_client": 3, "require_captcha_on_registration": true, "max_registrations_per_ip_per_hour": 10}, "rate_limits": {"max_attestations_per_user_per_hour": 100, "max_failed_attempts_before_lockout": 5}, "allow_unauthenticated": false}, "PlatformFingerPrint": {"ios": "00000000-0000-0000-0000-000000000000", "iot": "00000000-0000-0000-0000-000000000000", "android": "00000000-0000-0000-0000-000000000000", "browser": "00000000-0000-0000-0000-000000000000"}}'::jsonb NOT NULL,
-    CONSTRAINT valid_name CHECK ((char_length((name)::text) > 0))
-);
-
-
-ALTER TABLE public.applications OWNER TO vaultless;
-
---
 -- Name: billing_periods; Type: TABLE; Schema: public; Owner: vaultless
 --
 
@@ -1763,11 +1948,26 @@ CREATE TABLE public.developer_subscriptions (
     current_period_start timestamp with time zone DEFAULT now() NOT NULL,
     current_period_end timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    monthly_bandwidth_quota bigint DEFAULT 1073741824 NOT NULL
 );
 
 
 ALTER TABLE public.developer_subscriptions OWNER TO vaultless;
+
+--
+-- Name: TABLE developer_subscriptions; Type: COMMENT; Schema: public; Owner: vaultless
+--
+
+COMMENT ON TABLE public.developer_subscriptions IS 'Developer subscription plans with message and bandwidth quotas';
+
+
+--
+-- Name: COLUMN developer_subscriptions.monthly_bandwidth_quota; Type: COMMENT; Schema: public; Owner: vaultless
+--
+
+COMMENT ON COLUMN public.developer_subscriptions.monthly_bandwidth_quota IS 'Monthly bandwidth quota in bytes. Used to limit data transfer for the subscription tier.';
+
 
 --
 -- Name: file_chunks; Type: TABLE; Schema: public; Owner: vaultless
@@ -2191,6 +2391,43 @@ COMMENT ON CONSTRAINT chk_group_message_consistency ON public.messages IS 'Ensur
 
 
 --
+-- Name: monthly_revenue_by_application; Type: VIEW; Schema: public; Owner: vaultless
+--
+
+CREATE VIEW public.monthly_revenue_by_application AS
+ SELECT application_id,
+    month,
+    total_revenue_cents,
+    total_messages,
+    total_bytes,
+    total_proofs,
+    billing_records_count,
+    avg_cost_per_record,
+    min_cost_record,
+    max_cost_record
+   FROM _timescaledb_internal._materialized_hypertable_7;
+
+
+ALTER VIEW public.monthly_revenue_by_application OWNER TO vaultless;
+
+--
+-- Name: monthly_revenue_by_developer; Type: VIEW; Schema: public; Owner: vaultless
+--
+
+CREATE VIEW public.monthly_revenue_by_developer AS
+ SELECT developer_id,
+    month,
+    total_revenue_cents,
+    applications_count,
+    api_keys_count,
+    total_messages,
+    total_bytes
+   FROM _timescaledb_internal._materialized_hypertable_8 _materialized_hypertable_8;
+
+
+ALTER VIEW public.monthly_revenue_by_developer OWNER TO vaultless;
+
+--
 -- Name: webhooks; Type: TABLE; Schema: public; Owner: vaultless
 --
 
@@ -2224,6 +2461,7 @@ CREATE MATERIALIZED VIEW public.mv_applications_with_usage AS
     s.id AS subscription_id,
     s.tier,
     s.monthly_message_quota,
+    s.monthly_bandwidth_quota,
     s.rate_limit_per_minute,
     s.message_retention_seconds,
     sk.id AS secret_key_id,
@@ -2241,13 +2479,19 @@ CREATE MATERIALIZED VIEW public.mv_applications_with_usage AS
     COALESCE(current_month.total_bytes_received, (0)::bigint) AS current_month_bytes_received,
     COALESCE(current_month.total_rate_limit_hits, (0)::bigint) AS current_month_rate_limit_hits,
     COALESCE(current_month.total_estimated_cost_cents, (0)::bigint) AS current_month_cost_cents,
+    (COALESCE(revenue_data.current_month_revenue_cents, (0)::numeric))::bigint AS current_month_revenue_cents,
+    (COALESCE(revenue_data.billable_clients_count, (0)::bigint))::integer AS billable_clients_count,
         CASE
             WHEN ((s.monthly_message_quota IS NOT NULL) AND (s.monthly_message_quota > 0)) THEN ((((COALESCE(current_month.total_messages_sent, (0)::bigint))::double precision / (s.monthly_message_quota)::double precision) * (100)::double precision))::numeric(5,2)
             ELSE (0)::numeric
         END AS quota_usage_percentage,
+        CASE
+            WHEN ((s.monthly_bandwidth_quota IS NOT NULL) AND (s.monthly_bandwidth_quota > 0)) THEN ((((COALESCE((current_month.total_bytes_sent + current_month.total_bytes_received), (0)::bigint))::double precision / (s.monthly_bandwidth_quota)::double precision) * (100)::double precision))::numeric(5,2)
+            ELSE (0)::numeric
+        END AS bandwidth_quota_usage_percentage,
     (COALESCE(lifetime.total_messages_sent, (0)::numeric))::bigint AS lifetime_messages_sent,
     (COALESCE(lifetime.total_estimated_cost_cents, (0)::numeric))::bigint AS lifetime_cost_cents
-   FROM (((((((public.applications a
+   FROM ((((((((public.applications a
      LEFT JOIN public.developer_subscriptions s ON ((a.subscription_id = s.id)))
      LEFT JOIN public.api_keys sk ON (((sk.application_id = a.id) AND (sk.key_type = 'secret'::public.key_type) AND (sk.is_active = true))))
      LEFT JOIN LATERAL ( SELECT count(pk.id) AS count,
@@ -2267,6 +2511,11 @@ CREATE MATERIALIZED VIEW public.mv_applications_with_usage AS
             (sum(umd.total_estimated_cost_cents))::bigint AS total_estimated_cost_cents
            FROM _timescaledb_internal._materialized_hypertable_3 umd
           WHERE ((umd.application_id = a.id) AND (umd.day >= date_trunc('month'::text, now())))) current_month ON (true))
+     LEFT JOIN LATERAL ( SELECT sum((COALESCE((cbu.revenue_snapshot ->> 'total_cost_cents'::text), '0'::text))::bigint) AS current_month_revenue_cents,
+            count(DISTINCT cbu.client_id) AS billable_clients_count
+           FROM (public.client_billing_usage cbu
+             JOIN public.billing_periods bp ON ((cbu.billing_period_id = bp.id)))
+          WHERE ((cbu.application_id = a.id) AND (bp.period_start >= date_trunc('month'::text, now())) AND (bp.period_end <= now()) AND (bp.status <> 'closed'::text))) revenue_data ON (true))
      LEFT JOIN LATERAL ( SELECT sum(umd.total_messages_sent) AS total_messages_sent,
             sum(umd.total_estimated_cost_cents) AS total_estimated_cost_cents
            FROM _timescaledb_internal._materialized_hypertable_3 umd
@@ -3081,6 +3330,48 @@ CREATE INDEX _materialized_hypertable_6_period_start_idx ON _timescaledb_interna
 
 
 --
+-- Name: _materialized_hypertable_7_application_id_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_7_application_id_month_idx ON _timescaledb_internal._materialized_hypertable_7 USING btree (application_id, month DESC);
+
+
+--
+-- Name: _materialized_hypertable_7_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_7_month_idx ON _timescaledb_internal._materialized_hypertable_7 USING btree (month DESC);
+
+
+--
+-- Name: _materialized_hypertable_8_developer_id_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_8_developer_id_month_idx ON _timescaledb_internal._materialized_hypertable_8 USING btree (developer_id, month DESC);
+
+
+--
+-- Name: _materialized_hypertable_8_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_8_month_idx ON _timescaledb_internal._materialized_hypertable_8 USING btree (month DESC);
+
+
+--
+-- Name: idx_monthly_revenue_developer_month; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_monthly_revenue_developer_month ON _timescaledb_internal._materialized_hypertable_8 USING btree (developer_id, month);
+
+
+--
+-- Name: idx_monthly_revenue_month_application; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_monthly_revenue_month_application ON _timescaledb_internal._materialized_hypertable_7 USING btree (month, application_id);
+
+
+--
 -- Name: api_keys_key_hash_key; Type: INDEX; Schema: public; Owner: vaultless
 --
 
@@ -3564,6 +3855,13 @@ CREATE UNIQUE INDEX idx_mv_app_usage_app_id ON public.mv_applications_with_usage
 
 
 --
+-- Name: idx_mv_app_usage_bandwidth_warning; Type: INDEX; Schema: public; Owner: vaultless
+--
+
+CREATE INDEX idx_mv_app_usage_bandwidth_warning ON public.mv_applications_with_usage USING btree (developer_id, bandwidth_quota_usage_percentage DESC) WHERE (bandwidth_quota_usage_percentage >= (80)::numeric);
+
+
+--
 -- Name: idx_mv_app_usage_client_count; Type: INDEX; Schema: public; Owner: vaultless
 --
 
@@ -3582,6 +3880,13 @@ CREATE INDEX idx_mv_app_usage_developer_id ON public.mv_applications_with_usage 
 --
 
 CREATE INDEX idx_mv_app_usage_quota_warning ON public.mv_applications_with_usage USING btree (developer_id, quota_usage_percentage DESC) WHERE (quota_usage_percentage >= (80)::numeric);
+
+
+--
+-- Name: idx_mv_app_usage_revenue_warning; Type: INDEX; Schema: public; Owner: vaultless
+--
+
+CREATE INDEX idx_mv_app_usage_revenue_warning ON public.mv_applications_with_usage USING btree (developer_id, current_month_revenue_cents DESC) WHERE (current_month_revenue_cents > 0);
 
 
 --
@@ -3933,6 +4238,20 @@ CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materia
 --
 
 CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_6 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
+
+
+--
+-- Name: _materialized_hypertable_7 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_7 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
+
+
+--
+-- Name: _materialized_hypertable_8 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_8 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
 
 
 --

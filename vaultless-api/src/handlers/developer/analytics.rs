@@ -20,7 +20,12 @@ use hyper::header;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
-use vaultless_core::{models::applications::dto::*, types::SubscriptionTier};
+//vaultless-core/src/models/usage/application
+use vaultless_core::{
+    models::applications::dto::*,
+    models::usage::application::monthly_revenue::RevenueChartData,
+    types::SubscriptionTier
+};
 
 // ============================================================================
 // REQUEST/RESPONSE DTOs
@@ -428,4 +433,121 @@ fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOp
         }],
         SubscriptionTier::Enterprise => vec![],
     }
+}
+
+// ============================================================================
+// MONTHLY REVENUE ENDPOINTS
+// ============================================================================
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyRevenueQuery {
+    #[serde(default = "default_months_back")]
+    pub months_back: i32,
+}
+
+fn default_months_back() -> i32 {
+    12
+}
+
+/// Get monthly revenue data for a specific application
+#[utoipa::path(
+    get,
+    path = "/dev/applications/{application_id}/monthly-revenue",
+    params(
+        ("application_id" = Uuid, Path, description = "Application ID"),
+        MonthlyRevenueQuery
+    ),
+    responses(
+        (status = 200, description = "Monthly revenue data retrieved successfully", body = RevenueChartData),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Application not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "analytics"
+)]
+pub async fn get_application_monthly_revenue(
+    Path(app_id): Path<Uuid>,
+    Query(query): Query<MonthlyRevenueQuery>,
+    SessionDataUserExt(user): SessionDataUserExt,
+    State(state): State<AppState>,
+) -> Result<Json<RevenueChartData>, ApiError> {
+    // First verify the application belongs to the user for security
+    let _app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
+
+    let chart_data = vaultless_core::models::usage::application::MonthlyRevenueData::get_chart_data_for_developer_application(
+        state.db.as_ref(),
+        user.user_id,
+        app_id,
+        query.months_back,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(chart_data))
+}
+
+/// Get monthly revenue data for all applications belonging to the developer
+#[utoipa::path(
+    get,
+    path = "/dev/analytics/monthly-revenue",
+    params(
+        MonthlyRevenueQuery
+    ),
+    responses(
+        (status = 200, description = "Monthly revenue data retrieved successfully", body = RevenueChartData),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "analytics"
+)]
+pub async fn get_developer_monthly_revenue(
+    Query(query): Query<MonthlyRevenueQuery>,
+    SessionDataUserExt(user): SessionDataUserExt,
+    State(state): State<AppState>,
+) -> Result<Json<RevenueChartData>, ApiError> {
+    let chart_data = vaultless_core::models::usage::application::MonthlyRevenueData::get_chart_data_for_developer(
+        state.db.as_ref(),
+        user.user_id,
+        query.months_back,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(chart_data))
+}
+
+/// Get monthly revenue breakdown by application for a specific month
+#[utoipa::path(
+    get,
+    path = "/dev/analytics/monthly-breakdown",
+    params(
+        ("month" = DateTime<Utc>, Query, description = "Month to query (defaults to current month)")
+    ),
+    responses(
+        (status = 200, description = "Monthly breakdown retrieved successfully", body = Vec<(String, i64)>),
+        (status = 401, description = "Unauthorized"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("bearer_auth" = [])),
+    tag = "analytics"
+)]
+pub async fn get_monthly_revenue_breakdown(
+    Query(month): Query<Option<DateTime<Utc>>>,
+    SessionDataUserExt(user): SessionDataUserExt,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<(String, i64)>>, ApiError> {
+    let month = month.unwrap_or_else(|| Utc::now());
+
+    let breakdown = vaultless_core::models::usage::application::MonthlyRevenueData::get_monthly_totals_by_application(
+        state.db.as_ref(),
+        user.user_id,
+        month,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(breakdown))
 }
