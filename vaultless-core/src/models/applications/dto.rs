@@ -767,7 +767,7 @@ pub struct ApplicationSummary {
     pub billable_clients_count: i32,
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PaginatedQuotaWarnings {
     pub data: Vec<QuotaWarning>,
@@ -776,6 +776,15 @@ pub struct PaginatedQuotaWarnings {
     pub page_size: i64,
     pub total_pages: i64,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaType {
+    Messages,
+    Bandwidth,
+    Any,
+}
+
 
 pub fn secret_key_resolution_cache_key(key_hash: &str) -> String {
     cache_key!("appconfig", "sk", key_hash)

@@ -14,8 +14,6 @@ use utoipa::openapi::security::SecurityScheme;
         crate::handlers::developer::application::charts::get_chart_data,
         crate::handlers::developer::application::handlers::get_user_usage_summary,
         crate::handlers::developer::application::handlers::get_quota_warnings,
-        crate::handlers::developer::application::handlers::get_bandwidth_quota_warnings,
-        crate::handlers::developer::application::handlers::get_monthly_revenue_chart,
         crate::handlers::developer::application::handlers::get_application_with_keys,
         // Key rotation handlers
         crate::handlers::developer::application::keys::rotate_secret_key,
@@ -27,6 +25,9 @@ use utoipa::openapi::security::SecurityScheme;
         crate::handlers::developer::analytics::get_application_cost_breakdown,
         crate::handlers::developer::analytics::export_application_usage,
         crate::handlers::developer::analytics::get_application_trends,
+        crate::handlers::developer::analytics::get_application_monthly_revenue,
+        crate::handlers::developer::analytics::get_developer_monthly_revenue,
+        crate::handlers::developer::analytics::get_monthly_revenue_breakdown,
         // User auth handlers
         crate::handlers::developer::user_auth::register,
         crate::handlers::developer::user_auth::login,
@@ -119,6 +120,12 @@ use utoipa::openapi::security::SecurityScheme;
             crate::handlers::developer::analytics::TrendsResponse,
             crate::handlers::developer::analytics::ExportFormat,
             crate::handlers::developer::analytics::ExportQuery,
+            vaultless_core::models::usage::application::monthly_revenue::RevenueChartData,
+            vaultless_core::models::usage::application::monthly_revenue::MonthlyApplicationRevenue,
+            vaultless_core::models::usage::application::monthly_revenue::PaginatedMonthlyApplicationRevenue,
+            crate::handlers::developer::analytics::MonthlyRevenueQuery,
+            crate::handlers::developer::analytics::MonthlyBreakdownQuery,
+            vaultless_core::models::usage::application::monthly_revenue::MonthlyRevenueDataSchema,
         )
     ),
     modifiers(&SecurityAddon),

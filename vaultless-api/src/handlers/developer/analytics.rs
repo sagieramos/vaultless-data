@@ -23,8 +23,8 @@ use uuid::Uuid;
 //vaultless-core/src/models/usage/application
 use vaultless_core::{
     models::applications::dto::*,
-    models::usage::application::monthly_revenue::RevenueChartData,
-    types::SubscriptionTier
+    models::usage::application::monthly_revenue::{MonthlyRevenueData, MonthlyRevenueDataSchema, RevenueChartData, MonthlyApplicationRevenue, PaginatedMonthlyApplicationRevenue},
+    types::SubscriptionTier,
 };
 
 // ============================================================================
@@ -439,7 +439,7 @@ fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOp
 // MONTHLY REVENUE ENDPOINTS
 // ============================================================================
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
 pub struct MonthlyRevenueQuery {
     #[serde(default = "default_months_back")]
@@ -449,6 +449,19 @@ pub struct MonthlyRevenueQuery {
 fn default_months_back() -> i32 {
     12
 }
+
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyBreakdownQuery {
+    pub month: Option<DateTime<Utc>>,
+    #[serde(default = "default_page")]
+    pub page: i64,
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+}
+
+fn default_page() -> i64 { 1 }
+fn default_page_size() -> i64 { 20 }
 
 /// Get monthly revenue data for a specific application
 #[utoipa::path(
@@ -473,17 +486,14 @@ pub async fn get_application_monthly_revenue(
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<RevenueChartData>, ApiError> {
-    // First verify the application belongs to the user for security
-    let _app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
-
-    let chart_data = vaultless_core::models::usage::application::MonthlyRevenueData::get_chart_data_for_developer_application(
+    let chart_data = MonthlyRevenueData::get_chart_data_for_developer_application(
         state.db.as_ref(),
         user.user_id,
         app_id,
         query.months_back,
     )
     .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    .map_err(ApiError::from)?;
 
     Ok(Json(chart_data))
 }
@@ -508,13 +518,13 @@ pub async fn get_developer_monthly_revenue(
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<RevenueChartData>, ApiError> {
-    let chart_data = vaultless_core::models::usage::application::MonthlyRevenueData::get_chart_data_for_developer(
+    let chart_data = MonthlyRevenueData::get_chart_data_for_developer(
         state.db.as_ref(),
         user.user_id,
         query.months_back,
     )
     .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    .map_err(ApiError::from)?;
 
     Ok(Json(chart_data))
 }
@@ -524,10 +534,10 @@ pub async fn get_developer_monthly_revenue(
     get,
     path = "/dev/analytics/monthly-breakdown",
     params(
-        ("month" = DateTime<Utc>, Query, description = "Month to query (defaults to current month)")
+        MonthlyBreakdownQuery
     ),
     responses(
-        (status = 200, description = "Monthly breakdown retrieved successfully", body = Vec<(String, i64)>),
+        (status = 200, description = "Monthly breakdown retrieved successfully", body = PaginatedMonthlyApplicationRevenue),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
@@ -535,19 +545,21 @@ pub async fn get_developer_monthly_revenue(
     tag = "analytics"
 )]
 pub async fn get_monthly_revenue_breakdown(
-    Query(month): Query<Option<DateTime<Utc>>>,
+    Query(query): Query<MonthlyBreakdownQuery>,
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
-) -> Result<Json<Vec<(String, i64)>>, ApiError> {
-    let month = month.unwrap_or_else(|| Utc::now());
+) -> Result<Json<PaginatedMonthlyApplicationRevenue>, ApiError> {
+    let month = query.month.unwrap_or_else(|| Utc::now());
 
-    let breakdown = vaultless_core::models::usage::application::MonthlyRevenueData::get_monthly_totals_by_application(
+    let breakdown = MonthlyRevenueData::get_monthly_totals_by_application(
         state.db.as_ref(),
         user.user_id,
         month,
+        query.page,
+        query.page_size,
     )
     .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    .map_err(ApiError::from)?;
 
     Ok(Json(breakdown))
 }

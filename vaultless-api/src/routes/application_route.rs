@@ -9,7 +9,6 @@ use crate::{
     state::AppState,
 };
 
-use application::{get_quota_warnings, get_bandwidth_quota_warnings, get_monthly_revenue_chart};
 
 pub fn application_routes(state: AppState) -> Router<AppState> {
     // Routes that read from materialized view and support ETag caching
@@ -23,8 +22,19 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
     // Routes with query params but no MV caching (data changes frequently or is real-time)
     let non_cached_query_routes = Router::new()
         .route("/{id}/chart", get(application::get_chart_data))
-        .route("/{id}/monthly-revenue-chart", get(application::get_monthly_revenue_chart))
         .route("/{id}/export", get(analytics::export_application_usage))
+        .route(
+            "/{id}/monthly-revenue",
+            get(analytics::get_application_monthly_revenue),
+        )
+        .route(
+            "/monthly-revenue",
+            get(analytics::get_developer_monthly_revenue),
+        )
+        .route(
+            "/monthly-breakdown",
+            get(analytics::get_monthly_revenue_breakdown),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), user_auth));
 
     // Routes without query parameters that read from materialized view (ETag cacheable)
@@ -38,8 +48,8 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
             get(application::get_application_analytics),
         )
         .route("/usage-summary", get(application::get_user_usage_summary))
-        .route("/quota-warnings", get(get_quota_warnings))
-        .route("/bandwidth-quota-warnings", get(get_bandwidth_quota_warnings))
+
+
         .layer(middleware::from_fn_with_state(state.clone(), mv_etag_middleware))
         .layer(middleware::from_fn(reject_all_query))
         .layer(middleware::from_fn_with_state(state.clone(), user_auth));

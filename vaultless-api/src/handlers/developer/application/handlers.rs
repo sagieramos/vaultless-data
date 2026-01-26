@@ -271,11 +271,13 @@ pub async fn get_user_usage_summary(
     Ok(Json(summary))
 }
 
-/// Returns applications that are approaching or exceeding their quota limits
+/// Returns applications that are approaching or exceeding their quota limits for either messages or bandwidth.
 #[utoipa::path(
     get,
     path = "/dev/applications/quota-warnings",
-    params(QuotaWarningsQuery),
+    params(
+        ("type" = Option<String>, Query, description = "Type of quota to check: 'messages' or 'bandwidth' (defaults to 'any')"),
+    ),
     responses(
         (status = 200, description = "Quota warnings retrieved successfully", body = PaginatedQuotaWarnings),
         (status = 401, description = "Unauthorized"),
@@ -294,52 +296,19 @@ pub async fn get_quota_warnings(
         .threshold
         .and_then(|t| Decimal::from_str(&t.to_string()).ok());
 
-    let warnings = Application::get_quota_warnings(
+    let quota_type = match params.r#type.as_deref() {
+        Some("bandwidth") => vaultless_core::models::applications::QuotaType::Bandwidth,
+        Some("messages") => vaultless_core::models::applications::QuotaType::Messages,
+        _ => vaultless_core::models::applications::QuotaType::Any, // Default to Any
+    };
+
+    let warnings = Application::get_unified_quota_warnings(
         &state.db,
         user.user_id,
         threshold,
         params.page,
         params.page_size,
-    )
-    .await
-    .map_err(ApiError::from)?;
-
-    Ok(Json(warnings))
-}
-
-/// Get applications with bandwidth quota usage exceeding threshold
-#[utoipa::path(
-    get,
-    path = "/dev/applications/bandwidth-quota-warnings",
-    params(
-        ("threshold" = Option<f64>, Query, description = "Minimum bandwidth quota usage percentage (default: 80)", example = 80.0),
-        ("page" = Option<i64>, Query, description = "Page number for pagination (default: 1)", example = 1),
-        ("page_size" = Option<i64>, Query, description = "Number of items per page (default: 10)", example = 10)
-    ),
-    responses(
-        (status = 200, description = "List of applications exceeding bandwidth quota threshold", body = PaginatedQuotaWarnings),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "applications"
-)]
-#[debug_handler]
-pub async fn get_bandwidth_quota_warnings(
-    State(state): State<AppState>,
-    SessionDataUserExt(user): SessionDataUserExt,
-    Query(params): Query<QuotaWarningsQuery>,
-) -> Result<Json<PaginatedQuotaWarnings>, ApiError> {
-    let threshold = params
-        .threshold
-        .and_then(|t| Decimal::from_str(&t.to_string()).ok());
-
-    let warnings = Application::get_bandwidth_quota_warnings(
-        &state.db,
-        user.user_id,
-        threshold,
-        params.page,
-        params.page_size,
+        quota_type,
     )
     .await
     .map_err(ApiError::from)?;
@@ -377,55 +346,4 @@ pub async fn get_application_analytics(
             .map_err(ApiError::from)?;
 
     Ok(Json(app_row.into()))
-}
-
-/// Get monthly revenue chart data for an application
-#[utoipa::path(
-    get,
-    path = "/dev/applications/{application_id}/monthly-revenue-chart",
-    params(
-        ("application_id" = Uuid, Path, description = "Application ID"),
-        ("months_back" = Option<i32>, Query, description = "Number of months back to include (default: 12)")
-    ),
-    responses(
-        (status = 200, description = "Monthly revenue chart data", body = super::dto::MonthlyRevenueResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Application not found"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "applications"
-)]
-pub async fn get_monthly_revenue_chart(
-    State(state): State<AppState>,
-    SessionDataUserExt(user): SessionDataUserExt,
-    Path(application_id): Path<Uuid>,
-    Query(params): Query<QuotaWarningsQuery>, // Reusing existing query struct
-) -> Result<Json<super::dto::MonthlyRevenueResponse>, ApiError> {
-    // Verify user owns the application
-    let app = Application::find_owned_by_user(state.db.as_ref(), application_id, user.user_id).await
-        .map_err(|_| ApiError::forbidden("Application not found or access denied"))?;
-
-    let months_back = params.page.max(1).min(24) as i32; // Reusing page field for months_back, clamp between 1-24 months
-    let chart_data = MonthlyRevenueData::get_chart_data_for_application(
-        &*state.db,
-        application_id,
-        months_back,
-    )
-    .await
-    .map_err(ApiError::from)?;
-
-    // Convert to the expected chart response format
-    let chart_response = super::dto::MonthlyRevenueResponse {
-        labels: chart_data.labels,
-        datasets: chart_data.datasets.into_iter().map(|ds| super::dto::RevenueDataset {
-            label: ds.label,
-            data: ds.data,
-            background_color: ds.background_color,
-            border_color: ds.border_color,
-        }).collect(),
-    };
-
-    Ok(Json(chart_response))
 }

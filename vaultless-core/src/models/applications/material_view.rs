@@ -1,4 +1,4 @@
-use super::dto::*;
+use super::dto::{QuotaType, *};
 use crate::error::{Result, VaultlessError};
 use bigdecimal::BigDecimal as Decimal;
 use chrono::{DateTime, Utc};
@@ -116,7 +116,7 @@ impl Application {
             where_conditions.push("lower(tier::text) = lower($2)".to_string());
         }
 
-        let where_clause = if where_conditions.len() == 1 {
+        if where_conditions.len() == 1 {
             where_conditions[0].clone()
         } else {
             where_conditions.join(" AND ")
@@ -130,8 +130,12 @@ impl Application {
             (Some("createdAt"), Some("desc")) => ("created_at", "DESC"),
             (Some("updatedAt"), Some("asc") | None) => ("updated_at", "ASC"),
             (Some("updatedAt"), Some("desc")) => ("updated_at", "DESC"),
-            (Some("quotaUsage"), Some("asc") | None) => ("CAST(quota_usage_percentage AS NUMERIC)", "ASC"),
-            (Some("quotaUsage"), Some("desc")) => ("CAST(quota_usage_percentage AS NUMERIC)", "DESC"),
+            (Some("quotaUsage"), Some("asc") | None) => {
+                ("CAST(quota_usage_percentage AS NUMERIC)", "ASC")
+            }
+            (Some("quotaUsage"), Some("desc")) => {
+                ("CAST(quota_usage_percentage AS NUMERIC)", "DESC")
+            }
             _ => ("created_at", "DESC"),
         };
 
@@ -238,89 +242,54 @@ impl Application {
         })
     }
 
-    pub async fn get_quota_warnings(
+    pub async fn get_unified_quota_warnings(
         db: &sqlx::PgPool,
         user_id: Uuid,
         threshold: Option<Decimal>,
         page: i64,
         page_size: i64,
+        quota_type: QuotaType,
     ) -> Result<PaginatedQuotaWarnings> {
         let threshold = threshold.unwrap_or_else(|| Decimal::from(80));
         let offset = (page - 1).max(0) * page_size;
 
-        // Since there's no get_quota_warnings function in the database,
-        // we query the materialized view directly
-        let rows = sqlx::query_as::<_, QuotaWarningWithCount>(
+        let (filter_clause, order_clause) = match quota_type {
+            QuotaType::Messages => (
+                "quota_usage_percentage >= $2",
+                "quota_usage_percentage DESC",
+            ),
+            QuotaType::Bandwidth => (
+                "bandwidth_quota_usage_percentage >= $2",
+                "bandwidth_quota_usage_percentage DESC",
+            ),
+            QuotaType::Any => (
+                "(quota_usage_percentage >= $2 OR bandwidth_quota_usage_percentage >= $2)",
+                "GREATEST(quota_usage_percentage, bandwidth_quota_usage_percentage) DESC",
+            ),
+        };
+
+        let sql = format!(
             r#"
             SELECT
                 application_id, name as application_name, quota_usage_percentage, bandwidth_quota_usage_percentage,
                 COUNT(*) OVER() AS total_count
             FROM mv_applications_with_usage
             WHERE developer_id = $1
-                AND quota_usage_percentage >= $2
+                AND {}
                 AND is_active = true
-            ORDER BY quota_usage_percentage DESC
+            ORDER BY {}
             LIMIT $3 OFFSET $4
             "#,
-        )
-        .bind(user_id)
-        .bind(threshold)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(db)
-        .await?;
+            filter_clause, order_clause
+        );
 
-        let total_count = rows.first().map(|r| r.total_count).unwrap_or(0);
-        let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
-
-        let data = rows
-            .into_iter()
-            .map(|r| QuotaWarning {
-                application_id: r.application_id,
-                application_name: r.application_name,
-                quota_usage_percentage: r.quota_usage_percentage,
-                bandwidth_quota_usage_percentage: r.bandwidth_quota_usage_percentage,
-            })
-            .collect();
-
-        Ok(PaginatedQuotaWarnings {
-            data,
-            total_count,
-            page,
-            page_size,
-            total_pages,
-        })
-    }
-
-    pub async fn get_bandwidth_quota_warnings(
-        db: &sqlx::PgPool,
-        user_id: Uuid,
-        threshold: Option<Decimal>,
-        page: i64,
-        page_size: i64,
-    ) -> Result<PaginatedQuotaWarnings> {
-        let threshold = threshold.unwrap_or_else(|| Decimal::from(80));
-        let offset = (page - 1).max(0) * page_size;
-
-        let rows = sqlx::query_as::<_, QuotaWarningWithCount>(
-            r#"
-            SELECT
-                application_id, name as application_name, quota_usage_percentage, bandwidth_quota_usage_percentage,
-                COUNT(*) OVER() AS total_count
-            FROM mv_applications_with_usage
-            WHERE developer_id = $1
-                AND bandwidth_quota_usage_percentage >= $2
-                AND is_active = true
-            ORDER BY bandwidth_quota_usage_percentage DESC
-            LIMIT $3 OFFSET $4
-            "#,
-        )
-        .bind(user_id)
-        .bind(threshold)
-        .bind(page_size)
-        .bind(offset)
-        .fetch_all(db)
-        .await?;
+        let rows = sqlx::query_as::<_, QuotaWarningWithCount>(&sql)
+            .bind(user_id)
+            .bind(threshold)
+            .bind(page_size)
+            .bind(offset)
+            .fetch_all(db)
+            .await?;
 
         let total_count = rows.first().map(|r| r.total_count).unwrap_or(0);
         let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
@@ -370,7 +339,6 @@ impl Application {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,8 +387,12 @@ mod tests {
             (Some("createdAt"), Some("desc")) => ("created_at", "DESC"),
             (Some("updatedAt"), Some("asc") | None) => ("updated_at", "ASC"),
             (Some("updatedAt"), Some("desc")) => ("updated_at", "DESC"),
-            (Some("quotaUsage"), Some("asc") | None) => ("CAST(quota_usage_percentage AS NUMERIC)", "ASC"),
-            (Some("quotaUsage"), Some("desc")) => ("CAST(quota_usage_percentage AS NUMERIC)", "DESC"),
+            (Some("quotaUsage"), Some("asc") | None) => {
+                ("CAST(quota_usage_percentage AS NUMERIC)", "ASC")
+            }
+            (Some("quotaUsage"), Some("desc")) => {
+                ("CAST(quota_usage_percentage AS NUMERIC)", "DESC")
+            }
             _ => ("created_at", "DESC"),
         };
 
@@ -447,7 +419,10 @@ mod tests {
 
     fn extract_placeholders(sql: &str) -> Vec<usize> {
         let re = Regex::new(r"\$(\d+)").unwrap();
-        let mut nums: Vec<usize> = re.captures_iter(sql).map(|c| c[1].parse::<usize>().unwrap()).collect();
+        let mut nums: Vec<usize> = re
+            .captures_iter(sql)
+            .map(|c| c[1].parse::<usize>().unwrap())
+            .collect();
         nums.sort_unstable();
         nums.dedup();
         nums
@@ -458,7 +433,11 @@ mod tests {
         let max = *nums.last().unwrap();
         assert_eq!(max, expected_max);
         let expected: Vec<usize> = (1..=max).collect();
-        assert_eq!(nums, expected, "placeholders are not contiguous: {:?}", nums);
+        assert_eq!(
+            nums, expected,
+            "placeholders are not contiguous: {:?}",
+            nums
+        );
     }
 
     #[test]

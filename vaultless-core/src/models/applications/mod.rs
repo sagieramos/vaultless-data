@@ -13,7 +13,7 @@ mod validate_quota;
 
 pub use dto::{
     AddPublishableKeyResponse, Application, ApplicationKeyView, CreateApplication,
-    CreateApplicationResponse, KeyGranularity, 
+    CreateApplicationResponse, KeyGranularity, QuotaType,
     RotatePublishableKeyResponse, RotateSecretKeyResponse, UpdateApplication,
 };
 

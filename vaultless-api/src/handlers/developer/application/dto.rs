@@ -163,6 +163,9 @@ pub struct QuotaWarningsQuery {
     #[serde(default = "default_page_size")]
     #[schema(example = 20)]
     pub page_size: i64,
+    /// Type of quota to check: "messages" or "bandwidth"
+    #[schema(example = "messages")]
+    pub r#type: Option<String>,
 }
 
 fn default_threshold_f64() -> Option<f64> {

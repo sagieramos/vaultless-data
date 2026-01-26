@@ -24,6 +24,15 @@ pub struct MonthlyRevenueData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MonthlyRevenueDataSchema {
+    pub month_label: String,
+    pub revenue_cents: i64,
+    pub revenue_usd: String,  // Convert BigDecimal to String for schema
+    pub messages: i64,
+    pub bytes_transferred: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RevenueChartData {
     pub labels: Vec<String>,
     pub revenue_cents: Vec<i64>,
@@ -31,8 +40,32 @@ pub struct RevenueChartData {
     pub bytes_transferred: Vec<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+pub struct MonthlyApplicationRevenue {
+    pub application_id: Uuid,
+    pub application_name: String,
+    pub revenue_cents: i64,
+}
+
+#[derive(FromRow)]
+struct MonthlyApplicationRevenueWithCount {
+    application_id: Uuid,
+    application_name: String,
+    revenue_cents: i64,
+    total_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PaginatedMonthlyApplicationRevenue {
+    pub data: Vec<MonthlyApplicationRevenue>,
+    pub total_count: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_pages: i64,
+}
+
 impl MonthlyRevenueData {
-    /// Get monthly revenue chart data for an application
+    /// Get monthly revenue chart data for an application (For Admin use only TODO)
     pub async fn get_chart_data_for_application<'c, E>(
         executor: E,
         application_id: Uuid,
@@ -105,29 +138,55 @@ impl MonthlyRevenueData {
         executor: E,
         developer_id: Uuid,
         month: DateTime<Utc>,
-    ) -> Result<Vec<(String, i64)>>  // (app_name, revenue_cents)
+        page: i64,
+        page_size: i64,
+    ) -> Result<PaginatedMonthlyApplicationRevenue>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let rows = sqlx::query_as::<_, (String, i64)>(
+        let offset = (page - 1).max(0) * page_size;
+        let rows = sqlx::query_as::<_, MonthlyApplicationRevenueWithCount>(
             r#"
             SELECT
-                a.name,
-                COALESCE(SUM(um.estimated_cost_cents), 0) AS revenue_cents
+                a.id AS application_id,
+                a.name AS application_name,
+                COALESCE(SUM(um.estimated_cost_cents), 0) AS revenue_cents,
+                COUNT(*) OVER() as total_count
             FROM applications a
             LEFT JOIN usage_metrics um ON a.id = um.application_id
             WHERE a.developer_id = $1
                 AND date_trunc('month', um.period_start) = date_trunc('month', $2)
             GROUP BY a.id, a.name
             ORDER BY revenue_cents DESC
+            LIMIT $3 OFFSET $4
             "#,
         )
         .bind(developer_id)
         .bind(month)
+        .bind(page_size)
+        .bind(offset)
         .fetch_all(executor)
         .await?;
 
-        Ok(rows)
+        let total_count = rows.first().map(|r| r.total_count).unwrap_or(0);
+        let total_pages = (total_count as f64 / page_size as f64).ceil() as i64;
+
+        let data = rows
+            .into_iter()
+            .map(|r| MonthlyApplicationRevenue {
+                application_id: r.application_id,
+                application_name: r.application_name,
+                revenue_cents: r.revenue_cents,
+            })
+            .collect();
+
+        Ok(PaginatedMonthlyApplicationRevenue {
+            data,
+            total_count,
+            page,
+            page_size,
+            total_pages,
+        })
     }
 
     /// Get monthly revenue chart data for a specific application belonging to a developer
