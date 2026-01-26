@@ -55,9 +55,10 @@ export default function GoogleCallbackContent() {
         // Redirect to dashboard
         const redirectAfter = response.redirectAfter || '/dashboard';
         router.push(redirectAfter);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Google OAuth callback error:', error);
-        toast.error(error.message || 'Failed to complete authentication');
+        const message = error instanceof Error ? error.message : 'Failed to complete authentication';
+        toast.error(message);
         router.push('/login');
       } finally {
         setIsProcessing(false);

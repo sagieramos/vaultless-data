@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, LayoutDashboard, Server, Book, CreditCard, Bell, Settings, LogOut, User, Moon, Sun, Menu, X, DollarSign } from 'lucide-react';
+import { Shield, LayoutDashboard, Server, Book, CreditCard, Bell, Settings, LogOut, User, Moon, Sun, Menu, X, DollarSign, LucideIcon } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import {
@@ -18,7 +18,7 @@ import { Badge } from '../ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { notificationsApi } from '@/lib/api';
 
-const navigation = [
+const navigation: { name: string; href: string; icon: LucideIcon; badge?: string }[] = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Applications', href: '/applications', icon: Server },
   { name: 'Revenue', href: '/revenue', icon: DollarSign },
@@ -33,6 +33,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [headerVisible, setHeaderVisible] = useState(true);
+  const lastScrollY = useRef(0);
 
   const handleLogout = async () => {
     await logout();
@@ -51,10 +53,41 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [user]);
 
+  // Auto-hide header on scroll (mobile only)
+  useEffect(() => {
+    const handleScroll = () => {
+      // Only apply on mobile (< 1024px / lg breakpoint)
+      if (window.innerWidth >= 1024) {
+        setHeaderVisible(true);
+        return;
+      }
+
+      const currentScrollY = window.scrollY;
+
+      // Show header when scrolling up or at top
+      if (currentScrollY < lastScrollY.current || currentScrollY < 10) {
+        setHeaderVisible(true);
+      }
+      // Hide header when scrolling down (after scrolling past 50px)
+      else if (currentScrollY > 50 && currentScrollY > lastScrollY.current) {
+        setHeaderVisible(false);
+        // Close mobile menu when hiding header
+        setMobileMenuOpen(false);
+      }
+
+      lastScrollY.current = currentScrollY;
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
       {/* Header */}
-      <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 sticky top-0 z-50">
+      <header className={`bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 sticky top-0 z-50 transition-transform duration-300 ${
+        headerVisible ? 'translate-y-0' : '-translate-y-full'
+      }`}>
         <div className="container mx-auto px-4">
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
@@ -79,9 +112,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   >
                     <item.icon className="w-4 h-4" />
                     <span className="hidden xl:inline">{item.name}</span>
-                    {(item as any).badge && (
+                    {item.badge && (
                       <Badge variant="secondary" className="text-[10px] px-1 py-0 h-5 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                        {(item as any).badge}
+                        {item.badge}
                       </Badge>
                     )}
                   </Link>
@@ -102,14 +135,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </Button>
 
               {/* Notifications */}
-              <Button variant="ghost" size="icon" className="relative w-8 h-8 sm:w-9 sm:h-9">
-                <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
-                {unreadCount > 0 && (
-                  <span className="absolute top-0.5 right-0.5 flex items-center justify-center min-w-[16px] h-4 bg-red-500 rounded-full text-[10px] text-white font-medium px-1">
-                    {unreadCount > 99 ? '99+' : unreadCount}
-                  </span>
-                )}
-              </Button>
+              <Link href="/notifications">
+                <Button variant="ghost" size="icon" className="relative w-8 h-8 sm:w-9 sm:h-9">
+                  <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
+                  {unreadCount > 0 && (
+                    <span className="absolute top-0.5 right-0.5 flex items-center justify-center min-w-[16px] h-4 bg-red-500 rounded-full text-[10px] text-white font-medium px-1">
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  )}
+                </Button>
+              </Link>
 
               {/* User Menu */}
               <DropdownMenu>
@@ -129,15 +164,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     <p className="text-sm text-gray-600 dark:text-gray-400">{user?.email}</p>
                   </div>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => router.push('/profile')}>
                     <User className="w-4 h-4 mr-2" />
                     Profile
                   </DropdownMenuItem>
-                  <DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => router.push('/settings')}>
                     <Settings className="w-4 h-4 mr-2" />
                     Settings
                   </DropdownMenuItem>
-                  <DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => router.push('/quota-billing')}>
                     <CreditCard className="w-4 h-4 mr-2" />
                     Billing
                   </DropdownMenuItem>
@@ -181,9 +216,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   >
                     <item.icon className="w-5 h-5" />
                     <span className="font-medium">{item.name}</span>
-                    {(item as any).badge && (
+                    {item.badge && (
                       <Badge variant="secondary" className="text-xs ml-auto bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                        {(item as any).badge}
+                        {item.badge}
                       </Badge>
                     )}
                   </Link>

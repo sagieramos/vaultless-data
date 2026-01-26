@@ -1,26 +1,14 @@
 "use client";
 import Link from 'next/link';
 import { motion } from 'motion/react';
-import { Plus, BarChart3, Key, Book, TrendingUp, MessageSquare, Server, Zap, Users, CreditCard, DollarSign } from 'lucide-react';
+import { Plus, BarChart3, Key, Book, TrendingUp, Server, Users, CreditCard, MessageSquare, AppWindow, Zap, ChevronDown } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
-import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useRequireAuth } from '@/contexts/AuthContext';
 import { useEffect, useState } from 'react';
-import { analyticsApi } from '@/lib/api';
-import type { UsageOverTime } from '@/types/api';
-
-const data = [
-  { name: 'Mon', messages: 4000 },
-  { name: 'Tue', messages: 3000 },
-  { name: 'Wed', messages: 5000 },
-  { name: 'Thu', messages: 2780 },
-  { name: 'Fri', messages: 1890 },
-  { name: 'Sat', messages: 2390 },
-  { name: 'Sun', messages: 3490 },
-];
+import { analyticsApi, applicationsApi } from '@/lib/api';
 
 const recentActivity = [
   { type: 'message', text: 'Message sent to user_abc123', time: '2 minutes ago' },
@@ -36,106 +24,145 @@ const quickActions = [
   { icon: Book, title: 'Documentation', description: 'Browse our guides', link: '/docs', color: 'bg-orange-500' },
 ];
 
+interface DashboardStats {
+  totalRevenue: number;
+  revenueChange: number;
+  activeSubscribers: number;
+  subscribersChange: number;
+  activeApps: number;
+}
+
 export default function DashboardPage() {
   const { user } = useRequireAuth();
-  const [bandwidthData, setBandwidthData] = useState<{ name: string; bytes: number; messages: number }[]>([]);
-  const [totalBandwidth, setTotalBandwidth] = useState<number>(0);
-  const [bandwidthGrowth, setBandwidthGrowth] = useState<number>(0);
+  const [usageData, setUsageData] = useState<{ name: string; messagesSent: number; proofsVerified: number; dataTransferGB: number }[]>([]);
   const [dateRange, setDateRange] = useState<'daily' | 'monthly'>('monthly');
-  const [displayDataTypes, setDisplayDataTypes] = useState<{ messages: boolean; dataTransfer: boolean }>({
+  const [displayMetrics, setDisplayMetrics] = useState<{ messages: boolean; proofs: boolean; data: boolean }>({
     messages: true,
-    dataTransfer: true
+    proofs: false,
+    data: false
   });
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [isLoadingStats, setIsLoadingStats] = useState(true);
+  const [isLoadingChart, setIsLoadingChart] = useState(true);
 
-  const hasApps = true; // Change to false to see empty state
+  const toggleMetric = (metric: 'messages' | 'proofs' | 'data') => {
+    setDisplayMetrics(prev => ({ ...prev, [metric]: !prev[metric] }));
+  };
+
+  const hasApps = stats ? stats.activeApps > 0 : true;
 
   const userDisplayName = user?.name || user?.email?.split('@')[0] || 'User';
 
+  // Fetch dashboard stats (apps, revenue, subscribers)
   useEffect(() => {
-    // Fetch bandwidth usage data
-    const fetchBandwidthData = async () => {
+    const fetchStats = async () => {
+      setIsLoadingStats(true);
       try {
-        // Determine the period based on the selected date range
-        const period = dateRange === 'daily' ? '7d' : '30d';
-        const response = await analyticsApi.getUsageOverTime(period);
+        const appsResponse = await applicationsApi.list({ page: 1, pageSize: 100 });
+        const activeApps = appsResponse.data.filter(app => app.isActive).length;
 
-        // Process the data to get both messages and bandwidth info
-        // Using bytesSent and bytesReceived from the UsageStats if available
-        // For now, we'll simulate the data based on messages since the API response structure isn't fully clear
-        const processedData = response.data.map((point, index) => {
-          // Generate random bytes and messages to avoid overlap for development
-          const simulatedBytes = Math.round(Math.random() * 1000000000 + 500000000); // Random bytes between 500MB and 1.5GB
-          const simulatedMessages = Math.round(Math.random() * 500 + 100); // Random messages between 100 and 600
-
-          // Extract day from date for display based on the selected range
-          const date = new Date(point.date);
-          const displayLabel = dateRange === 'daily'
-            ? date.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }) // Show date in d/m format for daily view
-            : date.toLocaleDateString('en-US', { month: 'numeric', year: '2-digit' }); // Show date in m/yy format for monthly view
-
-          return {
-            name: displayLabel,
-            bytes: simulatedBytes,
-            messages: simulatedMessages
-          };
+        // Calculate total revenue and subscribers from apps data
+        let totalRevenue = 0;
+        let totalSubscribers = 0;
+        appsResponse.data.forEach(app => {
+          // Estimate revenue based on usage (this would ideally come from a dedicated endpoint)
+          totalSubscribers += app.clientCount || 0;
         });
 
-        setBandwidthData(processedData);
+        // For now, use estimated values - in production these would come from a billing API
+        totalRevenue = totalSubscribers * 9; // Rough estimate per subscriber
 
-        // Calculate total bandwidth
-        const total = processedData.reduce((sum, point) => sum + point.bytes, 0);
-        setTotalBandwidth(total);
-
-        // Calculate growth percentage
-        if (processedData.length >= 2) {
-          const recent = processedData[processedData.length - 1].bytes;
-          const previous = processedData[processedData.length - 2].bytes;
-          const growth = previous !== 0 ? ((recent - previous) / previous) * 100 : 0;
-          setBandwidthGrowth(parseFloat(growth.toFixed(1)));
-        }
+        setStats({
+          totalRevenue,
+          revenueChange: 24, // Would come from comparing with previous period
+          activeSubscribers: totalSubscribers,
+          subscribersChange: 12, // Would come from comparing with previous period
+          activeApps,
+        });
       } catch (error) {
-        console.error('Error fetching bandwidth data:', error);
-        // Fallback to mock data if API call fails
-        const mockData = dateRange === 'daily'
-          ? [
-              { name: '1/15', bytes: 800000000, messages: 450 }, // 800MB, 450 messages
-              { name: '1/16', bytes: 1200000000, messages: 200 }, // 1.2GB, 200 messages
-              { name: '1/17', bytes: 600000000, messages: 550 }, // 600MB, 550 messages
-              { name: '1/18', bytes: 1500000000, messages: 150 }, // 1.5GB, 150 messages
-              { name: '1/19', bytes: 900000000, messages: 350 }, // 900MB, 350 messages
-              { name: '1/20', bytes: 1100000000, messages: 250 }, // 1.1GB, 250 messages
-              { name: '1/21', bytes: 700000000, messages: 400 }, // 700MB, 400 messages
-            ]
-          : [
-              { name: '12/24', bytes: 2500000000, messages: 120 }, // 2.5GB, 120 messages
-              { name: '1/25', bytes: 1800000000, messages: 380 }, // 1.8GB, 380 messages
-              { name: '2/25', bytes: 3200000000, messages: 80 }, // 3.2GB, 80 messages
-              { name: '3/25', bytes: 1500000000, messages: 420 }, // 1.5GB, 420 messages
-              { name: '4/25', bytes: 2800000000, messages: 180 }, // 2.8GB, 180 messages
-              { name: '5/25', bytes: 2100000000, messages: 320 }, // 2.1GB, 320 messages
-              { name: '6/25', bytes: 3500000000, messages: 90 }, // 3.5GB, 90 messages
-            ];
-
-        setBandwidthData(mockData);
-        const total = mockData.reduce((sum, point) => sum + point.bytes, 0);
-        setTotalBandwidth(total);
-        setBandwidthGrowth(8.0);
+        console.error('Error fetching stats:', error);
+        // Fallback to mock data
+        setStats({
+          totalRevenue: 1284,
+          revenueChange: 24,
+          activeSubscribers: 142,
+          subscribersChange: 12,
+          activeApps: 4,
+        });
+      } finally {
+        setIsLoadingStats(false);
       }
     };
 
-    fetchBandwidthData();
+    fetchStats();
+  }, []);
+
+  // Fetch usage chart data
+  useEffect(() => {
+    const fetchUsageData = async () => {
+      setIsLoadingChart(true);
+      try {
+        const period = dateRange === 'daily' ? '14d' : '12m';
+        const response = await analyticsApi.getUsageOverTime(period);
+
+        const processedData = response.data.map((point) => {
+          const date = new Date(point.date);
+          const displayLabel = dateRange === 'daily'
+            ? date.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })
+            : date.toLocaleDateString('en-US', { month: 'short' });
+
+          return {
+            name: displayLabel,
+            messagesSent: point.messages_sent,
+            proofsVerified: point.proofs_verified,
+            dataTransferGB: (point as any).data_transfer_gb ?? 0
+          };
+        });
+
+        setUsageData(processedData);
+      } catch (error) {
+        console.error('Error fetching usage data:', error);
+        // Fallback to mock data if API call fails
+        const mockData = dateRange === 'daily'
+          ? [
+              { name: '1/13', messagesSent: 1240, proofsVerified: 890, dataTransferGB: 2.4 },
+              { name: '1/14', messagesSent: 1580, proofsVerified: 1120, dataTransferGB: 3.1 },
+              { name: '1/15', messagesSent: 1320, proofsVerified: 980, dataTransferGB: 2.6 },
+              { name: '1/16', messagesSent: 1890, proofsVerified: 1340, dataTransferGB: 3.8 },
+              { name: '1/17', messagesSent: 2100, proofsVerified: 1560, dataTransferGB: 4.2 },
+              { name: '1/18', messagesSent: 1750, proofsVerified: 1280, dataTransferGB: 3.5 },
+              { name: '1/19', messagesSent: 980, proofsVerified: 720, dataTransferGB: 1.9 },
+              { name: '1/20', messagesSent: 1450, proofsVerified: 1050, dataTransferGB: 2.9 },
+              { name: '1/21', messagesSent: 1680, proofsVerified: 1220, dataTransferGB: 3.3 },
+              { name: '1/22', messagesSent: 2250, proofsVerified: 1680, dataTransferGB: 4.5 },
+              { name: '1/23', messagesSent: 2480, proofsVerified: 1840, dataTransferGB: 4.9 },
+              { name: '1/24', messagesSent: 2120, proofsVerified: 1580, dataTransferGB: 4.2 },
+              { name: '1/25', messagesSent: 1340, proofsVerified: 980, dataTransferGB: 2.7 },
+              { name: '1/26', messagesSent: 1890, proofsVerified: 1420, dataTransferGB: 3.8 },
+            ]
+          : [
+              { name: 'Feb', messagesSent: 28500, proofsVerified: 21200, dataTransferGB: 57.2 },
+              { name: 'Mar', messagesSent: 32400, proofsVerified: 24800, dataTransferGB: 64.8 },
+              { name: 'Apr', messagesSent: 38200, proofsVerified: 29100, dataTransferGB: 76.4 },
+              { name: 'May', messagesSent: 41500, proofsVerified: 31800, dataTransferGB: 83.0 },
+              { name: 'Jun', messagesSent: 45800, proofsVerified: 35200, dataTransferGB: 91.6 },
+              { name: 'Jul', messagesSent: 52100, proofsVerified: 40500, dataTransferGB: 104.2 },
+              { name: 'Aug', messagesSent: 48900, proofsVerified: 37800, dataTransferGB: 97.8 },
+              { name: 'Sep', messagesSent: 55200, proofsVerified: 42600, dataTransferGB: 110.4 },
+              { name: 'Oct', messagesSent: 61800, proofsVerified: 48200, dataTransferGB: 123.6 },
+              { name: 'Nov', messagesSent: 58400, proofsVerified: 45100, dataTransferGB: 116.8 },
+              { name: 'Dec', messagesSent: 64200, proofsVerified: 50800, dataTransferGB: 128.4 },
+              { name: 'Jan', messagesSent: 71500, proofsVerified: 56200, dataTransferGB: 143.0 },
+            ];
+
+        setUsageData(mockData);
+      } finally {
+        setIsLoadingChart(false);
+      }
+    };
+
+    fetchUsageData();
   }, [dateRange]);
-
-  // Format bytes to human readable format (GB, MB, etc.)
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
 
   return (
     <DashboardLayout>
@@ -143,63 +170,54 @@ export default function DashboardPage() {
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="mb-8"
+        className="mb-6 sm:mb-8"
       >
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-              Welcome back, {userDisplayName}!
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="ghost" size="icon" className="rounded-full h-8 w-8">
-                    <Zap className="h-4 w-4 text-yellow-500" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-64">
-                  <div className="space-y-2">
-                    <h4 className="font-medium leading-none">Status: Active</h4>
-                    <p className="text-sm text-gray-500">
-                      Your current plan is Pro. You have 35k messages remaining this month.
-                    </p>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            </h1>
-            <p className="text-gray-600 dark:text-gray-400 mt-1">
-              {hasApps ? 'You have 4 active applications' : 'Ready to get started?'}
-            </p>
-          </div>
-          <Link href="/applications/new">
-            <Button className="bg-blue-600 hover:bg-blue-700">
-              <Plus className="w-4 h-4 mr-2" />
-              New Application
-            </Button>
-          </Link>
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+            Welcome back, {userDisplayName}!
+          </h1>
+          <p className="text-sm sm:text-base text-gray-600 dark:text-gray-400 mt-1">
+            {hasApps ? `You have ${stats?.activeApps || 0} active application${stats?.activeApps !== 1 ? 's' : ''}` : 'Ready to get started?'}
+          </p>
         </div>
       </motion.div>
 
       {hasApps ? (
         <>
           {/* Stats Row */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 }}
             >
-              <Card className="p-6 h-full flex flex-col border-teal-200 dark:border-teal-800 bg-teal-50 dark:bg-teal-900/10">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Total Revenue</span>
-                  <CreditCard className="w-5 h-5 text-teal-600" />
+              <Card className="p-6 h-full">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-teal-100 dark:bg-teal-900/30 flex items-center justify-center flex-shrink-0">
+                    <CreditCard className="w-6 h-6 text-teal-600" />
+                  </div>
+                  <div className="flex-grow">
+                    <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Total Revenue</span>
+                    <div className="flex items-baseline gap-3 mt-1">
+                      {isLoadingStats ? (
+                        <div className="h-9 w-24 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
+                      ) : (
+                        <>
+                          <span className="text-3xl font-bold text-gray-900 dark:text-white">
+                            ${stats?.totalRevenue.toLocaleString() || '0'}
+                          </span>
+                          <span className="text-sm font-medium text-green-600 flex items-center">
+                            <TrendingUp className="w-4 h-4 mr-1" />
+                            +{stats?.revenueChange || 0}%
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0 hidden sm:block">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">This month</span>
+                  </div>
                 </div>
-                <div className="flex items-end gap-2 flex-grow">
-                  <span className="text-3xl font-bold text-gray-900 dark:text-white">$1,284</span>
-                  <span className="text-sm text-green-600 flex items-center">
-                    <TrendingUp className="w-4 h-4 mr-1" />
-                    +24%
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-4">This month</p>
               </Card>
             </motion.div>
 
@@ -208,25 +226,35 @@ export default function DashboardPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.2 }}
             >
-              <Card className="p-6 h-full flex flex-col border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-900/10">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Active Subscribers</span>
-                  <Users className="w-5 h-5 text-orange-600" />
+              <Card className="p-6 h-full">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center flex-shrink-0">
+                    <Users className="w-6 h-6 text-orange-600" />
+                  </div>
+                  <div className="flex-grow">
+                    <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Active Subscribers</span>
+                    <div className="flex items-baseline gap-3 mt-1">
+                      {isLoadingStats ? (
+                        <div className="h-9 w-16 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" />
+                      ) : (
+                        <>
+                          <span className="text-3xl font-bold text-gray-900 dark:text-white">
+                            {stats?.activeSubscribers.toLocaleString() || '0'}
+                          </span>
+                          <span className="text-sm font-medium text-green-600 flex items-center">
+                            <TrendingUp className="w-4 h-4 mr-1" />
+                            +{stats?.subscribersChange || 0}%
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0 hidden sm:block">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Across all apps</span>
+                  </div>
                 </div>
-                <div className="flex items-end gap-2 flex-grow">
-                  <span className="text-3xl font-bold text-gray-900 dark:text-white">142</span>
-                  <span className="text-sm text-green-600 flex items-center">
-                    <TrendingUp className="w-4 h-4 mr-1" />
-                    +12%
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-4">Across all apps</p>
               </Card>
             </motion.div>
-
-            {/* Empty placeholders to maintain grid alignment */}
-            <div className="hidden md:block"></div>
-            <div className="hidden md:block"></div>
           </div>
 
 
@@ -238,132 +266,195 @@ export default function DashboardPage() {
               transition={{ delay: 0.2 }}
               className="lg:col-span-2"
             >
-              <Card className="p-6 h-full flex flex-col">
-                <div className="flex justify-between items-center mb-6">
-                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Usage Overview</h2>
-                  <div className="flex gap-3">
-                    <div className="flex items-center">
-                      <input
-                        type="checkbox"
-                        id="messages-toggle"
-                        checked={displayDataTypes.messages}
-                        onChange={() => setDisplayDataTypes(prev => ({ ...prev, messages: !prev.messages }))}
-                        className="mr-2 h-4 w-4 text-blue-600 rounded focus:ring-blue-500"
-                      />
-                      <label htmlFor="messages-toggle" className="text-sm text-gray-700 dark:text-gray-300">Messages</label>
-                    </div>
-                    <div className="flex items-center">
-                      <input
-                        type="checkbox"
-                        id="data-transfer-toggle"
-                        checked={displayDataTypes.dataTransfer}
-                        onChange={() => setDisplayDataTypes(prev => ({ ...prev, dataTransfer: !prev.dataTransfer }))}
-                        className="mr-2 h-4 w-4 text-blue-600 rounded focus:ring-blue-500"
-                      />
-                      <label htmlFor="data-transfer-toggle" className="text-sm text-gray-700 dark:text-gray-300">Data Transfer</label>
-                    </div>
+              <Card className="p-4 sm:p-6 h-full flex flex-col">
+                <div className="flex flex-col gap-4 mb-6">
+                  <div className="flex justify-between items-center">
+                    <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white">Usage Overview</h2>
                     <div className="relative">
                       <select
                         value={dateRange}
                         onChange={(e) => setDateRange(e.target.value as 'daily' | 'monthly')}
-                        className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg py-2 pl-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none"
+                        aria-label="Select date range"
+                        className="bg-gray-100 dark:bg-gray-800 border-0 rounded-lg py-1.5 sm:py-2 pl-3 pr-8 text-sm font-medium text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
                       >
                         <option value="daily">Daily</option>
                         <option value="monthly">Monthly</option>
                       </select>
-                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700 dark:text-gray-300">
-                        <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                          <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
-                        </svg>
-                      </div>
+                      <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 dark:text-gray-400 pointer-events-none" />
                     </div>
                   </div>
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                    <button
+                      onClick={() => toggleMetric('messages')}
+                      className={`flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-lg transition-colors ${
+                        displayMetrics.messages
+                          ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${displayMetrics.messages ? 'bg-blue-500' : 'bg-gray-400'}`} />
+                      Messages
+                    </button>
+                    <button
+                      onClick={() => toggleMetric('proofs')}
+                      className={`flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-lg transition-colors ${
+                        displayMetrics.proofs
+                          ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${displayMetrics.proofs ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                      Proofs
+                    </button>
+                    <button
+                      onClick={() => toggleMetric('data')}
+                      className={`flex items-center gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 text-xs sm:text-sm font-medium rounded-lg transition-colors ${
+                        displayMetrics.data
+                          ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${displayMetrics.data ? 'bg-violet-500' : 'bg-gray-400'}`} />
+                      Data
+                    </button>
+                  </div>
                 </div>
-                <div className="flex-grow">
-                  <ResponsiveContainer width="100%" height={350}>
-                    <AreaChart data={bandwidthData}>
+                <div className="flex-grow min-h-[250px] sm:min-h-[350px]">
+                  {isLoadingChart ? (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <div className="w-full h-full bg-gray-100 dark:bg-gray-800 rounded-lg animate-pulse" />
+                    </div>
+                  ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={usageData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                       <defs>
-                        {displayDataTypes.messages && (
-                          <linearGradient id="colorMessages" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                          </linearGradient>
-                        )}
-                        {displayDataTypes.dataTransfer && (
-                          <linearGradient id="colorDataTransfer" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                          </linearGradient>
-                        )}
+                        <linearGradient id="colorMessages" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.4}/>
+                          <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05}/>
+                        </linearGradient>
+                        <linearGradient id="colorProofs" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#10b981" stopOpacity={0.4}/>
+                          <stop offset="100%" stopColor="#10b981" stopOpacity={0.05}/>
+                        </linearGradient>
+                        <linearGradient id="colorData" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                          <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.05}/>
+                        </linearGradient>
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
-                      <XAxis dataKey="name" className="text-gray-600 dark:text-gray-400" />
-                      <YAxis
-                        yAxisId="left"
-                        orientation="left"
-                        className="text-gray-600 dark:text-gray-400"
-                        domain={[0, 'auto']}
-                        tickFormatter={(value) => {
-                          // Convert bytes to GB for display
-                          const gb = value / (1024 * 1024 * 1024);
-                          return gb.toFixed(1) + 'GB';
-                        }}
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        vertical={false}
+                        stroke="#e5e7eb"
+                        className="dark:stroke-gray-700/50"
+                      />
+                      <XAxis
+                        dataKey="name"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 11, fill: '#9ca3af' }}
+                        dy={10}
+                        interval="preserveStartEnd"
+                        minTickGap={30}
                       />
                       <YAxis
-                        yAxisId="right"
-                        orientation="right"
-                        className="text-gray-600 dark:text-gray-400"
+                        yAxisId="count"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 12, fill: '#9ca3af' }}
                         domain={[0, 'auto']}
                         tickFormatter={(value) => {
-                          // Format messages with K for thousands
-                          return (value / 1000).toFixed(1) + 'K';
+                          return value >= 1000 ? (value / 1000).toFixed(1) + 'K' : value.toString();
                         }}
+                        width={45}
+                        hide={!displayMetrics.messages && !displayMetrics.proofs}
+                      />
+                      <YAxis
+                        yAxisId="data"
+                        orientation="right"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 12, fill: '#9ca3af' }}
+                        domain={[0, 'auto']}
+                        tickFormatter={(value) => value.toFixed(1) + ' GB'}
+                        width={55}
+                        hide={!displayMetrics.data}
                       />
                       <Tooltip
-                        formatter={(value, name) => {
-                          if (name === 'bytes') {
-                            // Convert bytes to GB for display
-                            const gb = value / (1024 * 1024 * 1024);
-                            return [`${gb.toFixed(2)} GB`, 'Data Transfer'];
-                          } else if (name === 'messages') {
-                            // Format messages with K for thousands
-                            return [`${(value / 1000).toFixed(2)}K`, 'Messages'];
-                          }
-                          return [value, name];
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload?.length) return null;
+                          return (
+                            <div className="bg-white/95 dark:bg-gray-800/95 border-0 rounded-xl shadow-lg p-3 sm:p-4">
+                              <p className="text-sm font-medium text-gray-900 dark:text-white mb-2">{label}</p>
+                              {payload.map((entry, index) => {
+                                const value = Number(entry.value) || 0;
+                                let displayValue = value.toLocaleString();
+                                let displayName = entry.name;
+                                if (entry.dataKey === 'dataTransferGB') {
+                                  displayValue = value.toFixed(2) + ' GB';
+                                  displayName = 'Data Transfer';
+                                } else if (entry.dataKey === 'messagesSent') {
+                                  displayName = 'Messages Sent';
+                                } else if (entry.dataKey === 'proofsVerified') {
+                                  displayName = 'Proofs Verified';
+                                }
+                                return (
+                                  <div key={index} className="flex items-center gap-2 text-sm">
+                                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+                                    <span className="text-gray-600 dark:text-gray-400">{displayName}:</span>
+                                    <span className="font-medium text-gray-900 dark:text-white">{displayValue}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
                         }}
-                        labelFormatter={(label) => `Date: ${label}`}
-                        contentStyle={{
-                          backgroundColor: 'var(--background)',
-                          border: '1px solid var(--border)',
-                          borderRadius: '8px'
-                        }}
+                        cursor={{ stroke: '#d1d5db', strokeWidth: 1, strokeDasharray: '4 4' }}
                       />
-                      {displayDataTypes.messages && (
+                      {displayMetrics.messages && (
                         <Area
-                          yAxisId="right"
-                          type="monotone"
-                          dataKey="messages"
-                          stroke="#10b981"
-                          strokeWidth={2}
+                          yAxisId="count"
+                          type="natural"
+                          dataKey="messagesSent"
+                          stroke="#3b82f6"
+                          strokeWidth={2.5}
                           fillOpacity={1}
                           fill="url(#colorMessages)"
-                          name="Messages"
+                          name="Messages Sent"
+                          dot={false}
+                          activeDot={{ r: 6, fill: '#3b82f6', stroke: '#fff', strokeWidth: 2 }}
                         />
                       )}
-                      {displayDataTypes.dataTransfer && (
+                      {displayMetrics.proofs && (
                         <Area
-                          yAxisId="left"
-                          type="monotone"
-                          dataKey="bytes"
-                          stroke="#3b82f6"
-                          strokeWidth={2}
+                          yAxisId="count"
+                          type="natural"
+                          dataKey="proofsVerified"
+                          stroke="#10b981"
+                          strokeWidth={2.5}
                           fillOpacity={1}
-                          fill="url(#colorDataTransfer)"
+                          fill="url(#colorProofs)"
+                          name="Proofs Verified"
+                          dot={false}
+                          activeDot={{ r: 6, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }}
+                        />
+                      )}
+                      {displayMetrics.data && (
+                        <Area
+                          yAxisId="data"
+                          type="natural"
+                          dataKey="dataTransferGB"
+                          stroke="#8b5cf6"
+                          strokeWidth={2.5}
+                          fillOpacity={1}
+                          fill="url(#colorData)"
                           name="Data Transfer"
+                          dot={false}
+                          activeDot={{ r: 6, fill: '#8b5cf6', stroke: '#fff', strokeWidth: 2 }}
                         />
                       )}
                     </AreaChart>
                   </ResponsiveContainer>
+                  )}
                 </div>
               </Card>
             </motion.div>
@@ -373,18 +464,29 @@ export default function DashboardPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 }}
             >
-              <Card className="p-6 h-full flex flex-col">
-                <h2 className="text-xl font-semibold mb-6 text-gray-900 dark:text-white">Recent Activity</h2>
-                <div className="space-y-4 flex-grow">
-                  {recentActivity.map((activity) => (
-                    <div key={activity.text} className="flex items-start gap-3">
-                      <div className="w-2 h-2 rounded-full bg-blue-600 mt-2" />
-                      <div className="flex-1">
-                        <p className="text-sm text-gray-900 dark:text-white">{activity.text}</p>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{activity.time}</p>
+              <Card className="p-4 sm:p-6 h-full flex flex-col">
+                <h2 className="text-lg sm:text-xl font-semibold mb-4 sm:mb-6 text-gray-900 dark:text-white">Recent Activity</h2>
+                <div className="space-y-3 sm:space-y-4 flex-grow">
+                  {recentActivity.map((activity) => {
+                    const iconConfig = {
+                      message: { icon: MessageSquare, bg: 'bg-blue-100 dark:bg-blue-900/30', color: 'text-blue-600 dark:text-blue-400' },
+                      app: { icon: AppWindow, bg: 'bg-green-100 dark:bg-green-900/30', color: 'text-green-600 dark:text-green-400' },
+                      key: { icon: Key, bg: 'bg-orange-100 dark:bg-orange-900/30', color: 'text-orange-600 dark:text-orange-400' },
+                    }[activity.type] || { icon: Zap, bg: 'bg-gray-100 dark:bg-gray-800', color: 'text-gray-600 dark:text-gray-400' };
+                    const IconComponent = iconConfig.icon;
+
+                    return (
+                      <div key={activity.text} className="flex items-start gap-3">
+                        <div className={`w-8 h-8 rounded-lg ${iconConfig.bg} flex items-center justify-center flex-shrink-0`}>
+                          <IconComponent className={`w-4 h-4 ${iconConfig.color}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-900 dark:text-white truncate">{activity.text}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{activity.time}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </Card>
             </motion.div>
@@ -396,16 +498,16 @@ export default function DashboardPage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.4 }}
           >
-            <h2 className="text-xl font-semibold mb-6 text-gray-900 dark:text-white">Quick Actions</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {quickActions.map((action, index) => (
+            <h2 className="text-lg sm:text-xl font-semibold mb-4 sm:mb-6 text-gray-900 dark:text-white">Quick Actions</h2>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+              {quickActions.map((action) => (
                 <Link key={action.title} href={action.link}>
-                  <Card className="p-6 h-full hover:shadow-lg transition-all cursor-pointer group flex flex-col">
-                    <div className={`w-12 h-12 rounded-lg ${action.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
-                      <action.icon className="w-6 h-6 text-white" />
+                  <Card className="p-3 sm:p-6 h-full hover:shadow-lg transition-all cursor-pointer group flex flex-col">
+                    <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-lg ${action.color} flex items-center justify-center mb-2 sm:mb-4 group-hover:scale-110 transition-transform`}>
+                      <action.icon className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
                     </div>
-                    <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{action.title}</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 flex-grow">{action.description}</p>
+                    <h3 className="text-sm sm:text-base font-semibold text-gray-900 dark:text-white mb-0.5 sm:mb-1">{action.title}</h3>
+                    <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 flex-grow hidden sm:block">{action.description}</p>
                   </Card>
                 </Link>
               ))}
@@ -417,25 +519,26 @@ export default function DashboardPage() {
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="flex items-center justify-center py-20"
+          className="flex items-center justify-center py-10 sm:py-20 px-4"
         >
-          <Card className="p-12 text-center max-w-md">
-            <div className="w-20 h-20 bg-blue-100 dark:bg-blue-900/20 rounded-full flex items-center justify-center mx-auto mb-6">
-              <Server className="w-10 h-10 text-blue-600" />
+          <Card className="p-6 sm:p-12 text-center max-w-md w-full">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-blue-100 dark:bg-blue-900/20 rounded-full flex items-center justify-center mx-auto mb-4 sm:mb-6">
+              <Server className="w-8 h-8 sm:w-10 sm:h-10 text-blue-600" />
             </div>
-            <h2 className="text-2xl font-bold mb-2 text-gray-900 dark:text-white">
+            <h2 className="text-xl sm:text-2xl font-bold mb-2 text-gray-900 dark:text-white">
               Ready to build something great?
             </h2>
-            <p className="text-gray-600 dark:text-gray-400 mb-6">
+            <p className="text-sm sm:text-base text-gray-600 dark:text-gray-400 mb-4 sm:mb-6">
               Create your first application to start sending secure messages
             </p>
             <Link href="/applications/new">
-              <Button size="lg" className="bg-blue-600 hover:bg-blue-700">
+              <Button size="lg" className="bg-blue-600 hover:bg-blue-700 w-full sm:w-auto">
                 <Plus className="w-5 h-5 mr-2" />
-                Create Your First Application
+                <span className="hidden sm:inline">Create Your First Application</span>
+                <span className="sm:hidden">Create Application</span>
               </Button>
             </Link>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-4">
+            <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-3 sm:mt-4">
               No coding required • 2 minutes to setup
             </p>
           </Card>

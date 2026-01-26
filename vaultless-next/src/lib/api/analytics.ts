@@ -97,7 +97,7 @@ export const analyticsApi = {
    * Get usage over time for charts
    * GET /dev/usage/charts
    */
-  getUsageOverTime: async (period: '7d' | '30d' | '90d' = '30d'): Promise<UsageOverTime> => {
+  getUsageOverTime: async (period: string = '30d'): Promise<UsageOverTime> => {
     return apiClient.get<UsageOverTime>(`/dev/usage/charts`, { period });
   },
 };

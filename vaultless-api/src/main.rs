@@ -152,6 +152,9 @@ async fn main() -> anyhow::Result<()> {
                     "http://127.0.0.1:3001"
                         .parse::<http::HeaderValue>()
                         .unwrap(), // Alternative port
+                    "http://192.168.1.101:3000"
+                        .parse::<http::HeaderValue>()
+                        .unwrap(), // Local network access
                 ])
                 .allow_methods([http::Method::GET, http::Method::POST, http::Method::PUT, http::Method::DELETE, http::Method::OPTIONS, http::Method::HEAD])
                 .allow_headers([

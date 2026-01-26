@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { useRequireAuth } from '@/contexts/AuthContext';
 import { applicationsApi } from '@/lib/api';
+import { ApiException } from '@/types/api';
 
 export default function CreateAppPage() {
   const router = useRouter();
@@ -44,9 +45,9 @@ export default function CreateAppPage() {
       toast.success(res.message || 'Application created successfully!');
       setStep(2);
     },
-    onError: (err: any) => {
+    onError: (err: ApiException) => {
       console.error('Create application failed:', err);
-      toast.error(err?.message || 'Failed to create application');
+      toast.error(err.message || 'Failed to create application');
     },
   });
 

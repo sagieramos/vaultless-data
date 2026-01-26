@@ -47,7 +47,7 @@ export function ApplicationsFilter({
     filters.tier,
   ].filter(Boolean).length;
 
-  const updateFilter = (key: keyof FilterState, value: any) => {
+  const updateFilter = <K extends keyof FilterState>(key: K, value: FilterState[K]) => {
     onFilterChange({ ...filters, [key]: value });
   };
 
@@ -84,7 +84,7 @@ export function ApplicationsFilter({
           value={`${filters.sort || 'createdAt'}-${filters.sortOrder || 'desc'}`}
           onValueChange={(value) => {
             const [sort, sortOrder] = value.split('-') as [FilterState['sort'], FilterState['sortOrder']];
-            onFilterChange({ ...filters, sort: sort as any, sortOrder: sortOrder as any });
+            onFilterChange({ ...filters, sort, sortOrder });
           }}
         >
           <SelectTrigger className="w-[180px]">
@@ -103,7 +103,7 @@ export function ApplicationsFilter({
         </Select>
 
         {/* Filter Button */}
-        <Popover open={isOpen} onOpenChange={setIsOpen} placement="right-end">
+        <Popover open={isOpen} onOpenChange={setIsOpen}>
           <PopoverTrigger asChild>
             <Button variant="outline" className="relative">
               <SlidersHorizontal className="w-4 h-4 mr-2" />
@@ -140,7 +140,7 @@ export function ApplicationsFilter({
                       id="filter-active"
                       checked={filters.filterActive}
                       onCheckedChange={(checked) =>
-                        updateFilter('filterActive', checked as boolean)
+                        updateFilter('filterActive', !!checked)
                       }
                     />
                     <label htmlFor="filter-active" className="text-sm">
@@ -152,7 +152,7 @@ export function ApplicationsFilter({
                       id="filter-inactive"
                       checked={filters.filterInactive}
                       onCheckedChange={(checked) =>
-                        updateFilter('filterInactive', checked as boolean)
+                        updateFilter('filterInactive', !!checked)
                       }
                     />
                     <label htmlFor="filter-inactive" className="text-sm">
@@ -207,7 +207,7 @@ export function ApplicationsFilter({
         <div className="mt-3 flex flex-wrap gap-2">
           {filters.search && (
             <Badge variant="secondary" className="flex items-center gap-1">
-              Search: "{filters.search}"
+              Search: &quot;{filters.search}&quot;
               <X
                 className="w-3 h-3 cursor-pointer"
                 onClick={() => updateFilter('search', '')}
