@@ -1,4 +1,6 @@
-pub mod billing;
+pub mod billing {
+    pub use crate::services::billing_service::BillingService;
+}
 pub mod cache;
 pub mod google_oauth;
 pub mod mail;

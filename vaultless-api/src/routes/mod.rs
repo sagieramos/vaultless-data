@@ -1,4 +1,5 @@
 pub mod application_route;
+pub mod billing;
 pub mod client;
 pub mod health;
 pub mod instant_message;
@@ -10,6 +11,7 @@ pub mod user;
 use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
 
 use application_route::application_routes;
+use billing::billing_routes;
 use client::client_routes;
 use instant_message::message_routes;
 use notification::notification_routes;
@@ -34,7 +36,8 @@ pub fn build_routes(state: AppState) -> Router {
             "/api/v1",
             Router::new()
                 .nest("/clients", client_routes(state.clone()))
-                .nest("/messages", message_routes(state.clone())),
+                .nest("/messages", message_routes(state.clone()))
+                .nest("/billing", billing_routes(state.clone())),
         )
         .layer(middleware::from_fn(reject_suspicious_query))
         .layer(DefaultBodyLimit::max(limits::MAX_REQUEST_SIZE))

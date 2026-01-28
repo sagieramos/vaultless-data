@@ -720,51 +720,6 @@ $$;
 ALTER FUNCTION public.get_group_member_addresses(p_group_id uuid) OWNER TO vaultless;
 
 --
--- Name: get_monthly_revenue_chart_data(uuid, uuid, integer); Type: FUNCTION; Schema: public; Owner: vaultless
---
-
-CREATE FUNCTION public.get_monthly_revenue_chart_data(p_application_id uuid DEFAULT NULL::uuid, p_developer_id uuid DEFAULT NULL::uuid, p_months_back integer DEFAULT 12) RETURNS TABLE(month_label text, revenue_cents bigint, revenue_usd numeric, messages bigint, bytes_transferred bigint)
-    LANGUAGE sql STABLE
-    AS $_$
-    WITH date_range AS (
-        SELECT generate_series(
-            date_trunc('month', now()) - ((p_months_back - 1) || ' months')::interval,
-            date_trunc('month', now()),
-            '1 month'::interval
-        ) AS month
-    ),
-    revenue_data AS (
-        SELECT 
-            time_bucket('1 month', period_start) AS month,
-            SUM(estimated_cost_cents) AS revenue_cents,
-            SUM(messages_sent + messages_received) AS messages,
-            SUM(total_bytes_sent + total_bytes_received) AS bytes_transferred
-        FROM usage_metrics
-        WHERE 
-            ($1 IS NULL OR application_id = $1)  -- application filter
-            AND ($2 IS NULL OR EXISTS (
-                SELECT 1 FROM applications a 
-                WHERE a.id = usage_metrics.application_id 
-                AND a.developer_id = $2
-            ))  -- developer filter
-            AND period_start >= date_trunc('month', now()) - (($3 - 1) || ' months')::interval
-        GROUP BY time_bucket('1 month', period_start)
-    )
-    SELECT 
-        TO_CHAR(dr.month, 'YYYY-MM') AS month_label,
-        COALESCE(rd.revenue_cents, 0) AS revenue_cents,
-        (COALESCE(rd.revenue_cents, 0) / 100.0)::DECIMAL(10,2) AS revenue_usd,
-        COALESCE(rd.messages, 0) AS messages,
-        COALESCE(rd.bytes_transferred, 0) AS bytes_transferred
-    FROM date_range dr
-    LEFT JOIN revenue_data rd ON dr.month = rd.month
-    ORDER BY dr.month;
-$_$;
-
-
-ALTER FUNCTION public.get_monthly_revenue_chart_data(p_application_id uuid, p_developer_id uuid, p_months_back integer) OWNER TO vaultless;
-
---
 -- Name: get_or_create_client(character varying, text, uuid, jsonb); Type: FUNCTION; Schema: public; Owner: vaultless
 --
 
@@ -844,6 +799,141 @@ $$;
 
 
 ALTER FUNCTION public.get_reaction_summary(p_message_id uuid, p_client_id uuid) OWNER TO vaultless;
+
+--
+-- Name: get_revenue_chart_data(uuid, uuid, text, integer); Type: FUNCTION; Schema: public; Owner: vaultless
+--
+
+CREATE FUNCTION public.get_revenue_chart_data(p_application_id uuid DEFAULT NULL::uuid, p_developer_id uuid DEFAULT NULL::uuid, p_granularity text DEFAULT 'day'::text, p_periods_back integer DEFAULT 30) RETURNS TABLE(period_label text, period_start timestamp with time zone, revenue_cents bigint, revenue_usd numeric, messages bigint, bytes_transferred bigint, proofs bigint)
+    LANGUAGE plpgsql STABLE
+    AS $$
+DECLARE
+    v_interval INTERVAL;
+    v_format TEXT;
+    v_start TIMESTAMPTZ;
+BEGIN
+    CASE p_granularity
+        WHEN 'hour' THEN
+            v_interval := '1 hour'::INTERVAL;
+            v_format := 'YYYY-MM-DD HH24:00';
+            v_start := date_trunc('hour', now()) - ((p_periods_back - 1) * v_interval);
+        WHEN 'day' THEN
+            v_interval := '1 day'::INTERVAL;
+            v_format := 'YYYY-MM-DD';
+            v_start := date_trunc('day', now()) - ((p_periods_back - 1) * v_interval);
+        WHEN 'week' THEN
+            v_interval := '1 week'::INTERVAL;
+            v_format := 'IYYY-"W"IW';
+            v_start := date_trunc('week', now()) - ((p_periods_back - 1) * v_interval);
+        WHEN 'month' THEN
+            v_interval := '1 month'::INTERVAL;
+            v_format := 'YYYY-MM';
+            v_start := date_trunc('month', now()) - ((p_periods_back - 1) * v_interval);
+        ELSE
+            RAISE EXCEPTION 'Invalid granularity: %. Use hour, day, week, or month.', p_granularity;
+    END CASE;
+
+    IF p_granularity = 'hour' THEN
+        RETURN QUERY
+        WITH periods AS (
+            SELECT generate_series(v_start, date_trunc('hour', now()), v_interval) AS p
+        ),
+        agg AS (
+            SELECT
+                hour AS p,
+                SUM(total_revenue_cents) AS revenue_cents,
+                SUM(total_messages) AS messages,
+                SUM(total_bytes) AS bytes,
+                SUM(total_proofs) AS proofs
+            FROM hourly_revenue_by_application
+            WHERE (p_application_id IS NULL OR application_id = p_application_id)
+              AND (p_developer_id IS NULL OR application_id IN (
+                  SELECT id FROM applications WHERE developer_id = p_developer_id
+              ))
+              AND hour >= v_start
+            GROUP BY hour
+        )
+        SELECT
+            TO_CHAR(periods.p, v_format),
+            periods.p,
+            COALESCE(agg.revenue_cents, 0)::BIGINT,
+            (COALESCE(agg.revenue_cents, 0) / 100.0)::DECIMAL(12,2),
+            COALESCE(agg.messages, 0)::BIGINT,
+            COALESCE(agg.bytes, 0)::BIGINT,
+            COALESCE(agg.proofs, 0)::BIGINT
+        FROM periods
+        LEFT JOIN agg ON periods.p = agg.p
+        ORDER BY periods.p;
+
+    ELSIF p_granularity IN ('day', 'week') THEN
+        RETURN QUERY
+        WITH periods AS (
+            SELECT generate_series(v_start, date_trunc(p_granularity, now()), v_interval) AS p
+        ),
+        agg AS (
+            SELECT
+                time_bucket(v_interval, day) AS p,
+                SUM(total_revenue_cents) AS revenue_cents,
+                SUM(total_messages) AS messages,
+                SUM(total_bytes) AS bytes,
+                SUM(total_proofs) AS proofs
+            FROM daily_revenue_by_application
+            WHERE (p_application_id IS NULL OR application_id = p_application_id)
+              AND (p_developer_id IS NULL OR application_id IN (
+                  SELECT id FROM applications WHERE developer_id = p_developer_id
+              ))
+              AND day >= v_start
+            GROUP BY time_bucket(v_interval, day)
+        )
+        SELECT
+            TO_CHAR(periods.p, v_format),
+            periods.p,
+            COALESCE(agg.revenue_cents, 0)::BIGINT,
+            (COALESCE(agg.revenue_cents, 0) / 100.0)::DECIMAL(12,2),
+            COALESCE(agg.messages, 0)::BIGINT,
+            COALESCE(agg.bytes, 0)::BIGINT,
+            COALESCE(agg.proofs, 0)::BIGINT
+        FROM periods
+        LEFT JOIN agg ON periods.p = agg.p
+        ORDER BY periods.p;
+
+    ELSE -- month
+        RETURN QUERY
+        WITH periods AS (
+            SELECT generate_series(v_start, date_trunc('month', now()), v_interval) AS p
+        ),
+        agg AS (
+            SELECT
+                month AS p,
+                SUM(total_revenue_cents) AS revenue_cents,
+                SUM(total_messages) AS messages,
+                SUM(total_bytes) AS bytes,
+                SUM(total_proofs) AS proofs
+            FROM monthly_revenue_by_application
+            WHERE (p_application_id IS NULL OR application_id = p_application_id)
+              AND (p_developer_id IS NULL OR application_id IN (
+                  SELECT id FROM applications WHERE developer_id = p_developer_id
+              ))
+              AND month >= v_start
+            GROUP BY month
+        )
+        SELECT
+            TO_CHAR(periods.p, v_format),
+            periods.p,
+            COALESCE(agg.revenue_cents, 0)::BIGINT,
+            (COALESCE(agg.revenue_cents, 0) / 100.0)::DECIMAL(12,2),
+            COALESCE(agg.messages, 0)::BIGINT,
+            COALESCE(agg.bytes, 0)::BIGINT,
+            COALESCE(agg.proofs, 0)::BIGINT
+        FROM periods
+        LEFT JOIN agg ON periods.p = agg.p
+        ORDER BY periods.p;
+    END IF;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_revenue_chart_data(p_application_id uuid, p_developer_id uuid, p_granularity text, p_periods_back integer) OWNER TO vaultless;
 
 --
 -- Name: get_sender_key_for_recipient(uuid, uuid, uuid); Type: FUNCTION; Schema: public; Owner: vaultless
@@ -1305,6 +1395,162 @@ CREATE TABLE _timescaledb_internal._compressed_hypertable_2 (
 ALTER TABLE _timescaledb_internal._compressed_hypertable_2 OWNER TO vaultless;
 
 --
+-- Name: _materialized_hypertable_8; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_8 (
+    developer_id uuid,
+    hour timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    applications_count bigint
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_8 OWNER TO vaultless;
+
+--
+-- Name: hourly_revenue_by_developer; Type: VIEW; Schema: public; Owner: vaultless
+--
+
+CREATE VIEW public.hourly_revenue_by_developer AS
+ SELECT developer_id,
+    hour,
+    total_revenue_cents,
+    total_messages,
+    total_bytes,
+    total_proofs,
+    applications_count
+   FROM _timescaledb_internal._materialized_hypertable_8 _materialized_hypertable_8;
+
+
+ALTER VIEW public.hourly_revenue_by_developer OWNER TO vaultless;
+
+--
+-- Name: _direct_view_10; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._direct_view_10 AS
+ SELECT developer_id,
+    public.time_bucket('1 day'::interval, hour) AS day,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    max(applications_count) AS applications_count
+   FROM public.hourly_revenue_by_developer
+  GROUP BY developer_id, (public.time_bucket('1 day'::interval, hour));
+
+
+ALTER VIEW _timescaledb_internal._direct_view_10 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_9; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_9 (
+    application_id uuid,
+    day timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    records_count numeric
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_9 OWNER TO vaultless;
+
+--
+-- Name: daily_revenue_by_application; Type: VIEW; Schema: public; Owner: vaultless
+--
+
+CREATE VIEW public.daily_revenue_by_application AS
+ SELECT application_id,
+    day,
+    total_revenue_cents,
+    total_messages,
+    total_bytes,
+    total_proofs,
+    records_count
+   FROM _timescaledb_internal._materialized_hypertable_9;
+
+
+ALTER VIEW public.daily_revenue_by_application OWNER TO vaultless;
+
+--
+-- Name: _direct_view_11; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._direct_view_11 AS
+ SELECT application_id,
+    public.time_bucket('1 mon'::interval, day) AS month,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    sum(records_count) AS records_count
+   FROM public.daily_revenue_by_application
+  GROUP BY application_id, (public.time_bucket('1 mon'::interval, day));
+
+
+ALTER VIEW _timescaledb_internal._direct_view_11 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_10; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_10 (
+    developer_id uuid,
+    day timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    applications_count bigint
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_10 OWNER TO vaultless;
+
+--
+-- Name: daily_revenue_by_developer; Type: VIEW; Schema: public; Owner: vaultless
+--
+
+CREATE VIEW public.daily_revenue_by_developer AS
+ SELECT developer_id,
+    day,
+    total_revenue_cents,
+    total_messages,
+    total_bytes,
+    total_proofs,
+    applications_count
+   FROM _timescaledb_internal._materialized_hypertable_10;
+
+
+ALTER VIEW public.daily_revenue_by_developer OWNER TO vaultless;
+
+--
+-- Name: _direct_view_12; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._direct_view_12 AS
+ SELECT developer_id,
+    public.time_bucket('1 mon'::interval, day) AS month,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    max(applications_count) AS applications_count
+   FROM public.daily_revenue_by_developer
+  GROUP BY developer_id, (public.time_bucket('1 mon'::interval, day));
+
+
+ALTER VIEW _timescaledb_internal._direct_view_12 OWNER TO vaultless;
+
+--
 -- Name: usage_metrics; Type: TABLE; Schema: public; Owner: vaultless
 --
 
@@ -1423,17 +1669,14 @@ ALTER VIEW _timescaledb_internal._direct_view_6 OWNER TO vaultless;
 
 CREATE VIEW _timescaledb_internal._direct_view_7 AS
  SELECT application_id,
-    public.time_bucket('1 mon'::interval, period_start) AS month,
+    public.time_bucket('01:00:00'::interval, period_start) AS hour,
     sum(estimated_cost_cents) AS total_revenue_cents,
     sum((messages_sent + messages_received)) AS total_messages,
     sum((total_bytes_sent + total_bytes_received)) AS total_bytes,
     sum(proofs_verified) AS total_proofs,
-    count(*) AS billing_records_count,
-    avg(estimated_cost_cents) AS avg_cost_per_record,
-    min(estimated_cost_cents) AS min_cost_record,
-    max(estimated_cost_cents) AS max_cost_record
+    count(*) AS records_count
    FROM public.usage_metrics
-  GROUP BY application_id, (public.time_bucket('1 mon'::interval, period_start));
+  GROUP BY application_id, (public.time_bucket('01:00:00'::interval, period_start));
 
 
 ALTER VIEW _timescaledb_internal._direct_view_7 OWNER TO vaultless;
@@ -1468,18 +1711,104 @@ ALTER TABLE public.applications OWNER TO vaultless;
 
 CREATE VIEW _timescaledb_internal._direct_view_8 AS
  SELECT a.developer_id,
-    public.time_bucket('1 mon'::interval, um.period_start) AS month,
+    public.time_bucket('01:00:00'::interval, um.period_start) AS hour,
     sum(um.estimated_cost_cents) AS total_revenue_cents,
-    count(DISTINCT um.application_id) AS applications_count,
-    count(DISTINCT um.api_key_id) AS api_keys_count,
     sum((um.messages_sent + um.messages_received)) AS total_messages,
-    sum((um.total_bytes_sent + um.total_bytes_received)) AS total_bytes
+    sum((um.total_bytes_sent + um.total_bytes_received)) AS total_bytes,
+    sum(um.proofs_verified) AS total_proofs,
+    count(DISTINCT um.application_id) AS applications_count
    FROM (public.usage_metrics um
      JOIN public.applications a ON ((um.application_id = a.id)))
-  GROUP BY a.developer_id, (public.time_bucket('1 mon'::interval, um.period_start));
+  GROUP BY a.developer_id, (public.time_bucket('01:00:00'::interval, um.period_start));
 
 
 ALTER VIEW _timescaledb_internal._direct_view_8 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_7; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_7 (
+    application_id uuid,
+    hour timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    records_count bigint
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_7 OWNER TO vaultless;
+
+--
+-- Name: hourly_revenue_by_application; Type: VIEW; Schema: public; Owner: vaultless
+--
+
+CREATE VIEW public.hourly_revenue_by_application AS
+ SELECT application_id,
+    hour,
+    total_revenue_cents,
+    total_messages,
+    total_bytes,
+    total_proofs,
+    records_count
+   FROM _timescaledb_internal._materialized_hypertable_7;
+
+
+ALTER VIEW public.hourly_revenue_by_application OWNER TO vaultless;
+
+--
+-- Name: _direct_view_9; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._direct_view_9 AS
+ SELECT application_id,
+    public.time_bucket('1 day'::interval, hour) AS day,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    sum(records_count) AS records_count
+   FROM public.hourly_revenue_by_application
+  GROUP BY application_id, (public.time_bucket('1 day'::interval, hour));
+
+
+ALTER VIEW _timescaledb_internal._direct_view_9 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_11; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_11 (
+    application_id uuid,
+    month timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    records_count numeric
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_11 OWNER TO vaultless;
+
+--
+-- Name: _materialized_hypertable_12; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TABLE _timescaledb_internal._materialized_hypertable_12 (
+    developer_id uuid,
+    month timestamp with time zone NOT NULL,
+    total_revenue_cents numeric,
+    total_messages numeric,
+    total_bytes numeric,
+    total_proofs numeric,
+    applications_count bigint
+);
+
+
+ALTER TABLE _timescaledb_internal._materialized_hypertable_12 OWNER TO vaultless;
 
 --
 -- Name: _materialized_hypertable_3; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
@@ -1540,41 +1869,58 @@ CREATE TABLE _timescaledb_internal._materialized_hypertable_6 (
 ALTER TABLE _timescaledb_internal._materialized_hypertable_6 OWNER TO vaultless;
 
 --
--- Name: _materialized_hypertable_7; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+-- Name: _partial_view_10; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
 --
 
-CREATE TABLE _timescaledb_internal._materialized_hypertable_7 (
-    application_id uuid,
-    month timestamp with time zone NOT NULL,
-    total_revenue_cents numeric,
-    total_messages numeric,
-    total_bytes numeric,
-    total_proofs numeric,
-    billing_records_count bigint,
-    avg_cost_per_record numeric,
-    min_cost_record bigint,
-    max_cost_record bigint
-);
+CREATE VIEW _timescaledb_internal._partial_view_10 AS
+ SELECT developer_id,
+    public.time_bucket('1 day'::interval, hour) AS day,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    max(applications_count) AS applications_count
+   FROM public.hourly_revenue_by_developer
+  GROUP BY developer_id, (public.time_bucket('1 day'::interval, hour));
 
 
-ALTER TABLE _timescaledb_internal._materialized_hypertable_7 OWNER TO vaultless;
+ALTER VIEW _timescaledb_internal._partial_view_10 OWNER TO vaultless;
 
 --
--- Name: _materialized_hypertable_8; Type: TABLE; Schema: _timescaledb_internal; Owner: vaultless
+-- Name: _partial_view_11; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
 --
 
-CREATE TABLE _timescaledb_internal._materialized_hypertable_8 (
-    developer_id uuid,
-    month timestamp with time zone NOT NULL,
-    total_revenue_cents numeric,
-    applications_count bigint,
-    api_keys_count bigint,
-    total_messages numeric,
-    total_bytes numeric
-);
+CREATE VIEW _timescaledb_internal._partial_view_11 AS
+ SELECT application_id,
+    public.time_bucket('1 mon'::interval, day) AS month,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    sum(records_count) AS records_count
+   FROM public.daily_revenue_by_application
+  GROUP BY application_id, (public.time_bucket('1 mon'::interval, day));
 
 
-ALTER TABLE _timescaledb_internal._materialized_hypertable_8 OWNER TO vaultless;
+ALTER VIEW _timescaledb_internal._partial_view_11 OWNER TO vaultless;
+
+--
+-- Name: _partial_view_12; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._partial_view_12 AS
+ SELECT developer_id,
+    public.time_bucket('1 mon'::interval, day) AS month,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    max(applications_count) AS applications_count
+   FROM public.daily_revenue_by_developer
+  GROUP BY developer_id, (public.time_bucket('1 mon'::interval, day));
+
+
+ALTER VIEW _timescaledb_internal._partial_view_12 OWNER TO vaultless;
 
 --
 -- Name: _partial_view_3; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
@@ -1644,17 +1990,14 @@ ALTER VIEW _timescaledb_internal._partial_view_6 OWNER TO vaultless;
 
 CREATE VIEW _timescaledb_internal._partial_view_7 AS
  SELECT application_id,
-    public.time_bucket('1 mon'::interval, period_start) AS month,
+    public.time_bucket('01:00:00'::interval, period_start) AS hour,
     sum(estimated_cost_cents) AS total_revenue_cents,
     sum((messages_sent + messages_received)) AS total_messages,
     sum((total_bytes_sent + total_bytes_received)) AS total_bytes,
     sum(proofs_verified) AS total_proofs,
-    count(*) AS billing_records_count,
-    avg(estimated_cost_cents) AS avg_cost_per_record,
-    min(estimated_cost_cents) AS min_cost_record,
-    max(estimated_cost_cents) AS max_cost_record
+    count(*) AS records_count
    FROM public.usage_metrics
-  GROUP BY application_id, (public.time_bucket('1 mon'::interval, period_start));
+  GROUP BY application_id, (public.time_bucket('01:00:00'::interval, period_start));
 
 
 ALTER VIEW _timescaledb_internal._partial_view_7 OWNER TO vaultless;
@@ -1665,18 +2008,36 @@ ALTER VIEW _timescaledb_internal._partial_view_7 OWNER TO vaultless;
 
 CREATE VIEW _timescaledb_internal._partial_view_8 AS
  SELECT a.developer_id,
-    public.time_bucket('1 mon'::interval, um.period_start) AS month,
+    public.time_bucket('01:00:00'::interval, um.period_start) AS hour,
     sum(um.estimated_cost_cents) AS total_revenue_cents,
-    count(DISTINCT um.application_id) AS applications_count,
-    count(DISTINCT um.api_key_id) AS api_keys_count,
     sum((um.messages_sent + um.messages_received)) AS total_messages,
-    sum((um.total_bytes_sent + um.total_bytes_received)) AS total_bytes
+    sum((um.total_bytes_sent + um.total_bytes_received)) AS total_bytes,
+    sum(um.proofs_verified) AS total_proofs,
+    count(DISTINCT um.application_id) AS applications_count
    FROM (public.usage_metrics um
      JOIN public.applications a ON ((um.application_id = a.id)))
-  GROUP BY a.developer_id, (public.time_bucket('1 mon'::interval, um.period_start));
+  GROUP BY a.developer_id, (public.time_bucket('01:00:00'::interval, um.period_start));
 
 
 ALTER VIEW _timescaledb_internal._partial_view_8 OWNER TO vaultless;
+
+--
+-- Name: _partial_view_9; Type: VIEW; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE VIEW _timescaledb_internal._partial_view_9 AS
+ SELECT application_id,
+    public.time_bucket('1 day'::interval, hour) AS day,
+    sum(total_revenue_cents) AS total_revenue_cents,
+    sum(total_messages) AS total_messages,
+    sum(total_bytes) AS total_bytes,
+    sum(total_proofs) AS total_proofs,
+    sum(records_count) AS records_count
+   FROM public.hourly_revenue_by_application
+  GROUP BY application_id, (public.time_bucket('1 day'::interval, hour));
+
+
+ALTER VIEW _timescaledb_internal._partial_view_9 OWNER TO vaultless;
 
 --
 -- Name: _sqlx_migrations; Type: TABLE; Schema: public; Owner: vaultless
@@ -2401,11 +2762,8 @@ CREATE VIEW public.monthly_revenue_by_application AS
     total_messages,
     total_bytes,
     total_proofs,
-    billing_records_count,
-    avg_cost_per_record,
-    min_cost_record,
-    max_cost_record
-   FROM _timescaledb_internal._materialized_hypertable_7;
+    records_count
+   FROM _timescaledb_internal._materialized_hypertable_11;
 
 
 ALTER VIEW public.monthly_revenue_by_application OWNER TO vaultless;
@@ -2418,11 +2776,11 @@ CREATE VIEW public.monthly_revenue_by_developer AS
  SELECT developer_id,
     month,
     total_revenue_cents,
-    applications_count,
-    api_keys_count,
     total_messages,
-    total_bytes
-   FROM _timescaledb_internal._materialized_hypertable_8 _materialized_hypertable_8;
+    total_bytes,
+    total_proofs,
+    applications_count
+   FROM _timescaledb_internal._materialized_hypertable_12;
 
 
 ALTER VIEW public.monthly_revenue_by_developer OWNER TO vaultless;
@@ -3267,6 +3625,48 @@ ALTER TABLE ONLY public.webhooks
 
 
 --
+-- Name: _materialized_hypertable_10_day_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_10_day_idx ON _timescaledb_internal._materialized_hypertable_10 USING btree (day DESC);
+
+
+--
+-- Name: _materialized_hypertable_10_developer_id_day_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_10_developer_id_day_idx ON _timescaledb_internal._materialized_hypertable_10 USING btree (developer_id, day DESC);
+
+
+--
+-- Name: _materialized_hypertable_11_application_id_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_11_application_id_month_idx ON _timescaledb_internal._materialized_hypertable_11 USING btree (application_id, month DESC);
+
+
+--
+-- Name: _materialized_hypertable_11_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_11_month_idx ON _timescaledb_internal._materialized_hypertable_11 USING btree (month DESC);
+
+
+--
+-- Name: _materialized_hypertable_12_developer_id_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_12_developer_id_month_idx ON _timescaledb_internal._materialized_hypertable_12 USING btree (developer_id, month DESC);
+
+
+--
+-- Name: _materialized_hypertable_12_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_12_month_idx ON _timescaledb_internal._materialized_hypertable_12 USING btree (month DESC);
+
+
+--
 -- Name: _materialized_hypertable_3_application_id_day_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
 --
 
@@ -3330,45 +3730,87 @@ CREATE INDEX _materialized_hypertable_6_period_start_idx ON _timescaledb_interna
 
 
 --
--- Name: _materialized_hypertable_7_application_id_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+-- Name: _materialized_hypertable_7_application_id_hour_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
 --
 
-CREATE INDEX _materialized_hypertable_7_application_id_month_idx ON _timescaledb_internal._materialized_hypertable_7 USING btree (application_id, month DESC);
-
-
---
--- Name: _materialized_hypertable_7_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
---
-
-CREATE INDEX _materialized_hypertable_7_month_idx ON _timescaledb_internal._materialized_hypertable_7 USING btree (month DESC);
+CREATE INDEX _materialized_hypertable_7_application_id_hour_idx ON _timescaledb_internal._materialized_hypertable_7 USING btree (application_id, hour DESC);
 
 
 --
--- Name: _materialized_hypertable_8_developer_id_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+-- Name: _materialized_hypertable_7_hour_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
 --
 
-CREATE INDEX _materialized_hypertable_8_developer_id_month_idx ON _timescaledb_internal._materialized_hypertable_8 USING btree (developer_id, month DESC);
-
-
---
--- Name: _materialized_hypertable_8_month_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
---
-
-CREATE INDEX _materialized_hypertable_8_month_idx ON _timescaledb_internal._materialized_hypertable_8 USING btree (month DESC);
+CREATE INDEX _materialized_hypertable_7_hour_idx ON _timescaledb_internal._materialized_hypertable_7 USING btree (hour DESC);
 
 
 --
--- Name: idx_monthly_revenue_developer_month; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+-- Name: _materialized_hypertable_8_developer_id_hour_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
 --
 
-CREATE INDEX idx_monthly_revenue_developer_month ON _timescaledb_internal._materialized_hypertable_8 USING btree (developer_id, month);
+CREATE INDEX _materialized_hypertable_8_developer_id_hour_idx ON _timescaledb_internal._materialized_hypertable_8 USING btree (developer_id, hour DESC);
 
 
 --
--- Name: idx_monthly_revenue_month_application; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+-- Name: _materialized_hypertable_8_hour_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
 --
 
-CREATE INDEX idx_monthly_revenue_month_application ON _timescaledb_internal._materialized_hypertable_7 USING btree (month, application_id);
+CREATE INDEX _materialized_hypertable_8_hour_idx ON _timescaledb_internal._materialized_hypertable_8 USING btree (hour DESC);
+
+
+--
+-- Name: _materialized_hypertable_9_application_id_day_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_9_application_id_day_idx ON _timescaledb_internal._materialized_hypertable_9 USING btree (application_id, day DESC);
+
+
+--
+-- Name: _materialized_hypertable_9_day_idx; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX _materialized_hypertable_9_day_idx ON _timescaledb_internal._materialized_hypertable_9 USING btree (day DESC);
+
+
+--
+-- Name: idx_daily_revenue_app_day; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_daily_revenue_app_day ON _timescaledb_internal._materialized_hypertable_9 USING btree (application_id, day);
+
+
+--
+-- Name: idx_daily_revenue_dev_day; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_daily_revenue_dev_day ON _timescaledb_internal._materialized_hypertable_10 USING btree (developer_id, day);
+
+
+--
+-- Name: idx_hourly_revenue_app_hour; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_hourly_revenue_app_hour ON _timescaledb_internal._materialized_hypertable_7 USING btree (application_id, hour);
+
+
+--
+-- Name: idx_hourly_revenue_dev_hour; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_hourly_revenue_dev_hour ON _timescaledb_internal._materialized_hypertable_8 USING btree (developer_id, hour);
+
+
+--
+-- Name: idx_monthly_revenue_app_month; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_monthly_revenue_app_month ON _timescaledb_internal._materialized_hypertable_11 USING btree (application_id, month);
+
+
+--
+-- Name: idx_monthly_revenue_dev_month; Type: INDEX; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE INDEX idx_monthly_revenue_dev_month ON _timescaledb_internal._materialized_hypertable_12 USING btree (developer_id, month);
 
 
 --
@@ -4213,10 +4655,59 @@ CREATE OR REPLACE VIEW public.group_activity_summary AS
 
 
 --
+-- Name: _materialized_hypertable_10 ts_cagg_invalidation_trigger; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_cagg_invalidation_trigger AFTER INSERT OR DELETE OR UPDATE ON _timescaledb_internal._materialized_hypertable_10 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.continuous_agg_invalidation_trigger('10');
+
+
+--
+-- Name: _materialized_hypertable_7 ts_cagg_invalidation_trigger; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_cagg_invalidation_trigger AFTER INSERT OR DELETE OR UPDATE ON _timescaledb_internal._materialized_hypertable_7 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.continuous_agg_invalidation_trigger('7');
+
+
+--
+-- Name: _materialized_hypertable_8 ts_cagg_invalidation_trigger; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_cagg_invalidation_trigger AFTER INSERT OR DELETE OR UPDATE ON _timescaledb_internal._materialized_hypertable_8 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.continuous_agg_invalidation_trigger('8');
+
+
+--
+-- Name: _materialized_hypertable_9 ts_cagg_invalidation_trigger; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_cagg_invalidation_trigger AFTER INSERT OR DELETE OR UPDATE ON _timescaledb_internal._materialized_hypertable_9 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.continuous_agg_invalidation_trigger('9');
+
+
+--
 -- Name: _compressed_hypertable_2 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
 --
 
 CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._compressed_hypertable_2 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
+
+
+--
+-- Name: _materialized_hypertable_10 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_10 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
+
+
+--
+-- Name: _materialized_hypertable_11 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_11 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
+
+
+--
+-- Name: _materialized_hypertable_12 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_12 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
 
 
 --
@@ -4252,6 +4743,13 @@ CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materia
 --
 
 CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_8 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
+
+
+--
+-- Name: _materialized_hypertable_9 ts_insert_blocker; Type: TRIGGER; Schema: _timescaledb_internal; Owner: vaultless
+--
+
+CREATE TRIGGER ts_insert_blocker BEFORE INSERT ON _timescaledb_internal._materialized_hypertable_9 FOR EACH ROW EXECUTE FUNCTION _timescaledb_functions.insert_blocker();
 
 
 --

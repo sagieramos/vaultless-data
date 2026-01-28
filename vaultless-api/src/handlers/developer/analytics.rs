@@ -23,7 +23,9 @@ use uuid::Uuid;
 //vaultless-core/src/models/usage/application
 use vaultless_core::{
     models::applications::dto::*,
-    models::usage::application::monthly_revenue::{MonthlyRevenueData, MonthlyRevenueDataSchema, RevenueChartData, MonthlyApplicationRevenue, PaginatedMonthlyApplicationRevenue},
+    models::usage::application::monthly_revenue::{
+        MonthlyRevenueData, PaginatedMonthlyApplicationRevenue, RevenueChartData,
+    },
     types::SubscriptionTier,
 };
 
@@ -460,8 +462,12 @@ pub struct MonthlyBreakdownQuery {
     pub page_size: i64,
 }
 
-fn default_page() -> i64 { 1 }
-fn default_page_size() -> i64 { 20 }
+fn default_page() -> i64 {
+    1
+}
+fn default_page_size() -> i64 {
+    20
+}
 
 /// Get monthly revenue data for a specific application
 #[utoipa::path(

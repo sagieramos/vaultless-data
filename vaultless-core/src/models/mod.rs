@@ -1,5 +1,6 @@
 pub mod api_key;
 pub mod applications;
+pub mod billing;
 pub mod client_token;
 pub mod clients;
 pub mod message;
@@ -16,6 +17,9 @@ pub use api_key::{ApiKey, CachedApiKey, CreateApiKey};
 pub use applications::dto::{
     Application, CreateApplication, CreateApplicationResponse,
     UpdateApplication, WebhookEventType, WebhookInput, MAX_WEBHOOKS_PER_APPLICATION,
+};
+pub use billing::{
+    PspAccount, DeveloperRevenueShare, ClientUsageCredit, CreditTransaction, PspPayout
 };
 pub use webhook::WebhookRecord;
 pub use message::*;
