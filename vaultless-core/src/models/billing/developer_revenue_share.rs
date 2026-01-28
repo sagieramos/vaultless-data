@@ -19,6 +19,7 @@ pub struct DeveloperRevenueShare {
     pub platform_fee_percent: rust_decimal::Decimal,
     pub platform_fee_cents: i64,
     pub net_revenue_cents: i64,
+    pub settlement_currency: String, // Settlement currency for this revenue (e.g., USD)
     pub psp_transaction_id: Option<String>,
     pub psp_payout_id: Option<String>,
     pub status: String, // pending_settlement, settled, paid_to_developer, failed
@@ -40,15 +41,17 @@ impl DeveloperRevenueShare {
         platform_fee_percent: rust_decimal::Decimal,
         platform_fee_cents: i64,
         net_revenue_cents: i64,
+        settlement_currency: String,
     ) -> Result<Self> {
         let share = sqlx::query_as::<_, Self>(
             r#"
             INSERT INTO developer_revenue_shares (
                 developer_id, application_id, billing_period_id,
                 messages_processed, bytes_transferred, proofs_verified,
-                gross_revenue_cents, platform_fee_percent, platform_fee_cents, net_revenue_cents
+                gross_revenue_cents, platform_fee_percent, platform_fee_cents, net_revenue_cents,
+                settlement_currency
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             "#,
         )
@@ -62,6 +65,7 @@ impl DeveloperRevenueShare {
         .bind(platform_fee_percent)
         .bind(platform_fee_cents)
         .bind(net_revenue_cents)
+        .bind(settlement_currency)
         .fetch_one(&mut **tx)
         .await?;
 

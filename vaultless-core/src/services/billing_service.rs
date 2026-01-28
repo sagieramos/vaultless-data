@@ -71,15 +71,12 @@ impl BillingService {
         .await?;
 
         // Record the credit deduction transaction
-        // Using USD as default currency, but this should come from the client's payment context
         CreditTransaction::create(
             tx,
             client_id,
             application_id,
             "usage_deduction".to_string(),
             -required_credits, // Negative to indicate deduction
-            "USD".to_string(), // Default currency
-            0, // Credit unit value - for usage deductions, this might be 0 or derived differently
             Some(serde_json::json!({
                 "messages_sent": messages_sent,
                 "messages_received": messages_received,
@@ -119,6 +116,7 @@ impl BillingService {
             platform_fee_percent,
             platform_fee_cents,
             net_revenue_cents,
+            "USD".to_string(), // settlement_currency - would come from application/developer settings in real implementation
         )
         .await?;
 
@@ -157,8 +155,6 @@ impl BillingService {
             application_id, // The application context where the credits might be used
             "credit_purchase".to_string(), // Or "credit_allocation" depending on source
             credits_to_add, // Positive to indicate addition
-            "USD".to_string(), // Currency code - should come from payment context
-            cash_value_cents / credits_to_add.max(1), // Credit unit value (avoid division by zero)
             Some(serde_json::json!({
                 "action": "credit_addition",
                 "credits_added": credits_to_add,

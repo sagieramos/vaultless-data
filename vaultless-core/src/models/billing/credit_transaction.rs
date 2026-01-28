@@ -13,8 +13,6 @@ pub struct CreditTransaction {
     pub transaction_type: String, // credit_purchase, credit_allocation, usage_deduction, refund, expiration
     pub amount: i64, // Amount of credits affected (can be negative)
     pub usage_context: Option<serde_json::Value>, // Details about what the credits were used for
-    pub currency_code: String, // ISO 4217 currency code (e.g., USD, EUR, NGN)
-    pub credit_unit_value: i64, // Value of 1 credit unit in smallest currency denomination (e.g., cents for USD)
     pub related_transaction_id: Option<Uuid>,
     pub billing_period_id: Option<Uuid>,
     pub status: String, // pending, completed, failed, reversed
@@ -28,8 +26,6 @@ impl CreditTransaction {
         application_id: Uuid,
         transaction_type: String,
         amount: i64,
-        currency_code: String,
-        credit_unit_value: i64,
         usage_context: Option<serde_json::Value>,
         related_transaction_id: Option<Uuid>,
         billing_period_id: Option<Uuid>,
@@ -38,10 +34,9 @@ impl CreditTransaction {
             r#"
             INSERT INTO credit_transactions (
                 client_id, application_id, transaction_type, amount,
-                currency_code, credit_unit_value, usage_context,
-                related_transaction_id, billing_period_id
+                usage_context, related_transaction_id, billing_period_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
             "#,
         )
@@ -49,8 +44,6 @@ impl CreditTransaction {
         .bind(application_id)
         .bind(transaction_type)
         .bind(amount)
-        .bind(currency_code)
-        .bind(credit_unit_value)
         .bind(usage_context)
         .bind(related_transaction_id)
         .bind(billing_period_id)

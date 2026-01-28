@@ -19,7 +19,7 @@ pub use applications::dto::{
     UpdateApplication, WebhookEventType, WebhookInput, MAX_WEBHOOKS_PER_APPLICATION,
 };
 pub use billing::{
-    PspAccount, DeveloperRevenueShare, ClientUsageCredit, CreditTransaction, PspPayout
+    PspAccount, DeveloperRevenueShare, ClientUsageCredit, CreditTransaction, PspPayout, PspPayoutItem
 };
 pub use webhook::WebhookRecord;
 pub use message::*;
