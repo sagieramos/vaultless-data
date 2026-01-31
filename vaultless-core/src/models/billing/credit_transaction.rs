@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::error::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreditTransaction {
     pub id: Uuid,
     pub client_id: Uuid,

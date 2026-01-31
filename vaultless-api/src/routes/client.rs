@@ -18,6 +18,8 @@ pub fn client_routes(state: AppState) -> Router<AppState> {
         .route("/handshake/initiate", post(handshake::initiate_handshake))
         .route("/handshake/respond", post(handshake::respond_to_handshake))
         .route("/handshake/complete", post(handshake::complete_handshake))
+        // Nest client billing routes
+        .nest("/billing", crate::routes::client_billing::client_billing_routes(state.clone()))
         .layer(middleware::from_fn_with_state(state.clone(), client_auth))
         // Public routes
         .route("/register", post(sign_up_client))

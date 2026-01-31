@@ -4,6 +4,7 @@ use crate::cache_key;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
 use redis::AsyncCommands;
+use rust_decimal::prelude::FromStr;
 use serde::{Deserialize, Serialize};
 use sqlx::{types::Json, Executor, FromRow, Postgres};
 use std::collections::HashMap;
@@ -43,6 +44,8 @@ pub struct ClientSubscriptionCacheEntry {
     pub price_per_gb_cents: Option<i64>,
     pub price_per_proof_cents: Option<i64>,
     pub prepaid_amount_cents: Option<i64>,
+    pub platform_fee_percent: Option<rust_decimal::Decimal>,
+    pub currency: Option<String>,
     // Status
     pub is_active: bool,
     pub started_at: DateTime<Utc>,
@@ -61,6 +64,8 @@ pub mod client_sub_cache_field {
     pub const PRICE_PER_GB: &str = "price_per_gb";
     pub const PRICE_PER_PROOF: &str = "price_per_proof";
     pub const PREPAID_AMOUNT: &str = "prepaid_amount";
+    pub const PLATFORM_FEE_PERCENT: &str = "platform_fee_percent";
+    pub const CURRENCY: &str = "currency";
     pub const IS_ACTIVE: &str = "is_active";
     pub const STARTED_AT: &str = "started_at";
     pub const ENDED_AT: &str = "ended_at";
@@ -90,6 +95,9 @@ impl ClientSubscriptionCacheEntry {
             price_per_gb_cents: vals.get(client_sub_cache_field::PRICE_PER_GB).and_then(|v| v.parse().ok()),
             price_per_proof_cents: vals.get(client_sub_cache_field::PRICE_PER_PROOF).and_then(|v| v.parse().ok()),
             prepaid_amount_cents: vals.get(client_sub_cache_field::PREPAID_AMOUNT).and_then(|v| v.parse().ok()),
+            platform_fee_percent: vals.get(client_sub_cache_field::PLATFORM_FEE_PERCENT)
+                .and_then(|v| rust_decimal::Decimal::from_str(v).ok()),
+            currency: vals.get(client_sub_cache_field::CURRENCY).cloned(),
             is_active: vals.get(client_sub_cache_field::IS_ACTIVE).map(|v| v == "1").unwrap_or(false),
             started_at: vals.get(client_sub_cache_field::STARTED_AT)?
                 .parse()
@@ -126,6 +134,10 @@ impl ClientSubscriptionCacheEntry {
         args.push(self.price_per_proof_cents.map(|v| v.to_string()).unwrap_or_default());
         args.push(client_sub_cache_field::PREPAID_AMOUNT.to_string());
         args.push(self.prepaid_amount_cents.map(|v| v.to_string()).unwrap_or_default());
+        args.push(client_sub_cache_field::PLATFORM_FEE_PERCENT.to_string());
+        args.push(self.platform_fee_percent.map(|v| v.to_string()).unwrap_or_default());
+        args.push(client_sub_cache_field::CURRENCY.to_string());
+        args.push(self.currency.clone().unwrap_or_default());
         args.push(client_sub_cache_field::IS_ACTIVE.to_string());
         args.push(if self.is_active { "1".to_string() } else { "0".to_string() });
         args.push(client_sub_cache_field::STARTED_AT.to_string());
@@ -164,6 +176,8 @@ impl ClientSubscriptionCacheEntry {
             price_per_gb_cents: snapshot.price_per_gb_cents,
             price_per_proof_cents: snapshot.price_per_proof_cents,
             prepaid_amount_cents: snapshot.prepaid_amount_cents,
+            platform_fee_percent: snapshot.platform_fee_percent,
+            currency: snapshot.currency.clone(),
             is_active: true,
             started_at: subscription.started_at,
             ended_at: subscription.ended_at,
@@ -299,6 +313,7 @@ impl ClientSubscription {
                                     started_at: cache_entry.started_at,
                                     ended_at: cache_entry.ended_at,
                                     pricing_snapshot: Json(super::snapshot::PricingSnapshot {
+                                        id: Uuid::new_v4(), // Generate a new UUID for the snapshot
                                         plan_id: cache_entry.plan_id,
                                         plan_name: cache_entry.plan_name,
                                         pricing_mode: cache_entry.pricing_mode,
@@ -306,6 +321,8 @@ impl ClientSubscription {
                                         price_per_gb_cents: cache_entry.price_per_gb_cents,
                                         price_per_proof_cents: cache_entry.price_per_proof_cents,
                                         prepaid_amount_cents: cache_entry.prepaid_amount_cents,
+                                        platform_fee_percent: cache_entry.platform_fee_percent,
+                                        currency: cache_entry.currency,
                                     }),
                                     created_at: chrono::Utc::now(),
                                 }));

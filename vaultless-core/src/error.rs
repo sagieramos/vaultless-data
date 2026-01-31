@@ -66,6 +66,12 @@ pub enum VaultlessError {
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
+    #[error("Insufficient credits: {0}")]
+    InsufficientCredits(String),
+
+    #[error("Insufficient funds: {0}")]
+    InsufficientFunds(String),
+
     #[error("Rate limit exceeded: {0}")]
     RateLimitExceeded(String),
 

@@ -14,6 +14,13 @@ use utoipa::openapi::security::SecurityScheme;
         crate::handlers::developer::application::charts::get_chart_data,
         crate::handlers::developer::application::handlers::get_user_usage_summary,
         crate::handlers::developer::application::handlers::get_quota_warnings,
+        // Billing handlers
+        crate::handlers::developer::billing::get_billing_overview,
+        crate::handlers::developer::billing::get_billing_history,
+        crate::handlers::developer::billing::get_usage_report,
+        crate::handlers::developer::billing::get_revenue_report,
+        crate::handlers::developer::billing::get_current_billing_period,
+        crate::handlers::developer::billing::get_invoices,
         crate::handlers::developer::application::handlers::get_application_with_keys,
         // Key rotation handlers
         crate::handlers::developer::application::keys::rotate_secret_key,
@@ -126,6 +133,13 @@ use utoipa::openapi::security::SecurityScheme;
             crate::handlers::developer::analytics::MonthlyRevenueQuery,
             crate::handlers::developer::analytics::MonthlyBreakdownQuery,
             vaultless_core::models::usage::application::monthly_revenue::MonthlyRevenueDataSchema,
+            // Billing schemas
+            crate::handlers::developer::billing::BillingOverviewResponse,
+            crate::handlers::developer::billing::UsageReportResponse,
+            crate::handlers::developer::billing::RevenueReportResponse,
+            crate::handlers::developer::billing::GetBillingHistoryQuery,
+            crate::handlers::developer::billing::GetUsageQuery,
+            crate::handlers::developer::billing::GetRevenueQuery,
         )
     ),
     modifiers(&SecurityAddon),

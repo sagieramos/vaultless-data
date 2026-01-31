@@ -1,5 +1,5 @@
 pub mod billing {
-    pub use crate::services::billing_service::BillingService;
+    pub use vaultless_core::BillingService;
 }
 pub mod cache;
 pub mod google_oauth;

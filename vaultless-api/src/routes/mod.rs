@@ -1,6 +1,7 @@
 pub mod application_route;
 pub mod billing;
 pub mod client;
+pub mod client_billing;
 pub mod health;
 pub mod instant_message;
 pub mod limits;
@@ -30,14 +31,14 @@ pub fn build_routes(state: AppState) -> Router {
             Router::new()
                 .nest("/auth", user_routes(state.clone()))
                 .nest("/applications", application_routes(state.clone()))
-                .nest("/notifications", notification_routes(state.clone())),
+                .nest("/notifications", notification_routes(state.clone()))
+                .nest("/billing", billing_routes(state.clone())),
         )
         .nest(
             "/api/v1",
             Router::new()
                 .nest("/clients", client_routes(state.clone()))
                 .nest("/messages", message_routes(state.clone()))
-                .nest("/billing", billing_routes(state.clone())),
         )
         .layer(middleware::from_fn(reject_suspicious_query))
         .layer(DefaultBodyLimit::max(limits::MAX_REQUEST_SIZE))

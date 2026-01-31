@@ -42,7 +42,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 utoipa = { version = "5.4.0", features = ["chrono", "uuid"] }
 sha2 = "0.10.9"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "migrate", "ipnetwork", "macros", "bigdecimal", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "migrate", "ipnetwork", "macros", "bigdecimal", "rust_decimal", "uuid", "chrono", "json"] }
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-stream = "0.1.17"
@@ -58,6 +58,7 @@ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 hkdf = "0.12.4"
 
 [features]
-default = ["cbor", "x509"] 
+default = ["cbor", "x509", "utoipa"]
 cbor = ["ciborium"]
 x509 = ["x509-parser"]
+utoipa = []

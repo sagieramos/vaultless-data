@@ -1,13 +1,15 @@
-use chrono::{Duration, Utc};
+use chrono::Utc;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Executor, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
     error::Result,
     models::{
         billing::{
-            ClientUsageCredit, CreditTransaction, DeveloperRevenueShare, PspAccount, PspPayout
+            ClientUsageCredit, CreditTransaction, DeveloperRevenueShare, PspAccount, PspPayout,
+            ApplicationPricingPlan, ClientSubscription, ClientBillingUsage, ClientInvoice, BillingPeriod
         },
         pricing::snapshot::PricingSnapshot,
     },
@@ -31,94 +33,152 @@ impl BillingService {
         bytes_received: i64,
         proofs_verified: i64,
         billing_period_id: Uuid,
-    ) -> Result<()> {
-        // Calculate usage totals
-        let total_messages = messages_sent + messages_received;
-        let total_bytes = bytes_sent + bytes_received;
+    ) -> Result<i64> {  // Return remaining credits
+        // First, check if the client has sufficient credits for this usage
+        let client_credit = ClientUsageCredit::find_by_client(&mut **tx, client_id)
+            .await?
+            .ok_or_else(|| crate::error::VaultlessError::NotFound("Client usage credit not found".into()))?;
 
-        // Calculate required credits (these are non-cash usage units)
-        let required_credits = Self::calculate_required_credits(
-            total_messages,
-            total_bytes,
-            proofs_verified,
+        // Calculate the cost of this usage based on the pricing snapshot
+        let usage_cost = Self::calculate_usage_cost(
             pricing_snapshot,
+            messages_sent,
+            messages_received,
+            bytes_sent,
+            bytes_received,
+            proofs_verified,
         );
 
-        // Check if client has sufficient credits
-        let mut client_credit = ClientUsageCredit::find_by_client(
-            &mut **tx,
-            client_id,
-        )
-        .await?
-        .ok_or_else(|| {
-            crate::error::VaultlessError::NotFound(
-                "Client usage credit record not found".into(),
-            )
-        })?;
-
-        if client_credit.credit_balance < required_credits {
+        // Check if client has enough credits
+        if client_credit.credit_balance < usage_cost {
             return Err(crate::error::VaultlessError::InsufficientCredits(
-                "Insufficient credits for this usage".to_string(),
+                "Client does not have enough credits for this usage".to_string(),
             ));
         }
 
-        // Deduct credits from client (these are non-cash units)
-        ClientUsageCredit::update_balance(
-            tx,
-            client_id,
-            -required_credits, // Negative to decrease balance
-        )
-        .await?;
+        // Create revenue snapshot for this usage
+        let revenue_snapshot = serde_json::json!({
+            "pricing_snapshot_id": pricing_snapshot.id,
+            "pricing_model": pricing_snapshot.pricing_mode,
+            "price_per_message": pricing_snapshot.price_per_message_cents,
+            "price_per_gb": pricing_snapshot.price_per_gb_cents,
+            "price_per_proof": pricing_snapshot.price_per_proof_cents,
+            "platform_fee_percent": pricing_snapshot.platform_fee_percent,
+            "calculated_at": Utc::now(),
+            "usage_cost": usage_cost
+        });
 
-        // Record the credit deduction transaction
+        // Record the usage event
+        let usage = ClientBillingUsage::create(
+            tx,
+            billing_period_id,
+            client_id,
+            application_id,
+            messages_sent,
+            messages_received,
+            proofs_verified,
+            bytes_sent + bytes_received,  // total_bytes_stored
+            bytes_sent,  // total_bytes_sent
+            bytes_received,  // total_bytes_received
+            0,  // rate_limit_hits - assuming none for this usage
+            developer_id,
+            revenue_snapshot,
+        ).await?;
+
+        // Deduct credits from client
+        let updated_credit = ClientUsageCredit::update_balance::<Transaction<'_, Postgres>>(tx, client_id, -usage_cost).await?;
+
+        // Create a credit transaction record
         CreditTransaction::create(
             tx,
             client_id,
             application_id,
             "usage_deduction".to_string(),
-            -required_credits, // Negative to indicate deduction
+            -usage_cost,
             Some(serde_json::json!({
+                "usage_id": usage.id,
+                "pricing_snapshot_id": pricing_snapshot.id,
                 "messages_sent": messages_sent,
                 "messages_received": messages_received,
                 "bytes_sent": bytes_sent,
                 "bytes_received": bytes_received,
-                "proofs_verified": proofs_verified,
-                "pricing_snapshot": pricing_snapshot
+                "proofs_verified": proofs_verified
             })),
-            None, // No related transaction for usage deduction
+            None,  // No related transaction for usage deduction
             Some(billing_period_id),
-        )
-        .await?;
+        ).await?;
 
-        // Calculate revenue for the developer based on usage (this is accounting metadata only)
-        let gross_revenue_cents = Self::calculate_gross_revenue_cents(
-            total_messages,
-            total_bytes,
-            proofs_verified,
-            pricing_snapshot,
-        );
-
-        // Platform takes a percentage (configurable per application or globally)
-        let platform_fee_percent = Decimal::new(1000, 3); // 10.00% as example
-        let platform_fee_cents = (gross_revenue_cents as f64 * platform_fee_percent.to_f64().unwrap_or(0.1)) as i64;
-        let net_revenue_cents = gross_revenue_cents - platform_fee_cents;
-
-        // Create revenue share record (this is accounting metadata, not real money held by platform)
-        DeveloperRevenueShare::create(
+        // Attribute revenue to developer based on usage
+        Self::attribute_revenue_to_developer(
             tx,
             developer_id,
             application_id,
             billing_period_id,
-            total_messages,
-            total_bytes,
+            messages_sent,
+            messages_received,
+            bytes_sent,
+            bytes_received,
+            proofs_verified,
+            usage_cost,
+            pricing_snapshot,
+        ).await?;
+
+        Ok(updated_credit.credit_balance)
+    }
+
+    /// Calculate the cost of usage based on pricing snapshot
+    fn calculate_usage_cost(
+        pricing_snapshot: &PricingSnapshot,
+        messages_sent: i64,
+        messages_received: i64,
+        bytes_sent: i64,
+        bytes_received: i64,
+        proofs_verified: i64,
+    ) -> i64 {
+        // This is a simplified calculation - in reality, pricing could be more complex
+        let cost = (messages_sent as f64 * pricing_snapshot.get_price_per_message().to_f64().unwrap_or(0.0)) as i64 +
+                   (messages_received as f64 * pricing_snapshot.get_price_per_message().to_f64().unwrap_or(0.0)) as i64 +
+                   (bytes_sent as f64 * pricing_snapshot.get_price_per_byte().to_f64().unwrap_or(0.0)) as i64 +
+                   (bytes_received as f64 * pricing_snapshot.get_price_per_byte().to_f64().unwrap_or(0.0)) as i64 +
+                   (proofs_verified as f64 * pricing_snapshot.get_price_per_proof().to_f64().unwrap_or(0.0)) as i64;
+
+        cost
+    }
+
+    /// Attribute revenue to developer based on usage
+    async fn attribute_revenue_to_developer(
+        tx: &mut Transaction<'_, Postgres>,
+        developer_id: Uuid,
+        application_id: Uuid,
+        billing_period_id: Uuid,
+        messages_sent: i64,
+        messages_received: i64,
+        bytes_sent: i64,
+        bytes_received: i64,
+        proofs_verified: i64,
+        gross_revenue_cents: i64,
+        pricing_snapshot: &PricingSnapshot,
+    ) -> Result<()> {
+        // Calculate platform fee
+        let platform_fee_percent = pricing_snapshot.platform_fee_percent.unwrap_or(Decimal::from(10)); // Default to 10%
+        let platform_fee_cents = (gross_revenue_cents as f64 * platform_fee_percent.to_f64().unwrap_or(0.1)) as i64;
+        let net_revenue_cents = gross_revenue_cents - platform_fee_cents;
+
+        // Create or update developer revenue share
+        let _revenue_share = DeveloperRevenueShare::create(
+            tx,
+            developer_id,
+            application_id,
+            billing_period_id,
+            messages_sent + messages_received,  // Total messages
+            bytes_sent + bytes_received,       // Total bytes
             proofs_verified,
             gross_revenue_cents,
             platform_fee_percent,
             platform_fee_cents,
             net_revenue_cents,
-            "USD".to_string(), // settlement_currency - would come from application/developer settings in real implementation
-        )
-        .await?;
+            pricing_snapshot.currency.clone().unwrap_or("USD".to_string()),
+        ).await?;
 
         Ok(())
     }
@@ -139,244 +199,171 @@ impl BillingService {
         }
 
         // Update client's credit balance
-        ClientUsageCredit::update_balance(
+        let updated_credit = ClientUsageCredit::update_balance::<Transaction<'_, Postgres>>(
             tx,
             client_id,
             credits_to_add, // Positive to increase balance
         )
         .await?;
 
-        // Record the credit addition transaction
-        // For credit additions, we can use a special application ID or a system application
-        // For now, we'll use a system application ID or nil if it's a general credit addition
+        // Create a credit transaction record for the addition
         CreditTransaction::create(
             tx,
             client_id,
-            application_id, // The application context where the credits might be used
-            "credit_purchase".to_string(), // Or "credit_allocation" depending on source
-            credits_to_add, // Positive to indicate addition
+            application_id,
+            "credit_purchase".to_string(),
+            credits_to_add,
             Some(serde_json::json!({
-                "action": "credit_addition",
-                "credits_added": credits_to_add,
-                "cash_value_cents": cash_value_cents  // Keeping for reference but not used for accounting
+                "cash_value_cents": cash_value_cents,
+                "fx_conversion_locked": true  // At the time of purchase
             })),
-            None,
-            None, // No billing period for credit addition
-        )
-        .await?;
+            None,  // No related transaction
+            None,  // Not associated with a billing period yet
+        ).await?;
 
         Ok(())
     }
 
-    /// Process payouts to developers at the end of a billing period
-    /// This function requests the PSP to move money - platform never holds funds
-    pub async fn process_payouts_for_billing_period(
-        pool: &PgPool,
-        billing_period_id: Uuid,
-        platform_fee_percent: Decimal,
-    ) -> Result<()> {
-        let mut tx = pool.begin().await?;
+    /// Subscribe a client to an application pricing plan
+    pub async fn subscribe_client_to_plan(
+        tx: &mut Transaction<'_, Postgres>,
+        client_id: Uuid,
+        application_id: Uuid,
+        pricing_plan_id: Uuid,
+    ) -> Result<ClientSubscription> {
+        // Check if the pricing plan is available for this application
+        let app_plan = ApplicationPricingPlan::find_by_ids(&mut **tx, application_id, pricing_plan_id)
+            .await?
+            .ok_or_else(|| crate::error::VaultlessError::NotFound(
+                "Pricing plan not available for this application".to_string()
+            ))?;
 
-        // Get all revenue shares for this billing period
-        let revenue_shares = DeveloperRevenueShare::find_by_billing_period(&mut *tx, billing_period_id).await?;
-
-        // Group by developer to create consolidated payouts
-        let mut developer_payouts: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
-        
-        for share in &revenue_shares {
-            let current_amount = developer_payouts.entry(share.developer_id).or_insert(0);
-            *current_amount += share.net_revenue_cents; // Add the developer's net revenue
-        }
-
-        // Process each developer's payout
-        for (developer_id, total_payout_amount) in developer_payouts {
-            // Get the developer's PSP account
-            let psp_account = PspAccount::find_by_developer(&mut *tx, developer_id).await?
-                .ok_or_else(|| crate::error::VaultlessError::NotFound(
-                    format!("PSP account not found for developer {}", developer_id)
-                ))?;
-
-            // Get developer's preferred payout currency (defaulting to USD if not specified)
-            let developer_currency = Self::get_developer_payout_currency(&mut *tx, developer_id).await?;
-
-            // Create a payout record with currency conversion details (platform never holds these funds)
-            let payout = PspPayout::create(
-                &mut tx,
-                developer_id,
-                psp_account.id,
-                total_payout_amount, // amount_cents - kept for backward compatibility
-                "USD".to_string(), // currency - kept for backward compatibility
-                "USD".to_string(), // source_currency - where funds are settled
-                developer_currency, // destination_currency - developer's preferred currency
-                total_payout_amount, // requested_amount in source currency
-                total_payout_amount, // converted_amount (initially same, updated after FX conversion)
-                None, // fx_rate - will be set during actual FX conversion
-            ).await?;
-
-            // In a real implementation, we would call the PSP API here to initiate the payout
-            // For now, we'll simulate the PSP request
-            Self::request_psp_payout(&mut tx, payout.id).await?;
-        }
-
-        // Update billing period to indicate PSP processing is complete
-        sqlx::query!(
-            r#"
-            UPDATE billing_periods 
-            SET psp_processing_status = 'completed', 
-                psp_processing_completed_at = NOW(),
-                platform_revenue_cents = $2
-            WHERE id = $1
-            "#,
-            billing_period_id,
-            // Calculate platform revenue as sum of all platform fees
-            // This would be computed from the revenue shares
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-        Ok(())
-    }
-
-    /// Get developer's preferred payout currency
-    /// In a real implementation, this would come from developer's profile/settings
-    async fn get_developer_payout_currency(tx: &mut Transaction<'_, Postgres>, developer_id: Uuid) -> Result<String> {
-        // In a real implementation, this would fetch from a developer preferences table
-        // For now, default to USD but could be different based on developer's region/country
-        let currency = sqlx::query_scalar!(
-            r#"
-            SELECT COALESCE(preferred_payout_currency, 'USD') as currency
-            FROM users
-            WHERE id = $1
-            "#,
-            developer_id
-        )
-        .fetch_one(tx)
-        .await
-        .unwrap_or_else(|_| "USD".to_string());
-
-        Ok(currency)
-    }
-
-    /// Simulate requesting a payout from the PSP
-    /// In reality, this would make an HTTP call to the PSP's API
-    async fn request_psp_payout(tx: &mut Transaction<'_, Postgres>, payout_id: Uuid) -> Result<()> {
-        // In a real implementation, this would:
-        // 1. Look up the payout details
-        let payout = PspPayout::find_by_id(&mut **tx, payout_id).await?;
-
-        // 2. Handle currency conversion if source != destination
-        let (converted_amount, fx_rate) = if payout.source_currency != payout.destination_currency {
-            // In real implementation, fetch current FX rate from provider
-            // For simulation, assume 1:1 rate
-            (payout.requested_amount, Some(rust_decimal::Decimal::ONE))
-        } else {
-            (payout.requested_amount, None)
-        };
-
-        // 3. Call the PSP API to initiate the payout
-        // 4. Store the PSP's response (transaction ID, status, etc.)
-        // 5. Update the payout record with PSP details
-
-        // For simulation purposes, we'll just update the status to "processing"
-        PspPayout::update_payout_status(
+        // Check if the client is already subscribed to this application
+        if let Some(existing_subscription) = ClientSubscription::find_by_client_and_application(
             &mut **tx,
-            payout_id,
-            Some(format!("psp_payout_{}", payout_id)), // Simulated PSP payout ID
-            Some("initiated".to_string()),
-            Some(serde_json::json!({"status": "initiated", "message": "Payout initiated with PSP"})),
-            "processing".to_string(),
-            Some(Utc::now()),
-            None, // Not delivered yet
-            None,
-            None, // psp_fee_deducted
-            Some(converted_amount), // net_paid_amount
-            None, // settlement_date
-            Some(serde_json::json!({
-                "psp_payout_id": format!("psp_payout_{}", payout_id),
-                "status": "initiated",
-                "paid_amount": converted_amount,
-                "currency": payout.destination_currency,
-                "fee_deducted": 0,
-                "settlement_date": Utc::now() + chrono::Duration::days(2) // Simulated settlement date
-            })), // psp_normalized_response
+            client_id,
+            application_id,
+        ).await? {
+            // Update the existing subscription to the new plan
+            return Ok(ClientSubscription::update_status(
+                &mut **tx,
+                existing_subscription.id,
+                "cancelled".to_string(),
+            ).await?);
+        }
+
+        // Create pricing snapshot for this subscription
+        let pricing_snapshot = serde_json::json!({
+            "pricing_plan_id": pricing_plan_id,
+            "attached_at": Utc::now(),
+            "pricing_model": "subscription",  // or whatever the actual model is
+            "terms": {}  // Include actual pricing terms here
+        });
+
+        // Create a new subscription
+        let subscription = ClientSubscription::create(
+            tx,
+            client_id,
+            application_id,
+            pricing_plan_id,  // Using the pricing plan ID directly
+            "active".to_string(),
+            Utc::now(),
+            None,  // No end date for ongoing subscriptions
+            pricing_snapshot,
+        ).await?;
+
+        Ok(subscription)
+    }
+
+    /// Generate an invoice for a client for a specific billing period
+    pub async fn generate_client_invoice(
+        tx: &mut Transaction<'_, Postgres>,
+        client_id: Uuid,
+        application_id: Uuid,
+        billing_period_id: Uuid,
+    ) -> Result<ClientInvoice> {
+        // Get the developer ID for this application
+        let developer_id = sqlx::query_scalar!(
+            r#"
+            SELECT developer_id FROM applications WHERE id = $1
+            "#,
+            application_id
         )
-        .await?;
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|_| crate::error::VaultlessError::NotFound("Application not found".into()))?;
 
-        Ok(())
+        // Get all usage for this client and application in the billing period
+        let usage_records = ClientBillingUsage::find_by_client_and_period(
+            &mut **tx,
+            client_id,
+            billing_period_id,
+        ).await?;
+
+        // Calculate total amount based on usage
+        let total_amount_cents: i64 = usage_records.iter()
+            .map(|usage| {
+                // Extract cost from revenue snapshot or calculate from usage
+                match &usage.revenue_snapshot {
+                    serde_json::Value::Object(obj) => {
+                        obj.get("usage_cost")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0)
+                    },
+                    _ => 0
+                }
+            })
+            .sum();
+
+        // Create pricing snapshot for the invoice
+        let pricing_snapshot = serde_json::json!({
+            "generated_at": Utc::now(),
+            "usage_records_count": usage_records.len(),
+            "subtotal_cents": total_amount_cents,
+            "tax_cents": 0,  // Assuming no tax for simplicity
+            "total_cents": total_amount_cents
+        });
+
+        // Create the invoice
+        let invoice = ClientInvoice::create(
+            tx,
+            billing_period_id,
+            client_id,
+            application_id,
+            developer_id,
+            pricing_snapshot,
+            total_amount_cents,  // subtotal
+            total_amount_cents,  // total
+            "pending".to_string(),  // status
+        ).await?;
+
+        Ok(invoice)
     }
 
-    /// Calculate required credits based on usage and pricing
-    /// These are non-cash usage units, not real money
-    fn calculate_required_credits(
-        total_messages: i64,
-        total_bytes: i64,
-        proofs_verified: i64,
-        pricing: &PricingSnapshot,
-    ) -> i64 {
-        // Calculate credits needed for messages
-        let message_credits = match pricing.price_per_message_cents {
-            Some(price_per_message) if price_per_message > 0 => {
-                // Convert price per message to credits needed
-                // For example, if 1000 credits = $10.00, then each cent = 10 credits
-                let credits_per_cent = 10; // Example: 1000 credits = $10.00 = 1000 cents, so 1 cent = 10 credits
-                total_messages * price_per_message * credits_per_cent / 100
-            }
-            _ => 0,
-        };
+    /// Check if a client has an active subscription to an application
+    pub async fn check_client_entitlement(
+        &self,
+        pool: &PgPool,
+        client_id: Uuid,
+        application_id: Uuid,
+    ) -> Result<bool> {
+        // First check if the client has an active subscription to the application
+        if let Some(_subscription) = ClientSubscription::find_by_client_and_application(
+            pool,
+            client_id,
+            application_id,
+        ).await? {
+            return Ok(true);
+        }
 
-        // Calculate credits needed for bytes
-        let byte_credits = match pricing.price_per_gb_cents {
-            Some(price_per_gb) if price_per_gb > 0 => {
-                // Convert bytes to GB and calculate credits
-                let gb_transferred = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                let credits_per_cent = 10; // Same example ratio
-                (gb_transferred * price_per_gb as f64 * credits_per_cent as f64 / 100.0) as i64
-            }
-            _ => 0,
-        };
+        // If no subscription, check if the client has sufficient credits for PAYG usage
+        if let Some(credit) = ClientUsageCredit::find_by_client(pool, client_id).await? {
+            // For now, we'll say any positive balance allows usage
+            // In practice, this might be more nuanced based on expected usage
+            return Ok(credit.credit_balance > 0);
+        }
 
-        // Calculate credits needed for proofs
-        let proof_credits = match pricing.price_per_proof_cents {
-            Some(price_per_proof) if price_per_proof > 0 => {
-                proofs_verified * price_per_proof
-            }
-            _ => 0,
-        };
-
-        message_credits + byte_credits + proof_credits
-    }
-
-
-    /// Calculate gross revenue in cents based on usage
-    /// This is accounting metadata only, not real money held by platform
-    fn calculate_gross_revenue_cents(
-        total_messages: i64,
-        total_bytes: i64,
-        proofs_verified: i64,
-        pricing: &PricingSnapshot,
-    ) -> i64 {
-        // Calculate revenue for messages
-        let message_revenue = match pricing.price_per_message_cents {
-            Some(price_per_message) => total_messages * price_per_message,
-            None => 0,
-        };
-
-        // Calculate revenue for bytes
-        let byte_revenue = match pricing.price_per_gb_cents {
-            Some(price_per_gb) => {
-                let gb_transferred = total_bytes / (1024 * 1024 * 1024);
-                gb_transferred * price_per_gb
-            },
-            None => 0,
-        };
-
-        // Calculate revenue for proofs
-        let proof_revenue = match pricing.price_per_proof_cents {
-            Some(price_per_proof) => proofs_verified * price_per_proof,
-            None => 0,
-        };
-
-        message_revenue + byte_revenue + proof_revenue
+        // No subscription and no credits means no entitlement
+        Ok(false)
     }
 }

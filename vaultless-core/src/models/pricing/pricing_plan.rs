@@ -35,6 +35,7 @@ impl PricingPlan {
     /// Create a pricing snapshot from this plan
     pub fn to_snapshot(&self) -> PricingSnapshot {
         PricingSnapshot {
+            id: Uuid::new_v4(), // Generate a new UUID for the snapshot
             plan_id: self.id,
             plan_name: self.name.clone(),
             pricing_mode: self.pricing_mode,
@@ -42,6 +43,8 @@ impl PricingPlan {
             price_per_gb_cents: self.price_per_gb_cents,
             price_per_proof_cents: self.price_per_proof_cents,
             prepaid_amount_cents: self.prepaid_amount_cents,
+            platform_fee_percent: None, // Default to None, can be set elsewhere
+            currency: Some("USD".to_string()), // Default to USD, can be customized
         }
     }
 

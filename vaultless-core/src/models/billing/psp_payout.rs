@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, Postgres, Transaction};
 use uuid::Uuid;
@@ -28,7 +29,8 @@ pub struct PspPayout {
     pub destination_currency: String,   // Developer's preferred currency
     pub requested_amount: i64,          // Amount requested in source currency
     pub converted_amount: i64,          // Amount after currency conversion
-    pub fx_rate: Option<rust_decimal::Decimal>,  // Exchange rate used for conversion
+    #[sqlx(try_from = "Option<rust_decimal::Decimal>")]
+    pub fx_rate: Option<Decimal>,  // Exchange rate used for conversion
     pub psp_fee_deducted: i64,         // Fee charged by PSP
     pub net_paid_amount: i64,          // Net amount paid to developer after fees
     pub settlement_date: Option<DateTime<Utc>>,  // Expected settlement date from PSP

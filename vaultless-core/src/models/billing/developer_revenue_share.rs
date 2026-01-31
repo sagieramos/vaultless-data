@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, Postgres, Transaction};
 use uuid::Uuid;
@@ -6,6 +7,7 @@ use uuid::Uuid;
 use crate::error::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeveloperRevenueShare {
     pub id: Uuid,
     pub developer_id: Uuid,
@@ -16,7 +18,9 @@ pub struct DeveloperRevenueShare {
     pub proofs_verified: i64,
     // These are ACCOUNTING METADATA ONLY - not real money held by platform
     pub gross_revenue_cents: i64,
-    pub platform_fee_percent: rust_decimal::Decimal,
+    #[cfg_attr(feature = "utoipa", schema(value_type = f64))]
+    #[sqlx(try_from = "rust_decimal::Decimal")]
+    pub platform_fee_percent: Decimal,
     pub platform_fee_cents: i64,
     pub net_revenue_cents: i64,
     pub settlement_currency: String, // Settlement currency for this revenue (e.g., USD)
