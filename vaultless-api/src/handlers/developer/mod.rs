@@ -11,8 +11,8 @@
 
 pub mod analytics;
 pub mod application;
-pub mod billing;
 pub mod dto;
 pub mod google_oauth;
 pub mod notification;
 pub mod user_auth;
+pub mod pricing;

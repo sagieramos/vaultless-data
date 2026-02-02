@@ -1,5 +1,4 @@
 pub mod application_route;
-pub mod billing;
 pub mod client;
 pub mod client_billing;
 pub mod health;
@@ -7,15 +6,16 @@ pub mod instant_message;
 pub mod limits;
 pub mod notification;
 //pub mod proof;
+pub mod pricing;
 pub mod user;
 
 use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
 
 use application_route::application_routes;
-use billing::billing_routes;
 use client::client_routes;
 use instant_message::message_routes;
 use notification::notification_routes;
+use pricing::pricing_routes;
 use user::user_routes;
 
 use crate::{middleware::global::reject_suspicious_query, state::AppState};
@@ -32,7 +32,7 @@ pub fn build_routes(state: AppState) -> Router {
                 .nest("/auth", user_routes(state.clone()))
                 .nest("/applications", application_routes(state.clone()))
                 .nest("/notifications", notification_routes(state.clone()))
-                .nest("/billing", billing_routes(state.clone())),
+                .nest("/pricing", pricing_routes(state.clone())),
         )
         .nest(
             "/api/v1",

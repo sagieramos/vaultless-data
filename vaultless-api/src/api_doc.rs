@@ -1,6 +1,6 @@
 use crate::handlers::developer::application::dto::ApplicationDashboardResponse;
-use utoipa::{OpenApi, Modify};
 use utoipa::openapi::security::SecurityScheme;
+use utoipa::{Modify, OpenApi};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -14,14 +14,6 @@ use utoipa::openapi::security::SecurityScheme;
         crate::handlers::developer::application::charts::get_chart_data,
         crate::handlers::developer::application::handlers::get_user_usage_summary,
         crate::handlers::developer::application::handlers::get_quota_warnings,
-        // Billing handlers
-        crate::handlers::developer::billing::get_billing_overview,
-        crate::handlers::developer::billing::get_billing_history,
-        crate::handlers::developer::billing::get_usage_report,
-        crate::handlers::developer::billing::get_revenue_report,
-        crate::handlers::developer::billing::get_current_billing_period,
-        crate::handlers::developer::billing::get_invoices,
-        crate::handlers::developer::application::handlers::get_application_with_keys,
         // Key rotation handlers
         crate::handlers::developer::application::keys::rotate_secret_key,
         crate::handlers::developer::application::keys::rotate_publishable_key,
@@ -35,6 +27,11 @@ use utoipa::openapi::security::SecurityScheme;
         crate::handlers::developer::analytics::get_application_monthly_revenue,
         crate::handlers::developer::analytics::get_developer_monthly_revenue,
         crate::handlers::developer::analytics::get_monthly_revenue_breakdown,
+        // Pricing plan handlers
+        crate::handlers::developer::pricing::plan::create_pricing_plan,
+        crate::handlers::developer::pricing::plan::get_pricing_plans,
+        crate::handlers::developer::pricing::plan::get_pricing_plan,
+        crate::handlers::developer::pricing::plan::delete_pricing_plan,
         // User auth handlers
         crate::handlers::developer::user_auth::register,
         crate::handlers::developer::user_auth::login,
@@ -133,13 +130,11 @@ use utoipa::openapi::security::SecurityScheme;
             crate::handlers::developer::analytics::MonthlyRevenueQuery,
             crate::handlers::developer::analytics::MonthlyBreakdownQuery,
             vaultless_core::models::usage::application::monthly_revenue::MonthlyRevenueDataSchema,
-            // Billing schemas
-            crate::handlers::developer::billing::BillingOverviewResponse,
-            crate::handlers::developer::billing::UsageReportResponse,
-            crate::handlers::developer::billing::RevenueReportResponse,
-            crate::handlers::developer::billing::GetBillingHistoryQuery,
-            crate::handlers::developer::billing::GetUsageQuery,
-            crate::handlers::developer::billing::GetRevenueQuery,
+            // Pricing plan schemas
+            crate::handlers::developer::pricing::plan::CreatePricingPlanRequest,
+            crate::handlers::developer::pricing::plan::PricingPlanResponse,
+            crate::handlers::developer::pricing::plan::DeletePricingPlanResponse,
+            crate::handlers::developer::pricing::plan::PricingPlansQuery,
         )
     ),
     modifiers(&SecurityAddon),
@@ -171,10 +166,12 @@ impl Modify for SecurityAddon {
         let components = openapi.components.as_mut().unwrap();
         components.add_security_scheme(
             "bearer_auth",
-            SecurityScheme::Http(utoipa::openapi::security::HttpBuilder::new()
-                .bearer_format("JWT")
-                .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
-                .build())
+            SecurityScheme::Http(
+                utoipa::openapi::security::HttpBuilder::new()
+                    .bearer_format("JWT")
+                    .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                    .build(),
+            ),
         );
     }
 }
@@ -256,10 +253,12 @@ impl Modify for ClientSecurityAddon {
         let components = openapi.components.as_mut().unwrap();
         components.add_security_scheme(
             "bearer_auth",
-            SecurityScheme::Http(utoipa::openapi::security::HttpBuilder::new()
-                .bearer_format("JWT")
-                .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
-                .build())
+            SecurityScheme::Http(
+                utoipa::openapi::security::HttpBuilder::new()
+                    .bearer_format("JWT")
+                    .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                    .build(),
+            ),
         );
     }
 }

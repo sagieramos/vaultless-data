@@ -235,13 +235,13 @@ pub async fn get_application_with_keys(
     SessionDataUserExt(session): SessionDataUserExt,
     Path(application_id): Path<Uuid>,
 ) -> Result<Json<ApplicationWithUsage>, ApiError> {
-    // Use find_owned_by_user which returns ApplicationWithUsage (includes keys)
-    let app =
-        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id)
+    // Use find_owned_by_user which returns ApplicationWithUsageAndPricingPlan (includes keys)
+    let result =
+        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id, false)
             .await
             .map_err(ApiError::from)?;
 
-    Ok(Json(app))
+    Ok(Json(result.application))
 }
 
 // =============================================================================
@@ -340,10 +340,10 @@ pub async fn get_application_analytics(
     SessionDataUserExt(session): SessionDataUserExt,
     Path(application_id): Path<Uuid>,
 ) -> Result<Json<super::dto::ApplicationDashboardResponse>, ApiError> {
-    let app_row =
-        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id)
+    let result =
+        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id, false)
             .await
             .map_err(ApiError::from)?;
 
-    Ok(Json(app_row.into()))
+    Ok(Json(result.application.into()))
 }

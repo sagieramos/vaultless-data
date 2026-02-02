@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "pricing_mode_enum", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum PricingMode {
     Postpaid,
     Prepaid,
@@ -20,6 +21,7 @@ pub enum PricingMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "subscription_status_enum", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum SubscriptionStatus {
     Active,
     Paused,
@@ -30,6 +32,7 @@ pub enum SubscriptionStatus {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum BillingPeriodStatus {
     Open,
     Closed,
@@ -40,6 +43,7 @@ pub enum BillingPeriodStatus {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum InvoiceStatus {
     Pending,
     Finalized,

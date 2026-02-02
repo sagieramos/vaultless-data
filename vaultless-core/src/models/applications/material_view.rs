@@ -1,8 +1,11 @@
 use super::dto::{QuotaType, *};
 use crate::error::{Result, VaultlessError};
+use crate::models::pricing::enums::PricingMode;
 use bigdecimal::BigDecimal as Decimal;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::{Executor, Postgres};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -34,45 +37,260 @@ struct ApplicationSummaryFromView {
     pub total_count: i64,
 }
 
+/// Pricing plan attached to an application
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachedPricingPlan {
+    pub id: Uuid,
+    pub name: String,
+    pub pricing_mode: PricingMode,
+    pub price_per_message_cents: Option<i64>,
+    pub price_per_gb_cents: Option<i64>,
+    pub price_per_proof_cents: Option<i64>,
+    pub prepaid_amount_cents: Option<i64>,
+    pub is_default: bool,
+    pub attached_at: DateTime<Utc>,
+}
+
+/// Application with usage data and attached pricing plan
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationWithUsageAndPricingPlan {
+    #[serde(flatten)]
+    pub application: ApplicationWithUsage,
+    pub pricing_plan: Option<AttachedPricingPlan>,
+}
+
+/// Internal struct for DB row mapping
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ApplicationWithPricingPlanRow {
+    // Application fields (from mv.*)
+    pub application_id: Uuid,
+    pub developer_id: Uuid,  // Note: maps to user_id in ApplicationWithUsage
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub app_meta: sqlx::types::Json<super::integrity::dto::AppMetaData>,
+    pub subscription_id: Option<Uuid>,
+    pub tier: Option<String>,
+    pub monthly_message_quota: Option<i64>,
+    pub rate_limit_per_minute: Option<i32>,
+    pub message_retention_seconds: Option<i64>,
+    pub secret_key_id: Option<Uuid>,
+    pub secret_key_prefix: Option<String>,
+    pub publishable_key_count: i64,
+    pub publishable_keys: sqlx::types::Json<Vec<PublishableKey>>,
+    pub webhook_count: i64,
+    pub webhooks: sqlx::types::Json<Vec<Webhook>>,
+    pub client_count: i64,
+    pub current_month_messages_sent: i64,
+    pub current_month_messages_received: i64,
+    pub current_month_proofs_verified: i64,
+    pub current_month_bytes_stored: i64,
+    pub current_month_bytes_sent: i64,
+    pub current_month_bytes_received: i64,
+    pub current_month_rate_limit_hits: i64,
+    pub current_month_cost_cents: i64,
+    pub quota_usage_percentage: Decimal,
+    pub bandwidth_quota_usage_percentage: Decimal,
+    pub current_month_revenue_cents: i64,
+    pub billable_clients_count: i32,
+    pub lifetime_messages_sent: i64,
+    pub lifetime_cost_cents: i64,
+    // Pricing plan fields (nullable)
+    pub pricing_plan_id: Option<Uuid>,
+    pub pricing_plan_name: Option<String>,
+    pub pricing_mode: Option<PricingMode>,
+    pub price_per_message_cents: Option<i64>,
+    pub price_per_gb_cents: Option<i64>,
+    pub price_per_proof_cents: Option<i64>,
+    pub prepaid_amount_cents: Option<i64>,
+    pub pricing_plan_is_default: Option<bool>,
+    pub pricing_plan_attached_at: Option<DateTime<Utc>>,
+}
+
 impl Application {
-    /// Find application with complete usage data from the materialized view
+    /// Find application with complete usage data from the materialized view.
+    /// Optionally includes attached pricing plan when `include_pricing_plan` is true.
     pub async fn find_owned_by_user<'c, E>(
         exec: E,
         application_id: Uuid,
         user_id: Uuid,
-    ) -> Result<ApplicationWithUsage>
+        include_pricing_plan: bool,
+    ) -> Result<ApplicationWithUsageAndPricingPlan>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        let app = sqlx::query_as::<_, ApplicationWithUsage>(
-            r#"
+        if !include_pricing_plan {
+            let row = sqlx::query_as::<_, ApplicationWithUsage>(
+                r#"
             SELECT
-                application_id, developer_id AS user_id, name, description, is_active,
-                created_at, updated_at, app_meta,
-                subscription_id, tier::text AS "tier", 
-                monthly_message_quota, rate_limit_per_minute, message_retention_seconds,
-                secret_key_id, secret_key_prefix,
-                publishable_key_count, publishable_keys,
-                webhook_count, webhooks,
+                application_id,
+                developer_id AS user_id,
+                name,
+                description,
+                is_active,
+                created_at,
+                updated_at,
+                app_meta,
+                subscription_id,
+                tier::text AS tier,
+                monthly_message_quota,
+                rate_limit_per_minute,
+                message_retention_seconds,
+                secret_key_id,
+                secret_key_prefix,
+                publishable_key_count,
+                publishable_keys,
+                webhook_count,
+                webhooks,
                 client_count,
-                current_month_messages_sent, current_month_messages_received,
-                current_month_proofs_verified, current_month_bytes_stored,
-                current_month_bytes_sent, current_month_bytes_received,
-                current_month_rate_limit_hits, current_month_cost_cents,
-                quota_usage_percentage, bandwidth_quota_usage_percentage,
-                current_month_revenue_cents, billable_clients_count,
-                lifetime_messages_sent, lifetime_cost_cents
+                current_month_messages_sent,
+                current_month_messages_received,
+                current_month_proofs_verified,
+                current_month_bytes_stored,
+                current_month_bytes_sent,
+                current_month_bytes_received,
+                current_month_rate_limit_hits,
+                current_month_cost_cents,
+                quota_usage_percentage,
+                bandwidth_quota_usage_percentage,
+                current_month_revenue_cents,
+                billable_clients_count,
+                lifetime_messages_sent,
+                lifetime_cost_cents
             FROM mv_applications_with_usage
             WHERE application_id = $1 AND developer_id = $2
             "#,
+            )
+            .bind(application_id)
+            .bind(user_id)
+            .fetch_optional(exec)
+            .await?
+            .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
+
+            return Ok(ApplicationWithUsageAndPricingPlan {
+                application: row.into(),
+                pricing_plan: None,
+            });
+        }
+
+        let row = sqlx::query_as::<_, ApplicationWithPricingPlanRow>(
+            r#"
+        SELECT
+            mv.application_id,
+            mv.developer_id,
+            mv.name,
+            mv.description,
+            mv.is_active,
+            mv.created_at,
+            mv.updated_at,
+            mv.app_meta,
+            mv.subscription_id,
+            mv.tier::text AS tier,
+            mv.monthly_message_quota,
+            mv.rate_limit_per_minute,
+            mv.message_retention_seconds,
+            mv.secret_key_id,
+            mv.secret_key_prefix,
+            mv.publishable_key_count,
+            mv.publishable_keys,
+            mv.webhook_count,
+            mv.webhooks,
+            mv.client_count,
+            mv.current_month_messages_sent,
+            mv.current_month_messages_received,
+            mv.current_month_proofs_verified,
+            mv.current_month_bytes_stored,
+            mv.current_month_bytes_sent,
+            mv.current_month_bytes_received,
+            mv.current_month_rate_limit_hits,
+            mv.current_month_cost_cents,
+            mv.quota_usage_percentage,
+            mv.bandwidth_quota_usage_percentage,
+            mv.current_month_revenue_cents,
+            mv.billable_clients_count,
+            mv.lifetime_messages_sent,
+            mv.lifetime_cost_cents,
+            -- Pricing plan fields
+            pp.id AS pricing_plan_id,
+            pp.name AS pricing_plan_name,
+            pp.pricing_mode,
+            pp.price_per_message_cents,
+            pp.price_per_gb_cents,
+            pp.price_per_proof_cents,
+            pp.prepaid_amount_cents,
+            app.is_default AS pricing_plan_is_default,
+            app.attached_at AS pricing_plan_attached_at
+        FROM mv_applications_with_usage mv
+        LEFT JOIN application_pricing_plans app
+            ON mv.application_id = app.application_id
+        LEFT JOIN pricing_plans pp
+            ON app.pricing_plan_id = pp.id
+        WHERE mv.application_id = $1 AND mv.developer_id = $2
+        "#,
         )
         .bind(application_id)
         .bind(user_id)
         .fetch_optional(exec)
         .await?
-        .ok_or_else(|| VaultlessError::NotFound("Application not found or access denied".into()))?;
+        .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
 
-        Ok(app)
+        let pricing_plan = row.pricing_plan_id.map(|id| AttachedPricingPlan {
+            id,
+            name: row.pricing_plan_name.clone().unwrap(),
+            pricing_mode: row.pricing_mode.unwrap(),
+            price_per_message_cents: row.price_per_message_cents,
+            price_per_gb_cents: row.price_per_gb_cents,
+            price_per_proof_cents: row.price_per_proof_cents,
+            prepaid_amount_cents: row.prepaid_amount_cents,
+            is_default: row.pricing_plan_is_default.unwrap_or(false),
+            attached_at: row.pricing_plan_attached_at.unwrap_or_else(Utc::now),
+        });
+
+        let application = ApplicationWithUsage {
+            application_id: row.application_id,
+            user_id: row.developer_id,
+            name: row.name,
+            description: row.description,
+            is_active: row.is_active,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            app_meta: row.app_meta,
+            subscription_id: row.subscription_id,
+            tier: row.tier,
+            monthly_message_quota: row.monthly_message_quota,
+            rate_limit_per_minute: row.rate_limit_per_minute,
+            message_retention_seconds: row.message_retention_seconds,
+            secret_key_id: row.secret_key_id,
+            secret_key_prefix: row.secret_key_prefix,
+            publishable_key_count: row.publishable_key_count,
+            publishable_keys: row.publishable_keys,
+            webhook_count: row.webhook_count,
+            webhooks: row.webhooks,
+            client_count: row.client_count,
+            current_month_messages_sent: row.current_month_messages_sent,
+            current_month_messages_received: row.current_month_messages_received,
+            current_month_proofs_verified: row.current_month_proofs_verified,
+            current_month_bytes_stored: row.current_month_bytes_stored,
+            current_month_bytes_sent: row.current_month_bytes_sent,
+            current_month_bytes_received: row.current_month_bytes_received,
+            current_month_rate_limit_hits: row.current_month_rate_limit_hits,
+            current_month_cost_cents: row.current_month_cost_cents,
+            quota_usage_percentage: row.quota_usage_percentage,
+            bandwidth_quota_usage_percentage: row.bandwidth_quota_usage_percentage,
+            current_month_revenue_cents: row.current_month_revenue_cents,
+            billable_clients_count: row.billable_clients_count,
+            lifetime_messages_sent: row.lifetime_messages_sent,
+            lifetime_cost_cents: row.lifetime_cost_cents,
+        };
+
+        Ok(ApplicationWithUsageAndPricingPlan {
+            application,
+            pricing_plan,
+        })
     }
 
     /// List applications with summary data for pagination with optional filters

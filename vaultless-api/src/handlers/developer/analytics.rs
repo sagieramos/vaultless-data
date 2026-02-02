@@ -122,21 +122,22 @@ pub async fn get_application_quota_status(
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<QuotaStatusResponse>, ApiError> {
-    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
+    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id, false).await?;
 
     // Calculate quota status
-    let usage_percentage = app
+    let usage_percentage = result
+        .application
         .quota_usage_percentage
         .to_string()
         .parse::<f64>()
         .unwrap_or(0.0);
 
     // Handle nullable monthly_message_quota (when there's no subscription)
-    let messages_limit = app.monthly_message_quota.unwrap_or(0);
-    let is_over_quota = messages_limit > 0 && app.current_month_messages_sent > messages_limit;
+    let messages_limit = result.application.monthly_message_quota.unwrap_or(0);
+    let is_over_quota = messages_limit > 0 && result.application.current_month_messages_sent > messages_limit;
 
     let overage_count = if is_over_quota {
-        app.current_month_messages_sent - messages_limit
+        result.application.current_month_messages_sent - messages_limit
     } else {
         0
     };
@@ -172,9 +173,9 @@ pub async fn get_application_quota_status(
     };
 
     Ok(Json(QuotaStatusResponse {
-        application_id: app.application_id,
-        messages_used: app.current_month_messages_sent,
-        messages_limit: app.monthly_message_quota,
+        application_id: result.application.application_id,
+        messages_used: result.application.current_month_messages_sent,
+        messages_limit: result.application.monthly_message_quota,
         usage_percentage,
         is_over_quota,
         overage_count,
@@ -204,7 +205,8 @@ pub async fn get_application_cost_breakdown(
     SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<CostBreakdownResponse>, ApiError> {
-    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id).await?;
+    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id, false).await?;
+    let app = &result.application;
 
     // Calculate cost breakdown (based on your pricing model)
     let message_cost = (app.current_month_messages_sent as f64 / 1000.0) * 1.0; // $0.01 per 1000
@@ -269,12 +271,13 @@ pub async fn export_application_usage(
     SessionDataUserExt(session): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id).await?;
+    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id, false).await?;
+    let app = &result.application;
 
     match query.format {
-        ExportFormat::Json => Ok(Json(&app).into_response()),
+        ExportFormat::Json => Ok(Json(app).into_response()),
         ExportFormat::Csv => {
-            let csv_data = generate_usage_csv(&app)?;
+            let csv_data = generate_usage_csv(app)?;
 
             let headers = [
                 (
@@ -317,7 +320,8 @@ pub async fn get_application_trends(
     SessionDataUserExt(session): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Json<TrendsResponse>, ApiError> {
-    let app = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id).await?;
+    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id, false).await?;
+    let app = &result.application;
 
     // Calculate trends based on current month data
     // Note: For more accurate trends, you'd query from usage_metrics_daily
