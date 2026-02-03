@@ -26,7 +26,6 @@ pub struct MonthlyUsageSummary {
     pub total_bytes_sent: Option<i64>,
     pub total_bytes_received: Option<i64>,
     pub rate_limit_hits: Option<i64>,
-    pub estimated_cost_cents: Option<i64>,
 }
 
 impl MonthlyUsageSummary {
@@ -44,7 +43,7 @@ impl MonthlyUsageSummary {
                 application_id, client_id, period_start,
                 messages_sent, messages_received, proofs_verified,
                 total_bytes_stored, total_bytes_sent, total_bytes_received,
-                rate_limit_hits, estimated_cost_cents
+                rate_limit_hits
             FROM client_usage_monthly
             WHERE application_id = $1
               AND client_id = $2

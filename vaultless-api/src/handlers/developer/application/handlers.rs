@@ -212,36 +212,39 @@ pub async fn deactivate_application(
 }
 
 // =============================================================================
-// Get Application with Keys
+// Get Application Data
 // =============================================================================
 
-/// Get application by ID including publishable keys and webhooks
+/// Full analytics endpoint for dashboards or heavy reporting
 #[utoipa::path(
     get,
-    path = "/dev/applications/{application_id}/with_keys",
+    path = "/dev/applications/{application_id}/analytics",
     params(("application_id" = Uuid, Path, description = "Application ID")),
     responses(
-        (status = 200, description = "Application with keys retrieved successfully", body = ApplicationWithUsage),
+        (status = 200, description = "Application details with usage data", body = super::dto::ApplicationDashboardResponse),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Application not found"),
         (status = 500, description = "Internal server error")
     ),
     security(("bearer_auth" = [])),
-    tag = "applications"
+    tag = "analytics"
 )]
-pub async fn get_application_with_keys(
+pub async fn get_application_analytics(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
     Path(application_id): Path<Uuid>,
-) -> Result<Json<ApplicationWithUsage>, ApiError> {
-    // Use find_owned_by_user which returns ApplicationWithUsageAndPricingPlan (includes keys)
+) -> Result<Json<super::dto::ApplicationDashboardResponse>, ApiError> {
+    // Use find_owned_by_user which returns ApplicationWithUsageAndPricingPlan (includes keys and pricing plan)
     let result =
-        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id, false)
+        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id, true)
             .await
             .map_err(ApiError::from)?;
 
-    Ok(Json(result.application))
+    // Convert (ApplicationWithUsage, Option<AttachedPricingPlan>) to ApplicationDashboardResponse
+    let dashboard_response: super::dto::ApplicationDashboardResponse = (result.application, result.pricing_plan).into();
+
+    Ok(Json(dashboard_response))
 }
 
 // =============================================================================
@@ -314,36 +317,4 @@ pub async fn get_quota_warnings(
     .map_err(ApiError::from)?;
 
     Ok(Json(warnings))
-}
-
-// =============================================================================
-// Dashboard Analytics
-// =============================================================================
-
-/// Full analytics endpoint for dashboards or heavy reporting
-#[utoipa::path(
-    get,
-    path = "/dev/applications/{application_id}/analytics",
-    params(("application_id" = Uuid, Path, description = "Application ID")),
-    responses(
-        (status = 200, description = "Application details with usage data", body = super::dto::ApplicationDashboardResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden"),
-        (status = 404, description = "Application not found"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "analytics"
-)]
-pub async fn get_application_analytics(
-    State(state): State<AppState>,
-    SessionDataUserExt(session): SessionDataUserExt,
-    Path(application_id): Path<Uuid>,
-) -> Result<Json<super::dto::ApplicationDashboardResponse>, ApiError> {
-    let result =
-        Application::find_owned_by_user(state.db.as_ref(), application_id, session.user_id, false)
-            .await
-            .map_err(ApiError::from)?;
-
-    Ok(Json(result.application.into()))
 }

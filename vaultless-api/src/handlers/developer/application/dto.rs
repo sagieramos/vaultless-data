@@ -1,6 +1,6 @@
 //! Request and Response DTOs for application handlers.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -214,6 +214,41 @@ pub struct RealTimeUsageResponse {
 // Dashboard Response DTOs
 // =============================================================================
 
+/// Quota status for an application
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaStatus {
+    /// Messages used this month
+    pub messages_used: i64,
+    /// Messages limit (None if unlimited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages_limit: Option<i64>,
+    /// Usage percentage (0-100+)
+    pub usage_pct: f64,
+    /// Whether the application is over quota
+    pub is_over_quota: bool,
+    /// Number of messages over quota
+    pub overage_count: i64,
+    /// When the quota resets
+    #[schema(value_type = String)]
+    pub resets_at: DateTime<Utc>,
+    /// Alert level: "info", "warning", "critical", or None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alert_level: Option<String>,
+}
+
+/// Usage trends for an application
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTrends {
+    /// Daily average messages this month
+    pub daily_avg_messages: i64,
+    /// Projected monthly messages based on current rate
+    pub projected_monthly_messages: i64,
+    /// Quota trend: "stable", "increasing", "critical"
+    pub quota_trend: String,
+}
+
 /// Full application response with usage statistics for dashboards
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -265,6 +300,15 @@ pub struct ApplicationDashboardResponse {
     pub current_month: UsageStats,
     /// Lifetime usage statistics
     pub lifetime: LifetimeStats,
+
+    /// Attached pricing plan information (if any)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing_plan: Option<vaultless_core::models::applications::material_view::AttachedPricingPlan>,
+
+    /// Real-time quota status
+    pub quota_status: QuotaStatus,
+    /// Usage trends
+    pub trends: UsageTrends,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -297,8 +341,71 @@ pub struct LifetimeStats {
     pub cost: i64,
 }
 
-impl From<ApplicationWithUsage> for ApplicationDashboardResponse {
-    fn from(app: ApplicationWithUsage) -> Self {
+impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::material_view::AttachedPricingPlan>)> for ApplicationDashboardResponse {
+    fn from((app, pricing_plan): (ApplicationWithUsage, Option<vaultless_core::models::applications::material_view::AttachedPricingPlan>)) -> Self {
+        let usage_pct = app
+            .quota_usage_percentage
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+
+        // Compute quota status
+        let messages_limit = app.monthly_message_quota.unwrap_or(0);
+        let is_over_quota =
+            messages_limit > 0 && app.current_month_messages_sent > messages_limit;
+        let overage_count = if is_over_quota {
+            app.current_month_messages_sent - messages_limit
+        } else {
+            0
+        };
+
+        // Calculate reset time (first day of next month)
+        let now = Utc::now();
+        let next_month = if now.month() == 12 {
+            now.with_month(1)
+                .unwrap()
+                .with_year(now.year() + 1)
+                .unwrap()
+        } else {
+            now.with_month(now.month() + 1).unwrap()
+        };
+        let resets_at = next_month
+            .with_day(1)
+            .unwrap()
+            .with_hour(0)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap();
+
+        let alert_level = if is_over_quota {
+            Some("critical".to_string())
+        } else if usage_pct >= 90.0 {
+            Some("warning".to_string())
+        } else if usage_pct >= 80.0 {
+            Some("info".to_string())
+        } else {
+            None
+        };
+
+        // Compute trends
+        let days_in_month = now.day() as f64;
+        let daily_avg = if days_in_month > 0.0 {
+            (app.current_month_messages_sent as f64 / days_in_month).round() as i64
+        } else {
+            0
+        };
+        let projected_monthly = daily_avg * 30;
+
+        let quota_trend = if usage_pct > 80.0 {
+            "critical"
+        } else if usage_pct > 50.0 {
+            "increasing"
+        } else {
+            "stable"
+        };
+
         Self {
             id: app.application_id,
             name: app.name,
@@ -313,11 +420,7 @@ impl From<ApplicationWithUsage> for ApplicationDashboardResponse {
             retention_seconds: app.message_retention_seconds,
             keys: app.publishable_keys.0,
             webhooks: app.webhooks.0,
-            quota_usage_pct: app
-                .quota_usage_percentage
-                .to_string()
-                .parse::<f64>()
-                .unwrap_or(0.0),
+            quota_usage_pct: usage_pct,
             current_month: UsageStats {
                 msg_sent: app.current_month_messages_sent,
                 msg_received: app.current_month_messages_received,
@@ -331,6 +434,21 @@ impl From<ApplicationWithUsage> for ApplicationDashboardResponse {
             lifetime: LifetimeStats {
                 msg_sent: app.lifetime_messages_sent,
                 cost: app.lifetime_cost_cents,
+            },
+            pricing_plan,
+            quota_status: QuotaStatus {
+                messages_used: app.current_month_messages_sent,
+                messages_limit: app.monthly_message_quota,
+                usage_pct,
+                is_over_quota,
+                overage_count,
+                resets_at,
+                alert_level,
+            },
+            trends: UsageTrends {
+                daily_avg_messages: daily_avg,
+                projected_monthly_messages: projected_monthly,
+                quota_trend: quota_trend.to_string(),
             },
         }
     }

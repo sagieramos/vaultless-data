@@ -19,7 +19,6 @@ pub struct UsageAggregate {
     pub total_bytes_sent: i64,
     pub total_bytes_received: i64,
     pub total_rate_limit_hits: i64,
-    pub total_estimated_cost_cents: i64,
 }
 
 impl Default for UsageAggregate {
@@ -32,7 +31,6 @@ impl Default for UsageAggregate {
             total_bytes_sent: 0,
             total_bytes_received: 0,
             total_rate_limit_hits: 0,
-            total_estimated_cost_cents: 0,
         }
     }
 }
@@ -54,8 +52,7 @@ where
             COALESCE(SUM(um.total_bytes_stored), 0) AS total_bytes_stored,
             COALESCE(SUM(um.total_bytes_sent), 0) AS total_bytes_sent,
             COALESCE(SUM(um.total_bytes_received), 0) AS total_bytes_received,
-            COALESCE(SUM(um.rate_limit_hits), 0) AS total_rate_limit_hits,
-            COALESCE(SUM(um.estimated_cost_cents), 0) AS total_estimated_cost_cents
+            COALESCE(SUM(um.rate_limit_hits), 0) AS total_rate_limit_hits
         FROM
             usage_metrics um
         WHERE

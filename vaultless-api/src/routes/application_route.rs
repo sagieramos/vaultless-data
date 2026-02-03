@@ -40,10 +40,6 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
     // Routes without query parameters that read from materialized view (ETag cacheable)
     let mv_cached_no_query_routes = Router::new()
         .route(
-            "/{id}/with_keys",
-            get(application::get_application_with_keys),
-        )
-        .route(
             "/{id}/analytics",
             get(application::get_application_analytics),
         )
@@ -60,14 +56,9 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
         .route("/{id}", patch(application::update_application))
         .route("/{id}", delete(application::deactivate_application))
         .route(
-            "/{id}/quota-status",
-            get(analytics::get_application_quota_status),
+            "/{id}/upgrade-recommendations",
+            get(analytics::get_application_upgrade_recommendations),
         )
-        .route(
-            "/{id}/costs",
-            get(analytics::get_application_cost_breakdown),
-        )
-        .route("/{id}/trends", get(analytics::get_application_trends))
         // Key rotation routes
         .route(
             "/{id}/keys/secret/rotate",

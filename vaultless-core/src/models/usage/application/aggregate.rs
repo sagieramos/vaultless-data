@@ -27,7 +27,6 @@ pub struct DailyUsageSummary {
     pub total_bytes_sent: Option<i64>,
     pub total_bytes_received: Option<i64>,
     pub total_rate_limit_hits: Option<i64>,
-    pub total_estimated_cost_cents: Option<i64>,
 }
 
 impl DailyUsageSummary {
@@ -50,8 +49,7 @@ impl DailyUsageSummary {
                 total_bytes_stored,
                 total_bytes_sent,
                 total_bytes_received,
-                total_rate_limit_hits,
-                total_estimated_cost_cents
+                total_rate_limit_hits
             FROM usage_metrics_daily
             WHERE application_id = $1
                 AND day >= $2
@@ -86,8 +84,7 @@ impl DailyUsageSummary {
                 total_bytes_stored,
                 total_bytes_sent,
                 total_bytes_received,
-                total_rate_limit_hits,
-                total_estimated_cost_cents
+                total_rate_limit_hits
             FROM usage_metrics_daily
             WHERE application_id = $1
                 AND day >= NOW() - INTERVAL '1 day' * $2
@@ -117,8 +114,7 @@ impl DailyUsageSummary {
                 COALESCE(SUM(total_bytes_stored)::BIGINT, 0) as total_bytes_stored,
                 COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
                 COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
-                COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
-                COALESCE(SUM(total_estimated_cost_cents)::BIGINT, 0) as total_estimated_cost_cents
+                COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits
             FROM usage_metrics_daily
             WHERE application_id = $1
                 AND day >= DATE_TRUNC('month', NOW())
@@ -148,7 +144,6 @@ pub struct MonthlyTotal {
     pub total_bytes_sent: i64,
     pub total_bytes_received: i64,
     pub total_rate_limit_hits: i64,
-    pub total_estimated_cost_cents: i64,
 }
 
 impl Default for MonthlyTotal {
@@ -162,7 +157,6 @@ impl Default for MonthlyTotal {
             total_bytes_sent: 0,
             total_bytes_received: 0,
             total_rate_limit_hits: 0,
-            total_estimated_cost_cents: 0,
         }
     }
 }
@@ -187,8 +181,7 @@ pub async fn get_realtime_usage(
             COALESCE(SUM(total_bytes_stored)::BIGINT, 0) as total_bytes_stored,
             COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
             COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
-            COALESCE(SUM(rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits,
-            COALESCE(SUM(COALESCE(estimated_cost_cents, 0))::BIGINT, 0) as total_estimated_cost_cents
+            COALESCE(SUM(rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits
         FROM usage_metrics
         WHERE application_id = $1
             AND period_start >= $2

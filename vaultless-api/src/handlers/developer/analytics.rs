@@ -1,10 +1,8 @@
 //! Analytics handlers for applications.
 //!
 //! Provides endpoints for:
-//! - Quota status monitoring
-//! - Cost breakdown analysis
-//! - Usage trends
 //! - Data export (JSON/CSV)
+//! - Monthly revenue analytics
 
 use crate::{
     middleware::{error::ApiError, user::SessionDataUserExt},
@@ -15,14 +13,13 @@ use axum::{
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
 };
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use hyper::header;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
-//vaultless-core/src/models/usage/application
 use vaultless_core::{
-    models::applications::dto::*,
+    models::applications::dto::Application,
     models::usage::application::monthly_revenue::{
         MonthlyRevenueData, PaginatedMonthlyApplicationRevenue, RevenueChartData,
     },
@@ -33,36 +30,17 @@ use vaultless_core::{
 // REQUEST/RESPONSE DTOs
 // ============================================================================
 
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct TrendsResponse {
-    pub daily_average_messages: i64,
-    pub projected_monthly_cost_cents: i64,
-    pub quota_trend: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CostBreakdownResponse {
-    pub total_cost_cents: i64,
-    pub breakdown: Vec<CostItem>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CostItem {
-    pub category: String,
-    pub amount_cents: i64,
-    pub unit: String,
-    pub quantity: i64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpgradeOption {
+    /// Target subscription tier
     pub tier: String,
+    /// Monthly price in cents (None for custom/enterprise pricing)
     pub monthly_price_cents: Option<i32>,
+    /// List of benefits for this tier
     pub benefits: Vec<String>,
+    /// URL to upgrade to this tier
+    pub upgrade_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, ToSchema)]
@@ -76,176 +54,13 @@ pub enum ExportFormat {
 #[serde(rename_all = "camelCase")]
 pub struct ExportQuery {
     pub format: ExportFormat,
+    /// Whether to include pricing plan information in the export
+    #[serde(default = "default_include_pricing")]
+    pub include_pricing_plan: bool,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AnalyticsResponse<T: ToSchema> {
-    pub success: bool,
-    pub data: T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub upgrade_message: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct QuotaStatusResponse {
-    pub application_id: Uuid,
-    pub messages_used: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub messages_limit: Option<i64>,
-    pub usage_percentage: f64,
-    pub is_over_quota: bool,
-    pub overage_count: i64,
-    pub resets_at: DateTime<Utc>,
-    pub alert_level: Option<String>,
-}
-
-/// Get real-time quota status for a specific application
-#[utoipa::path(
-    get,
-    path = "/dev/applications/{application_id}/quota-status",
-    params(
-        ("application_id" = Uuid, Path, description = "Application ID")
-    ),
-    responses(
-        (status = 200, description = "Quota status retrieved successfully", body = QuotaStatusResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Application not found"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "analytics"
-)]
-pub async fn get_application_quota_status(
-    Path(app_id): Path<Uuid>,
-    SessionDataUserExt(user): SessionDataUserExt,
-    State(state): State<AppState>,
-) -> Result<Json<QuotaStatusResponse>, ApiError> {
-    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id, false).await?;
-
-    // Calculate quota status
-    let usage_percentage = result
-        .application
-        .quota_usage_percentage
-        .to_string()
-        .parse::<f64>()
-        .unwrap_or(0.0);
-
-    // Handle nullable monthly_message_quota (when there's no subscription)
-    let messages_limit = result.application.monthly_message_quota.unwrap_or(0);
-    let is_over_quota = messages_limit > 0 && result.application.current_month_messages_sent > messages_limit;
-
-    let overage_count = if is_over_quota {
-        result.application.current_month_messages_sent - messages_limit
-    } else {
-        0
-    };
-
-    // Calculate reset time (first day of next month)
-    let now = Utc::now();
-    let next_month = if now.month() == 12 {
-        now.with_month(1)
-            .unwrap()
-            .with_year(now.year() + 1)
-            .unwrap()
-    } else {
-        now.with_month(now.month() + 1).unwrap()
-    };
-    let resets_at = next_month
-        .with_day(1)
-        .unwrap()
-        .with_hour(0)
-        .unwrap()
-        .with_minute(0)
-        .unwrap()
-        .with_second(0)
-        .unwrap();
-
-    let alert_level = if is_over_quota {
-        Some("critical".to_string())
-    } else if usage_percentage >= 90.0 {
-        Some("warning".to_string())
-    } else if usage_percentage >= 80.0 {
-        Some("info".to_string())
-    } else {
-        None
-    };
-
-    Ok(Json(QuotaStatusResponse {
-        application_id: result.application.application_id,
-        messages_used: result.application.current_month_messages_sent,
-        messages_limit: result.application.monthly_message_quota,
-        usage_percentage,
-        is_over_quota,
-        overage_count,
-        resets_at,
-        alert_level,
-    }))
-}
-
-/// Get detailed cost breakdown for an application
-#[utoipa::path(
-    get,
-    path = "/dev/applications/{application_id}/costs",
-    params(
-        ("application_id" = Uuid, Path, description = "Application ID")
-    ),
-    responses(
-        (status = 200, description = "Cost breakdown retrieved successfully", body = CostBreakdownResponse),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Application not found"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(("bearer_auth" = [])),
-    tag = "analytics"
-)]
-pub async fn get_application_cost_breakdown(
-    Path(app_id): Path<Uuid>,
-    SessionDataUserExt(user): SessionDataUserExt,
-    State(state): State<AppState>,
-) -> Result<Json<CostBreakdownResponse>, ApiError> {
-    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id, false).await?;
-    let app = &result.application;
-
-    // Calculate cost breakdown (based on your pricing model)
-    let message_cost = (app.current_month_messages_sent as f64 / 1000.0) * 1.0; // $0.01 per 1000
-    let bandwidth_cost = ((app.current_month_bytes_sent + app.current_month_bytes_received) as f64
-        / 1_000_000_000.0)
-        * 10.0; // $0.10 per GB
-    let storage_cost = (app.current_month_bytes_stored as f64 / 1_000_000_000.0) * 5.0; // $0.05 per GB/month
-    let proof_cost = (app.current_month_proofs_verified as f64 / 1000.0) * 0.5; // $0.005 per 1000
-
-    Ok(Json(CostBreakdownResponse {
-        total_cost_cents: app.current_month_cost_cents,
-        breakdown: vec![
-            CostItem {
-                category: "Messages".to_string(),
-                amount_cents: (message_cost * 100.0).round() as i64,
-                unit: "per 1000 messages".to_string(),
-                quantity: app.current_month_messages_sent,
-            },
-            CostItem {
-                category: "Bandwidth".to_string(),
-                amount_cents: (bandwidth_cost * 100.0).round() as i64,
-                unit: "per GB".to_string(),
-                quantity: (app.current_month_bytes_sent + app.current_month_bytes_received)
-                    / 1_000_000_000,
-            },
-            CostItem {
-                category: "Storage".to_string(),
-                amount_cents: (storage_cost * 100.0).round() as i64,
-                unit: "per GB/month".to_string(),
-                quantity: app.current_month_bytes_stored / 1_000_000_000,
-            },
-            CostItem {
-                category: "Proofs".to_string(),
-                amount_cents: (proof_cost * 100.0).round() as i64,
-                unit: "per 1000 proofs".to_string(),
-                quantity: app.current_month_proofs_verified,
-            },
-        ],
-    }))
+fn default_include_pricing() -> bool {
+    false // Default to false to maintain backward compatibility
 }
 
 /// Export application usage data in JSON or CSV format
@@ -254,7 +69,8 @@ pub async fn get_application_cost_breakdown(
     path = "/dev/applications/{application_id}/export",
     params(
         ("application_id" = Uuid, Path, description = "Application ID"),
-        ("format" = ExportFormat, Query, description = "Export format: json or csv")
+        ("format" = ExportFormat, Query, description = "Export format: json or csv"),
+        ("include_pricing_plan" = Option<bool>, Query, description = "Include pricing plan information in the export (default: false)")
     ),
     responses(
         (status = 200, description = "Usage data exported successfully (JSON or CSV based on format parameter)"),
@@ -271,24 +87,37 @@ pub async fn export_application_usage(
     SessionDataUserExt(session): SessionDataUserExt,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id, false).await?;
-    let app = &result.application;
+    // Always fetch with pricing plan for complete export
+    let result = Application::find_owned_by_user(
+        state.db.as_ref(),
+        app_id,
+        session.user_id,
+        true,
+    )
+    .await?;
+
+    let dashboard = super::application::dto::ApplicationDashboardResponse::from((
+        result.application,
+        result.pricing_plan,
+    ));
+    let app_name = dashboard.name.replace(' ', "_");
 
     match query.format {
-        ExportFormat::Json => Ok(Json(app).into_response()),
+        ExportFormat::Json => Ok(Json(dashboard).into_response()),
+
         ExportFormat::Csv => {
-            let csv_data = generate_usage_csv(app)?;
+            let csv_data = generate_usage_csv(&dashboard, query.include_pricing_plan);
 
             let headers = [
                 (
                     header::CONTENT_TYPE,
-                    header::HeaderValue::from_static("text/csv"),
+                    header::HeaderValue::from_static("text/csv; charset=utf-8"),
                 ),
                 (
                     header::CONTENT_DISPOSITION,
                     header::HeaderValue::from_str(&format!(
-                        "attachment; filename=\"{}_usage.csv\"",
-                        app.name.replace(" ", "_")
+                        "attachment; filename=\"{}_analytics_export.csv\"",
+                        app_name
                     ))
                     .unwrap(),
                 ),
@@ -299,15 +128,166 @@ pub async fn export_application_usage(
     }
 }
 
-/// Get usage trends for an application
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/// Generates a comprehensive CSV export of application analytics data.
+/// Format follows enterprise reporting standards with clear section headers.
+fn generate_usage_csv(
+    dashboard: &super::application::dto::ApplicationDashboardResponse,
+    include_pricing: bool,
+) -> String {
+    let mut csv = String::with_capacity(4096);
+
+    // CSV Header with metadata
+    csv.push_str("# Application Analytics Export\n");
+    csv.push_str(&format!("# Generated: {}\n", Utc::now().format("%Y-%m-%d %H:%M:%S UTC")));
+    csv.push_str(&format!("# Application ID: {}\n", dashboard.id));
+    csv.push_str("#\n");
+
+    // Section 1: Application Information
+    csv.push_str("section,field,value\n");
+    csv.push_str(&format!("application,id,{}\n", dashboard.id));
+    csv.push_str(&format!("application,name,\"{}\"\n", escape_csv(&dashboard.name)));
+    csv.push_str(&format!(
+        "application,description,\"{}\"\n",
+        dashboard.desc.as_deref().map(escape_csv).unwrap_or_default()
+    ));
+    csv.push_str(&format!("application,active,{}\n", dashboard.active));
+    csv.push_str(&format!("application,created_at,{}\n", dashboard.created.format("%Y-%m-%dT%H:%M:%SZ")));
+    csv.push_str(&format!("application,updated_at,{}\n", dashboard.updated.format("%Y-%m-%dT%H:%M:%SZ")));
+
+    // Section 2: Subscription & Limits
+    csv.push_str(&format!(
+        "subscription,tier,{}\n",
+        dashboard.tier.as_deref().unwrap_or("none")
+    ));
+    csv.push_str(&format!(
+        "subscription,monthly_message_quota,{}\n",
+        dashboard.monthly_quota.map(|q| q.to_string()).unwrap_or_else(|| "unlimited".to_string())
+    ));
+    csv.push_str(&format!(
+        "subscription,rate_limit_per_minute,{}\n",
+        dashboard.rate_limit.map(|r| r.to_string()).unwrap_or_else(|| "n/a".to_string())
+    ));
+    csv.push_str(&format!(
+        "subscription,retention_seconds,{}\n",
+        dashboard.retention_seconds.map(|r| r.to_string()).unwrap_or_else(|| "n/a".to_string())
+    ));
+
+    // Section 3: Current Month Usage
+    csv.push_str(&format!("current_month,messages_sent,{}\n", dashboard.current_month.msg_sent));
+    csv.push_str(&format!("current_month,messages_received,{}\n", dashboard.current_month.msg_received));
+    csv.push_str(&format!("current_month,proofs_verified,{}\n", dashboard.current_month.msg_proof));
+    csv.push_str(&format!("current_month,bytes_stored,{}\n", dashboard.current_month.msg_stored));
+    csv.push_str(&format!("current_month,bytes_sent,{}\n", dashboard.current_month.bytes_sent));
+    csv.push_str(&format!("current_month,bytes_received,{}\n", dashboard.current_month.bytes_received));
+    csv.push_str(&format!("current_month,rate_limit_hits,{}\n", dashboard.current_month.rate_hits));
+
+    // Section 4: Lifetime Usage
+    csv.push_str(&format!("lifetime,messages_sent,{}\n", dashboard.lifetime.msg_sent));
+
+    // Section 5: Quota Status
+    csv.push_str(&format!("quota,messages_used,{}\n", dashboard.quota_status.messages_used));
+    csv.push_str(&format!(
+        "quota,messages_limit,{}\n",
+        dashboard.quota_status.messages_limit.map(|l| l.to_string()).unwrap_or_else(|| "unlimited".to_string())
+    ));
+    csv.push_str(&format!("quota,usage_percentage,{:.2}\n", dashboard.quota_status.usage_pct));
+    csv.push_str(&format!("quota,is_over_quota,{}\n", dashboard.quota_status.is_over_quota));
+    csv.push_str(&format!("quota,overage_count,{}\n", dashboard.quota_status.overage_count));
+    csv.push_str(&format!("quota,resets_at,{}\n", dashboard.quota_status.resets_at.format("%Y-%m-%dT%H:%M:%SZ")));
+    csv.push_str(&format!(
+        "quota,alert_level,{}\n",
+        dashboard.quota_status.alert_level.as_deref().unwrap_or("none")
+    ));
+
+    // Section 6: Trends
+    csv.push_str(&format!("trends,daily_average_messages,{}\n", dashboard.trends.daily_avg_messages));
+    csv.push_str(&format!("trends,projected_monthly_messages,{}\n", dashboard.trends.projected_monthly_messages));
+    csv.push_str(&format!("trends,quota_trend,{}\n", dashboard.trends.quota_trend));
+
+    // Section 7: Keys Summary
+    csv.push_str(&format!("keys,total_count,{}\n", dashboard.keys.len()));
+    csv.push_str(&format!(
+        "keys,active_count,{}\n",
+        dashboard.keys.iter().filter(|k| k.is_active).count()
+    ));
+
+    // Section 8: Webhooks Summary
+    csv.push_str(&format!("webhooks,total_count,{}\n", dashboard.webhooks.len()));
+    csv.push_str(&format!(
+        "webhooks,active_count,{}\n",
+        dashboard.webhooks.iter().filter(|w| w.is_active).count()
+    ));
+
+    // Section 9: Pricing Plan (if included and available)
+    if include_pricing {
+        if let Some(ref plan) = dashboard.pricing_plan {
+            csv.push_str(&format!("pricing_plan,id,{}\n", plan.id));
+            csv.push_str(&format!("pricing_plan,name,\"{}\"\n", escape_csv(&plan.name)));
+            csv.push_str(&format!("pricing_plan,pricing_mode,{:?}\n", plan.pricing_mode));
+            csv.push_str(&format!(
+                "pricing_plan,price_per_message_cents,{}\n",
+                plan.price_per_message_cents.map(|p| p.to_string()).unwrap_or_else(|| "n/a".to_string())
+            ));
+            csv.push_str(&format!(
+                "pricing_plan,price_per_gb_cents,{}\n",
+                plan.price_per_gb_cents.map(|p| p.to_string()).unwrap_or_else(|| "n/a".to_string())
+            ));
+            csv.push_str(&format!(
+                "pricing_plan,price_per_proof_cents,{}\n",
+                plan.price_per_proof_cents.map(|p| p.to_string()).unwrap_or_else(|| "n/a".to_string())
+            ));
+            csv.push_str(&format!(
+                "pricing_plan,prepaid_amount_cents,{}\n",
+                plan.prepaid_amount_cents.map(|p| p.to_string()).unwrap_or_else(|| "n/a".to_string())
+            ));
+            csv.push_str(&format!("pricing_plan,is_default,{}\n", plan.is_default));
+            csv.push_str(&format!("pricing_plan,attached_at,{}\n", plan.attached_at.format("%Y-%m-%dT%H:%M:%SZ")));
+        } else {
+            csv.push_str("pricing_plan,status,not_attached\n");
+        }
+    }
+
+    csv
+}
+
+/// Escapes special characters for CSV format (RFC 4180 compliant)
+fn escape_csv(s: &str) -> String {
+    if s.contains('"') || s.contains(',') || s.contains('\n') || s.contains('\r') {
+        format!("{}", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+// ============================================================================
+// UPGRADE RECOMMENDATIONS
+// ============================================================================
+
+/// Response containing upgrade recommendations for an application
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeRecommendationsResponse {
+    /// Current subscription tier
+    pub current_tier: String,
+    /// Available upgrade options
+    pub recommendations: Vec<UpgradeOption>,
+    /// Whether the user is on the highest tier
+    pub is_max_tier: bool,
+}
+
+/// Get upgrade recommendations for a specific application based on its current tier
 #[utoipa::path(
     get,
-    path = "/dev/applications/{application_id}/trends",
+    path = "/dev/applications/{application_id}/upgrade-recommendations",
     params(
         ("application_id" = Uuid, Path, description = "Application ID")
     ),
     responses(
-        (status = 200, description = "Trends retrieved successfully", body = TrendsResponse),
+        (status = 200, description = "Upgrade recommendations retrieved successfully", body = UpgradeRecommendationsResponse),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Application not found"),
         (status = 500, description = "Internal server error")
@@ -315,85 +295,35 @@ pub async fn export_application_usage(
     security(("bearer_auth" = [])),
     tag = "analytics"
 )]
-pub async fn get_application_trends(
+pub async fn get_application_upgrade_recommendations(
     Path(app_id): Path<Uuid>,
-    SessionDataUserExt(session): SessionDataUserExt,
+    SessionDataUserExt(user): SessionDataUserExt,
     State(state): State<AppState>,
-) -> Result<Json<TrendsResponse>, ApiError> {
-    let result = Application::find_owned_by_user(state.db.as_ref(), app_id, session.user_id, false).await?;
-    let app = &result.application;
+) -> Result<Json<UpgradeRecommendationsResponse>, ApiError> {
+    let result =
+        Application::find_owned_by_user(state.db.as_ref(), app_id, user.user_id, false).await?;
 
-    // Calculate trends based on current month data
-    // Note: For more accurate trends, you'd query from usage_metrics_daily
-    let now = Utc::now();
-    let days_in_month = now.day() as f64;
-    let daily_average = if days_in_month > 0.0 {
-        (app.current_month_messages_sent as f64 / days_in_month).round() as i64
-    } else {
-        0
-    };
+    let current_tier = result
+        .application
+        .tier
+        .as_deref()
+        .and_then(|t| t.parse::<SubscriptionTier>().ok())
+        .unwrap_or(SubscriptionTier::Free);
 
-    let projected_monthly = daily_average * 30;
+    let recommendations = get_upgrade_options(&current_tier);
+    let is_max_tier = matches!(current_tier, SubscriptionTier::Enterprise);
 
-    let usage_percentage = app
-        .quota_usage_percentage
-        .to_string()
-        .parse::<f64>()
-        .unwrap_or(0.0);
-
-    let quota_trend = if usage_percentage > 80.0 {
-        "critical"
-    } else if usage_percentage > 50.0 {
-        "increasing"
-    } else {
-        "stable"
-    };
-
-    Ok(Json(TrendsResponse {
-        daily_average_messages: daily_average,
-        projected_monthly_cost_cents: projected_monthly,
-        quota_trend: quota_trend.to_string(),
+    Ok(Json(UpgradeRecommendationsResponse {
+        current_tier: format!("{:?}", current_tier),
+        recommendations,
+        is_max_tier,
     }))
 }
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
+/// Get upgrade options based on current tier
+fn get_upgrade_options(current_tier: &SubscriptionTier) -> Vec<UpgradeOption> {
+    const BASE_URL: &str = "https://vaultless.dev/pricing";
 
-fn generate_usage_csv(app: &ApplicationWithUsage) -> Result<String, ApiError> {
-    let mut csv = String::from("metric,current_month,lifetime\n");
-
-    csv.push_str(&format!(
-        "messages_sent,{},{}\n",
-        app.current_month_messages_sent, app.lifetime_messages_sent
-    ));
-
-    csv.push_str(&format!(
-        "messages_received,{},n/a\n",
-        app.current_month_messages_received
-    ));
-
-    csv.push_str(&format!(
-        "bytes_sent,{},n/a\n",
-        app.current_month_bytes_sent
-    ));
-
-    csv.push_str(&format!(
-        "bytes_received,{},n/a\n",
-        app.current_month_bytes_received
-    ));
-
-    csv.push_str(&format!(
-        "cost_cents,{},{}\n",
-        app.current_month_cost_cents, app.lifetime_cost_cents
-    ));
-
-    Ok(csv)
-}
-
-/// Get upgrade recommendations based on current tier
-#[allow(dead_code)]
-fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOption> {
     match current_tier {
         SubscriptionTier::Free => vec![
             UpgradeOption {
@@ -405,6 +335,7 @@ fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOp
                     "300 req/min rate limit".to_string(),
                     "Email support".to_string(),
                 ],
+                upgrade_url: format!("{BASE_URL}?plan=starter"),
             },
             UpgradeOption {
                 tier: "Pro".to_string(),
@@ -415,6 +346,7 @@ fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOp
                     "Real-time webhooks".to_string(),
                     "Priority support".to_string(),
                 ],
+                upgrade_url: format!("{BASE_URL}?plan=pro"),
             },
         ],
         SubscriptionTier::Starter => vec![UpgradeOption {
@@ -426,6 +358,7 @@ fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOp
                 "Real-time webhooks".to_string(),
                 "Priority support".to_string(),
             ],
+            upgrade_url: format!("{BASE_URL}?plan=pro"),
         }],
         SubscriptionTier::Pro => vec![UpgradeOption {
             tier: "Enterprise".to_string(),
@@ -436,6 +369,7 @@ fn get_upgrade_recommendations(current_tier: &SubscriptionTier) -> Vec<UpgradeOp
                 "Custom SLA guarantees".to_string(),
                 "Dedicated support".to_string(),
             ],
+            upgrade_url: format!("{BASE_URL}?plan=enterprise&contact=sales"),
         }],
         SubscriptionTier::Enterprise => vec![],
     }

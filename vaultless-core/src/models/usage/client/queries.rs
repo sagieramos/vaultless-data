@@ -22,7 +22,6 @@ pub struct ClientUsageAggregate {
     pub total_bytes_sent: i64,
     pub total_bytes_received: i64,
     pub total_rate_limit_hits: i64,
-    pub total_estimated_cost_cents: i64,
 }
 
 /// Get all-time aggregated usage metrics for a specific client within an application.
@@ -43,8 +42,7 @@ where
             COALESCE(SUM(total_bytes_stored), 0) AS total_bytes_stored,
             COALESCE(SUM(total_bytes_sent), 0) AS total_bytes_sent,
             COALESCE(SUM(total_bytes_received), 0) AS total_bytes_received,
-            COALESCE(SUM(rate_limit_hits), 0) AS total_rate_limit_hits,
-            COALESCE(SUM(estimated_cost_cents), 0) AS total_estimated_cost_cents
+            COALESCE(SUM(rate_limit_hits), 0) AS total_rate_limit_hits
         FROM
             client_usage_metrics
         WHERE

@@ -14,8 +14,8 @@ pub mod keys;
 pub use charts::get_chart_data;
 pub use handlers::{
     create_application, deactivate_application, get_application_analytics,
-    get_application_with_keys, get_quota_warnings,
-    get_user_usage_summary, list_applications, update_application,
+    get_quota_warnings, get_user_usage_summary, list_applications,
+    update_application,
 };
 pub use keys::{
     add_publishable_key, deactivate_publishable_key, rotate_publishable_key, rotate_secret_key,

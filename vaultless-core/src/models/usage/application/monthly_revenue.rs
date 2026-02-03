@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Executor, FromRow, Postgres};
 use uuid::Uuid;
 use utoipa::ToSchema;
-
+//TODO
 // =============================================================================
 // Monthly Revenue Data
 // =============================================================================
@@ -150,7 +150,7 @@ impl MonthlyRevenueData {
             SELECT
                 a.id AS application_id,
                 a.name AS application_name,
-                COALESCE(SUM(um.estimated_cost_cents), 0) AS revenue_cents,
+                0 AS revenue_cents,  -- Revenue calculation now separate from usage metrics
                 COUNT(*) OVER() as total_count
             FROM applications a
             LEFT JOIN usage_metrics um ON a.id = um.application_id

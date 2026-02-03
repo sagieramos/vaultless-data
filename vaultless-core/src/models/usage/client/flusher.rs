@@ -226,7 +226,7 @@ async fn flush_batch_to_pg(
             period_start, period_end, application_id, client_id,
             messages_sent, messages_received, proofs_verified,
             total_bytes_stored, total_bytes_sent, total_bytes_received,
-            rate_limit_hits, estimated_cost_cents
+            rate_limit_hits
         )
         "#,
     );
@@ -257,8 +257,7 @@ async fn flush_batch_to_pg(
             total_bytes_stored = client_usage_metrics.total_bytes_stored + EXCLUDED.total_bytes_stored,
             total_bytes_sent = client_usage_metrics.total_bytes_sent + EXCLUDED.total_bytes_sent,
             total_bytes_received = client_usage_metrics.total_bytes_received + EXCLUDED.total_bytes_received,
-            rate_limit_hits = client_usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits,
-            estimated_cost_cents = client_usage_metrics.estimated_cost_cents + EXCLUDED.estimated_cost_cents
+            rate_limit_hits = client_usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits
         "#,
     );
 
