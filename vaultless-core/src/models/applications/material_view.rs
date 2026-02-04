@@ -550,7 +550,6 @@ impl Application {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use regex::Regex;
 
     // Helper to build the same SQL as in list_user_applications so we can test placeholder numbering

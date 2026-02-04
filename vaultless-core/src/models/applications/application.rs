@@ -35,12 +35,25 @@ struct PgCreateApplicationResult {
     deletion_requested_at: Option<DateTime<Utc>>,
     internal_notes: Option<String>,
     app_meta: serde_json::Value,
-    secret_key: String,
+    secret_key_prefix: String,
     publishable_key_plaintext: String,
 }
 
 impl Application {
-    /// Create a new application with secret and publishable keys using PostgreSQL function
+    /// Create a new application with secret and publishable keys
+    ///
+    /// This function:
+    /// 1. Generates secret and publishable keys in the application layer (secure)
+    /// 2. Creates the application and keys atomically in the database
+    /// 3. Returns the plaintext keys (only shown once - store securely!)
+    ///
+    /// # Arguments
+    /// * `db_pool` - Database connection pool
+    /// * `redis` - Optional Redis pool for cache management
+    /// * `input` - Application creation parameters
+    ///
+    /// # Returns
+    /// * `CreateApplicationResponse` containing the application and both keys
     pub async fn create(
         db_pool: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
@@ -51,6 +64,18 @@ impl Application {
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
+        // Generate keys in the application layer for security
+        let environment = input.environment.as_deref().unwrap_or("live");
+
+        // Generate secret key
+        let secret_key = crate::crypto::generate_api_key("sk", environment)?;
+        let secret_key_hash = crate::crypto::hash_content(secret_key.as_bytes());
+        let secret_key_prefix = secret_key.chars().take(8).collect::<String>();
+
+        // Generate publishable key
+        let publishable_key = crate::crypto::generate_api_key("pk", environment)?;
+        let publishable_key_prefix = publishable_key.chars().take(16).collect::<String>();
+
         // Call the PostgreSQL function to create the application and keys
         let result = sqlx::query_as::<_, PgCreateApplicationResult>(
             r#"
@@ -60,7 +85,10 @@ impl Application {
                 $3,  -- p_description
                 $4,  -- p_max_ttl_seconds
                 $5,  -- p_is_key_rotation_forced
-                COALESCE($6, 'live')  -- p_environment
+                $6,  -- p_secret_key_hash
+                $7,  -- p_secret_key_prefix
+                $8,  -- p_publishable_key_plaintext
+                $9   -- p_publishable_key_prefix
             )
             "#,
         )
@@ -69,7 +97,10 @@ impl Application {
         .bind(&input.description)
         .bind(input.max_ttl_seconds)
         .bind(input.is_key_rotation_forced)
-        .bind(input.environment.as_deref())
+        .bind(&secret_key_hash)
+        .bind(&secret_key_prefix)
+        .bind(&publishable_key)
+        .bind(&publishable_key_prefix)
         .fetch_one(db_pool.as_ref())
         .await?;
 
@@ -79,6 +110,8 @@ impl Application {
 
         tracing::info!(
             application_id = %result.application_id,
+            secret_key_prefix = %secret_key_prefix,
+            publishable_key_prefix = %publishable_key_prefix,
             "Application created with secret + publishable keys"
         );
 
@@ -100,8 +133,8 @@ impl Application {
                     |e| VaultlessError::Internal(format!("Failed to deserialize app_meta: {}", e)),
                 )?),
             },
-            secret_key: Some(result.secret_key),
-            publishable_key_plaintext: result.publishable_key_plaintext,
+            secret_key: Some(secret_key),
+            publishable_key_plaintext: publishable_key,
         })
     }
 

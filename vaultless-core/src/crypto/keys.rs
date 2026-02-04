@@ -134,23 +134,29 @@ pub fn generate_secure_token<const N: usize>() -> Result<[u8; N]> {
 /// Generate a secure API key with environment tag (e.g. "sk_live_..." or "sk_test_...")
 ///
 /// # Arguments
-/// * `prefix` - Static prefix like "sk"
+/// * `prefix` - Static prefix like "sk" for secret keys, "pk" for publishable keys
 /// * `env` - Environment tag ("live" or "test")
 ///
 /// # Returns
-/// * `String` - The generated API key
+/// * `String` - The generated API key in format: `{prefix}_{env}_{hex_encoded_32_bytes}`
+///
+/// # Format
+/// * Uses hex encoding (64 characters) to match SQL-generated keys from create_application
+/// * Example: `sk_live_a1b2c3d4e5f6789012345678901234567890123456789012345678901234`
 ///
 /// # Example
 /// ```
 /// let secret_key = crypto::generate_api_key("sk", "live")?;
 /// println!("Generated key: {}", secret_key);
+/// // Output: sk_live_a1b2c3d4e5f6789012345678901234567890123456789012345678901234
 /// ```
 pub fn generate_api_key(prefix: &str, env: &str) -> Result<String> {
     let mut random_bytes = [0u8; 32];
     getrandom::fill(&mut random_bytes).map_err(|e| {
         crate::error::VaultlessError::Internal(format!("API key generation failed: {}", e))
     })?;
-    let encoded = BASE64.encode(random_bytes);
+    // Use hex encoding to match SQL-generated keys from create_application function
+    let encoded = hex::encode(random_bytes);
     let api_key = format!("{}_{}_{}", prefix, env, encoded);
 
     Ok(api_key)
