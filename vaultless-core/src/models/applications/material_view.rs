@@ -92,13 +92,11 @@ struct ApplicationWithPricingPlanRow {
     pub current_month_bytes_sent: i64,
     pub current_month_bytes_received: i64,
     pub current_month_rate_limit_hits: i64,
-    pub current_month_cost_cents: i64,
     pub quota_usage_percentage: Decimal,
     pub bandwidth_quota_usage_percentage: Decimal,
     pub current_month_revenue_cents: i64,
     pub billable_clients_count: i32,
     pub lifetime_messages_sent: i64,
-    pub lifetime_cost_cents: i64,
     // Pricing plan fields (nullable)
     pub pricing_plan_id: Option<Uuid>,
     pub pricing_plan_name: Option<String>,
@@ -154,13 +152,11 @@ impl Application {
                 current_month_bytes_sent,
                 current_month_bytes_received,
                 current_month_rate_limit_hits,
-                current_month_cost_cents,
                 quota_usage_percentage,
                 bandwidth_quota_usage_percentage,
                 current_month_revenue_cents,
                 billable_clients_count,
                 lifetime_messages_sent,
-                lifetime_cost_cents
             FROM mv_applications_with_usage
             WHERE application_id = $1 AND developer_id = $2
             "#,
@@ -207,13 +203,11 @@ impl Application {
             mv.current_month_bytes_sent,
             mv.current_month_bytes_received,
             mv.current_month_rate_limit_hits,
-            mv.current_month_cost_cents,
             mv.quota_usage_percentage,
             mv.bandwidth_quota_usage_percentage,
             mv.current_month_revenue_cents,
             mv.billable_clients_count,
             mv.lifetime_messages_sent,
-            mv.lifetime_cost_cents,
             -- Pricing plan fields
             pp.id AS pricing_plan_id,
             pp.name AS pricing_plan_name,
@@ -278,13 +272,11 @@ impl Application {
             current_month_bytes_sent: row.current_month_bytes_sent,
             current_month_bytes_received: row.current_month_bytes_received,
             current_month_rate_limit_hits: row.current_month_rate_limit_hits,
-            current_month_cost_cents: row.current_month_cost_cents,
             quota_usage_percentage: row.quota_usage_percentage,
             bandwidth_quota_usage_percentage: row.bandwidth_quota_usage_percentage,
             current_month_revenue_cents: row.current_month_revenue_cents,
             billable_clients_count: row.billable_clients_count,
             lifetime_messages_sent: row.lifetime_messages_sent,
-            lifetime_cost_cents: row.lifetime_cost_cents,
         };
 
         Ok(ApplicationWithUsageAndPricingPlan {
@@ -542,7 +534,6 @@ impl Application {
             total_apps AS "total_apps!",
             total_monthly_messages AS "total_monthly_messages!",
             total_clients AS "total_clients!",
-            total_monthly_cost AS "total_monthly_cost!",
             critical_quota_apps AS "critical_quota_apps!",
             critical_bandwidth_quota_apps AS "critical_bandwidth_quota_apps!",
             total_monthly_revenue_cents AS "total_monthly_revenue_cents!"

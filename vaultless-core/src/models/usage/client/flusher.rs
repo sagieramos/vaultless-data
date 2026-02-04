@@ -244,8 +244,7 @@ async fn flush_batch_to_pg(
             .push_bind(total_bytes_stored)
             .push_bind(counters.total_bytes_sent)
             .push_bind(counters.total_bytes_received)
-            .push_bind(counters.rate_limit_hits)
-            .push_bind(counters.estimate_cost_cents());
+            .push_bind(counters.rate_limit_hits);
     });
     
     qb.push(

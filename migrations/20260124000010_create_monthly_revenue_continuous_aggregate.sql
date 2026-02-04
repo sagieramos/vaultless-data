@@ -1,10 +1,10 @@
 -- ============================================================================
 -- Migration: Scalable Revenue Rollup Architecture
--- Hierarchy: usage_metrics → hourly → daily → monthly
+-- Hierarchy: application_usage_metrics → hourly → daily → monthly
 -- ============================================================================
 
 -- ============================================================================
--- 1. HOURLY AGGREGATES (Base layer - only objects reading from usage_metrics)
+-- 1. HOURLY AGGREGATES (Base layer - only objects reading from application_usage_metrics)
 -- ============================================================================
 
 CREATE MATERIALIZED VIEW hourly_revenue_by_application
@@ -12,12 +12,11 @@ WITH (timescaledb.continuous) AS
 SELECT
     application_id,
     time_bucket('1 hour', period_start) AS hour,
-    SUM(estimated_cost_cents) AS total_revenue_cents,
     SUM(messages_sent + messages_received) AS total_messages,
     SUM(total_bytes_sent + total_bytes_received) AS total_bytes,
     SUM(proofs_verified) AS total_proofs,
     COUNT(*) AS records_count
-FROM usage_metrics
+FROM application_usage_metrics
 GROUP BY application_id, time_bucket('1 hour', period_start)
 WITH NO DATA;
 
@@ -26,12 +25,11 @@ WITH (timescaledb.continuous) AS
 SELECT
     a.developer_id,
     time_bucket('1 hour', um.period_start) AS hour,
-    SUM(um.estimated_cost_cents) AS total_revenue_cents,
     SUM(um.messages_sent + um.messages_received) AS total_messages,
     SUM(um.total_bytes_sent + um.total_bytes_received) AS total_bytes,
     SUM(um.proofs_verified) AS total_proofs,
     COUNT(DISTINCT um.application_id) AS applications_count
-FROM usage_metrics um
+FROM application_usage_metrics um
 JOIN applications a ON um.application_id = a.id
 GROUP BY a.developer_id, time_bucket('1 hour', um.period_start)
 WITH NO DATA;
@@ -48,7 +46,6 @@ WITH (timescaledb.continuous) AS
 SELECT
     application_id,
     time_bucket('1 day', hour) AS day,
-    SUM(total_revenue_cents) AS total_revenue_cents,
     SUM(total_messages) AS total_messages,
     SUM(total_bytes) AS total_bytes,
     SUM(total_proofs) AS total_proofs,
@@ -62,7 +59,6 @@ WITH (timescaledb.continuous) AS
 SELECT
     developer_id,
     time_bucket('1 day', hour) AS day,
-    SUM(total_revenue_cents) AS total_revenue_cents,
     SUM(total_messages) AS total_messages,
     SUM(total_bytes) AS total_bytes,
     SUM(total_proofs) AS total_proofs,
@@ -83,7 +79,6 @@ WITH (timescaledb.continuous) AS
 SELECT
     application_id,
     time_bucket('1 month', day) AS month,
-    SUM(total_revenue_cents) AS total_revenue_cents,
     SUM(total_messages) AS total_messages,
     SUM(total_bytes) AS total_bytes,
     SUM(total_proofs) AS total_proofs,
@@ -97,7 +92,6 @@ WITH (timescaledb.continuous) AS
 SELECT
     developer_id,
     time_bucket('1 month', day) AS month,
-    SUM(total_revenue_cents) AS total_revenue_cents,
     SUM(total_messages) AS total_messages,
     SUM(total_bytes) AS total_bytes,
     SUM(total_proofs) AS total_proofs,
@@ -164,7 +158,6 @@ BEGIN
         agg AS (
             SELECT
                 hour AS p,
-                SUM(total_revenue_cents) AS revenue_cents,
                 SUM(total_messages) AS messages,
                 SUM(total_bytes) AS bytes,
                 SUM(total_proofs) AS proofs
@@ -179,8 +172,8 @@ BEGIN
         SELECT
             TO_CHAR(periods.p, v_format),
             periods.p,
-            COALESCE(agg.revenue_cents, 0)::BIGINT,
-            (COALESCE(agg.revenue_cents, 0) / 100.0)::DECIMAL(12,2),
+            0::BIGINT AS revenue_cents,  -- Placeholder since revenue is now calculated differently
+            0.00::DECIMAL(12,2) AS revenue_usd,  -- Placeholder since revenue is now calculated differently
             COALESCE(agg.messages, 0)::BIGINT,
             COALESCE(agg.bytes, 0)::BIGINT,
             COALESCE(agg.proofs, 0)::BIGINT
@@ -196,7 +189,6 @@ BEGIN
         agg AS (
             SELECT
                 time_bucket(v_interval, day) AS p,
-                SUM(total_revenue_cents) AS revenue_cents,
                 SUM(total_messages) AS messages,
                 SUM(total_bytes) AS bytes,
                 SUM(total_proofs) AS proofs
@@ -211,8 +203,8 @@ BEGIN
         SELECT
             TO_CHAR(periods.p, v_format),
             periods.p,
-            COALESCE(agg.revenue_cents, 0)::BIGINT,
-            (COALESCE(agg.revenue_cents, 0) / 100.0)::DECIMAL(12,2),
+            0::BIGINT AS revenue_cents,  -- Placeholder since revenue is now calculated differently
+            0.00::DECIMAL(12,2) AS revenue_usd,  -- Placeholder since revenue is now calculated differently
             COALESCE(agg.messages, 0)::BIGINT,
             COALESCE(agg.bytes, 0)::BIGINT,
             COALESCE(agg.proofs, 0)::BIGINT
@@ -228,7 +220,6 @@ BEGIN
         agg AS (
             SELECT
                 month AS p,
-                SUM(total_revenue_cents) AS revenue_cents,
                 SUM(total_messages) AS messages,
                 SUM(total_bytes) AS bytes,
                 SUM(total_proofs) AS proofs
@@ -243,8 +234,8 @@ BEGIN
         SELECT
             TO_CHAR(periods.p, v_format),
             periods.p,
-            COALESCE(agg.revenue_cents, 0)::BIGINT,
-            (COALESCE(agg.revenue_cents, 0) / 100.0)::DECIMAL(12,2),
+            0::BIGINT AS revenue_cents,  -- Placeholder since revenue is now calculated differently
+            0.00::DECIMAL(12,2) AS revenue_usd,  -- Placeholder since revenue is now calculated differently
             COALESCE(agg.messages, 0)::BIGINT,
             COALESCE(agg.bytes, 0)::BIGINT,
             COALESCE(agg.proofs, 0)::BIGINT

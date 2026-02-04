@@ -88,7 +88,7 @@ pub struct Client {
     pub is_platform_attested: bool,
 
     // =========================================================================
-    // Usage Metrics (flushed to usage_metrics table)
+    // Usage Metrics (flushed to application_usage_metrics table)
     // =========================================================================
     pub messages_sent: i64,
     pub messages_received: i64,

@@ -327,14 +327,14 @@ async fn get_subscription_ids_batch(
         return Ok(HashMap::new());
     }
 
-    // Path: applications -> users <- subscriptions (active)
+    // Path: applications -> developer_subscriptions (active)
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
         r#"
         SELECT
             a.id as application_id,
             s.id as subscription_id
         FROM applications a
-        JOIN subscriptions s ON a.developer_id = s.user_id AND s.is_active = true
+        JOIN developer_subscriptions s ON a.subscription_id = s.id AND s.is_active = true
         WHERE a.id = ANY($1)
         "#,
     )
@@ -413,7 +413,7 @@ async fn flush_batch_to_pg(
 
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
             r#"
-            INSERT INTO usage_metrics (
+            INSERT INTO application_usage_metrics (
                 period_start, period_end,
                 application_id, subscription_id,
                 messages_sent, messages_received, proofs_verified,
@@ -428,7 +428,6 @@ async fn flush_batch_to_pg(
             |mut b, (application_id, subscription_id, period_start, counters, _)| {
                 let period_end = *period_start + ChronoDuration::hours(1);
                 let total_bytes_stored = counters.total_bytes_sent + counters.total_bytes_received;
-                let estimated_cost = counters.estimate_cost_cents();
 
                 b.push_bind(*period_start)
                     .push_bind(period_end)
@@ -441,8 +440,7 @@ async fn flush_batch_to_pg(
                     .push_bind(counters.total_bytes_sent)
                     .push_bind(counters.total_bytes_received)
                     .push_bind(counters.rate_limit_hits)
-                    .push_bind(counters.bytes_proved)
-                    .push_bind(estimated_cost);
+                    .push_bind(counters.bytes_proved);
             },
         );
 
@@ -453,14 +451,14 @@ async fn flush_batch_to_pg(
             ON CONFLICT (application_id, subscription_id, period_start)
             WHERE api_key_id IS NULL
             DO UPDATE SET
-                messages_sent = usage_metrics.messages_sent + EXCLUDED.messages_sent,
-                messages_received = usage_metrics.messages_received + EXCLUDED.messages_received,
-                proofs_verified = usage_metrics.proofs_verified + EXCLUDED.proofs_verified,
-                total_bytes_stored = usage_metrics.total_bytes_stored + EXCLUDED.total_bytes_stored,
-                total_bytes_sent = usage_metrics.total_bytes_sent + EXCLUDED.total_bytes_sent,
-                total_bytes_received = usage_metrics.total_bytes_received + EXCLUDED.total_bytes_received,
-                rate_limit_hits = usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits,
-                bytes_proved = usage_metrics.bytes_proved + EXCLUDED.bytes_proved
+                messages_sent = application_usage_metrics.messages_sent + EXCLUDED.messages_sent,
+                messages_received = application_usage_metrics.messages_received + EXCLUDED.messages_received,
+                proofs_verified = application_usage_metrics.proofs_verified + EXCLUDED.proofs_verified,
+                total_bytes_stored = application_usage_metrics.total_bytes_stored + EXCLUDED.total_bytes_stored,
+                total_bytes_sent = application_usage_metrics.total_bytes_sent + EXCLUDED.total_bytes_sent,
+                total_bytes_received = application_usage_metrics.total_bytes_received + EXCLUDED.total_bytes_received,
+                rate_limit_hits = application_usage_metrics.rate_limit_hits + EXCLUDED.rate_limit_hits,
+                bytes_proved = application_usage_metrics.bytes_proved + EXCLUDED.bytes_proved
             "#,
         );
 

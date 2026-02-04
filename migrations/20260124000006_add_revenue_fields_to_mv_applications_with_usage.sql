@@ -61,7 +61,6 @@ SELECT
     COALESCE(current_month.total_bytes_sent, 0)::BIGINT AS current_month_bytes_sent,
     COALESCE(current_month.total_bytes_received, 0)::BIGINT AS current_month_bytes_received,
     COALESCE(current_month.total_rate_limit_hits, 0)::BIGINT AS current_month_rate_limit_hits,
-    COALESCE(current_month.total_estimated_cost_cents, 0)::BIGINT AS current_month_cost_cents,
 
     -- NEW: REVENUE INFORMATION
     COALESCE(revenue_data.current_month_revenue_cents, 0)::BIGINT AS current_month_revenue_cents,
@@ -82,9 +81,7 @@ SELECT
     END AS bandwidth_quota_usage_percentage,
 
     -- LIFETIME USAGE (Aggregated by Application ID)
-    COALESCE(lifetime.total_messages_sent, 0)::BIGINT AS lifetime_messages_sent,
-    COALESCE(lifetime.total_estimated_cost_cents, 0)::BIGINT AS lifetime_cost_cents
-
+    COALESCE(lifetime.total_messages_sent, 0)::BIGINT AS lifetime_messages_sent
 FROM public.applications a
 LEFT JOIN public.developer_subscriptions s ON a.subscription_id = s.id
 LEFT JOIN public.api_keys sk ON (sk.application_id = a.id AND sk.key_type = 'secret'::public.key_type AND sk.is_active = true)
@@ -127,9 +124,8 @@ LEFT JOIN LATERAL (
         SUM(total_bytes_stored)::BIGINT AS total_bytes_stored,
         SUM(total_bytes_sent)::BIGINT AS total_bytes_sent,
         SUM(total_bytes_received)::BIGINT AS total_bytes_received,
-        SUM(total_rate_limit_hits)::BIGINT AS total_rate_limit_hits,
-        SUM(total_estimated_cost_cents)::BIGINT AS total_estimated_cost_cents
-    FROM _timescaledb_internal._materialized_hypertable_3 umd  -- daily view
+        SUM(total_rate_limit_hits)::BIGINT AS total_rate_limit_hits
+    FROM application_usage_metrics_daily umd  -- daily view
     WHERE umd.application_id = a.id
       AND umd.day >= date_trunc('month', NOW())
 ) current_month ON true
@@ -151,9 +147,8 @@ LEFT JOIN LATERAL (
 
 -- LATERAL: Lifetime Summary
 LEFT JOIN LATERAL (
-    SELECT SUM(total_messages_sent) AS total_messages_sent,
-           SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
-    FROM _timescaledb_internal._materialized_hypertable_3 umd
+    SELECT SUM(total_messages_sent) AS total_messages_sent
+    FROM application_usage_metrics_daily umd
     WHERE umd.application_id = a.id
 ) lifetime ON true
 

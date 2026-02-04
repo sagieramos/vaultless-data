@@ -1,4 +1,5 @@
 use super::dto::*;
+use super::resolve::AuthLookup;
 use crate::cache_key;
 use crate::crypto::hash_content;
 use crate::error::{Result, VaultlessError};
@@ -218,11 +219,21 @@ impl ApplicationKeyView {
 
             let auth_config = match key_type {
                 KeyGranularity::Publishable => {
-                    super::Application::fetch_full_auth_by_publishable_key(exec, api_key).await?
+                    super::Application::fetch_auth_internal(
+                        exec,
+                        None,
+                        AuthLookup::Publishable(api_key),
+                        false,
+                    ).await?
                 }
                 KeyGranularity::Secret => {
                     let secret_hash = hash_content(api_key.as_bytes());
-                    super::Application::fetch_full_auth_by_secret_hash(exec, &secret_hash).await?
+                    super::Application::fetch_auth_internal(
+                        exec,
+                        None,
+                        AuthLookup::SecretHash(&secret_hash),
+                        false,
+                    ).await?
                 }
             };
 
@@ -247,19 +258,21 @@ impl ApplicationKeyView {
 
         let auth_config = match key_type {
             KeyGranularity::Publishable => {
-                super::Application::fetch_auth_config_by_publishable_key(
+                super::Application::fetch_auth_internal(
                     exec,
                     Some(redis_pool.clone()),
-                    api_key,
+                    AuthLookup::Publishable(api_key),
+                    true,
                 )
                 .await?
             }
             KeyGranularity::Secret => {
                 let secret_hash = hash_content(api_key.as_bytes());
-                super::Application::fetch_auth_config_by_secret_hash(
+                super::Application::fetch_auth_internal(
                     exec,
                     Some(redis_pool.clone()),
-                    &secret_hash,
+                    AuthLookup::SecretHash(&secret_hash),
+                    true,
                 )
                 .await?
             }

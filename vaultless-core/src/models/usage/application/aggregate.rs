@@ -1,6 +1,6 @@
 //! TimescaleDB continuous aggregate queries for usage metrics.
 //!
-//! Queries against the `usage_metrics_daily` continuous aggregate
+//! Queries against the `application_usage_metrics_daily` continuous aggregate
 //! for dashboard and billing purposes.
 
 use chrono::{DateTime, Utc};
@@ -14,7 +14,7 @@ use crate::error::Result;
 // Daily Usage Summary
 // =============================================================================
 
-/// Daily usage summary from the usage_metrics_daily continuous aggregate
+/// Daily usage summary from the application_usage_metrics_daily continuous aggregate
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct DailyUsageSummary {
     pub application_id: Uuid,
@@ -50,7 +50,7 @@ impl DailyUsageSummary {
                 total_bytes_sent,
                 total_bytes_received,
                 total_rate_limit_hits
-            FROM usage_metrics_daily
+            FROM application_usage_metrics_daily
             WHERE application_id = $1
                 AND day >= $2
                 AND day < $3
@@ -85,7 +85,7 @@ impl DailyUsageSummary {
                 total_bytes_sent,
                 total_bytes_received,
                 total_rate_limit_hits
-            FROM usage_metrics_daily
+            FROM application_usage_metrics_daily
             WHERE application_id = $1
                 AND day >= NOW() - INTERVAL '1 day' * $2
             ORDER BY day DESC
@@ -115,7 +115,7 @@ impl DailyUsageSummary {
                 COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
                 COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
                 COALESCE(SUM(total_rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits
-            FROM usage_metrics_daily
+            FROM application_usage_metrics_daily
             WHERE application_id = $1
                 AND day >= DATE_TRUNC('month', NOW())
                 AND day < DATE_TRUNC('month', NOW() + INTERVAL '1 month')
@@ -182,7 +182,7 @@ pub async fn get_realtime_usage(
             COALESCE(SUM(total_bytes_sent)::BIGINT, 0) as total_bytes_sent,
             COALESCE(SUM(total_bytes_received)::BIGINT, 0) as total_bytes_received,
             COALESCE(SUM(rate_limit_hits)::BIGINT, 0) as total_rate_limit_hits
-        FROM usage_metrics
+        FROM application_usage_metrics
         WHERE application_id = $1
             AND period_start >= $2
         "#,
@@ -218,13 +218,13 @@ pub async fn get_usage_trends(pool: &PgPool, application_id: Uuid) -> Result<Usa
         r#"
         WITH current_week AS (
             SELECT COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total
-            FROM usage_metrics_daily
+            FROM application_usage_metrics_daily
             WHERE application_id = $1
                 AND day >= DATE_TRUNC('week', NOW())
         ),
         previous_week AS (
             SELECT COALESCE(SUM(total_messages_sent)::BIGINT, 0) as total
-            FROM usage_metrics_daily
+            FROM application_usage_metrics_daily
             WHERE application_id = $1
                 AND day >= DATE_TRUNC('week', NOW() - INTERVAL '7 days')
                 AND day < DATE_TRUNC('week', NOW())

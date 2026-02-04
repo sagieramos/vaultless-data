@@ -290,13 +290,6 @@ impl MetricCounters {
         if let Some(v) = map.get("bytes_proved") { self.bytes_proved = *v; }
     }
 
-    /// Estimate cost in cents based on usage
-    pub fn estimate_cost_cents(&self) -> i64 {
-        // Simple cost model: $0.001 per 1000 messages + $0.001 per MB
-        let message_cost = (self.messages_sent + self.messages_received) / 1000;
-        let byte_cost = (self.total_bytes_sent + self.total_bytes_received) / 1_000_000;
-        message_cost + byte_cost
-    }
 }
 
 // =============================================================================
@@ -335,12 +328,6 @@ impl ClientMetricCounters {
         if let Some(v) = map.get("rate_limit_hits") { self.rate_limit_hits = *v; }
     }
 
-    /// Estimate cost in cents based on usage
-    pub fn estimate_cost_cents(&self) -> i64 {
-        let message_cost = (self.messages_sent + self.messages_received) / 1000;
-        let byte_cost = (self.total_bytes_sent + self.total_bytes_received) / 1_000_000;
-        message_cost + byte_cost
-    }
 }
 
 // =============================================================================

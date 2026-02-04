@@ -187,8 +187,8 @@ impl Application {
         E: Executor<'c, Database = Postgres> + Clone,
     {
         let table_name = match granularity {
-            ChartGranularity::Daily => "usage_metrics_daily",
-            ChartGranularity::Weekly => "usage_metrics_weekly",
+            ChartGranularity::Daily => "application_usage_metrics_daily",
+            ChartGranularity::Weekly => "application_usage_metrics_weekly",  // Assuming weekly view exists
         };
 
         let bucket_interval = granularity.bucket_interval();

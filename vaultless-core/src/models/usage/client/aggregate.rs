@@ -79,7 +79,6 @@ impl MonthlyUsageSummary {
                 COALESCE(SUM(total_bytes_sent), 0) as total_bytes_sent,
                 COALESCE(SUM(total_bytes_received), 0) as total_bytes_received,
                 COALESCE(SUM(rate_limit_hits), 0) as total_rate_limit_hits,
-                COALESCE(SUM(estimated_cost_cents), 0) as total_estimated_cost_cents
             FROM client_usage_monthly
             WHERE application_id = $1
               AND client_id = $2
@@ -111,5 +110,4 @@ pub struct ClientMonthlyTotal {
     pub total_bytes_sent: i64,
     pub total_bytes_received: i64,
     pub total_rate_limit_hits: i64,
-    pub total_estimated_cost_cents: i64,
 }

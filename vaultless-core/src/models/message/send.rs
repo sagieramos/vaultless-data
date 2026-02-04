@@ -359,7 +359,7 @@ impl InstantMessage {
         auth_cache_key: &str,
         _application_id: Uuid,
     ) -> Result<()> {
-        use crate::models::applications::{Application, dto::AuthCacheEntry};
+        use crate::models::applications::{Application, dto::AuthCacheEntry, resolve::AuthLookup};
 
         // Determine if this is a pk or sk key and fetch accordingly
         let auth_view = if auth_cache_key.contains(":pk:") {
@@ -367,13 +367,23 @@ impl InstantMessage {
             let pk = auth_cache_key.split(':').nth(2)
                 .ok_or_else(|| VaultlessError::Internal("Invalid auth cache key format".into()))?;
 
-            Application::fetch_full_auth_by_publishable_key(self.db_pool.as_ref(), pk).await?
+            Application::fetch_auth_internal(
+                self.db_pool.as_ref(),
+                None,
+                AuthLookup::Publishable(pk),
+                false,
+            ).await?
         } else if auth_cache_key.contains(":sk:") {
             // Extract hash from key (format: "appconfig:sk:hash")
             let hash = auth_cache_key.split(':').nth(2)
                 .ok_or_else(|| VaultlessError::Internal("Invalid auth cache key format".into()))?;
 
-            Application::fetch_full_auth_by_secret_hash(self.db_pool.as_ref(), hash).await?
+            Application::fetch_auth_internal(
+                self.db_pool.as_ref(),
+                None,
+                AuthLookup::SecretHash(hash),
+                false,
+            ).await?
         } else {
             return Err(VaultlessError::Internal("Unknown auth cache key format".into()));
         };

@@ -54,7 +54,7 @@ where
             COALESCE(SUM(um.total_bytes_received), 0) AS total_bytes_received,
             COALESCE(SUM(um.rate_limit_hits), 0) AS total_rate_limit_hits
         FROM
-            usage_metrics um
+            application_usage_metrics um
         WHERE
             um.application_id = $1
         "#,

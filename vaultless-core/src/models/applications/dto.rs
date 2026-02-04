@@ -48,6 +48,10 @@ pub struct CreateApplication {
     pub max_ttl_seconds: Option<i32>,
 
     pub is_key_rotation_forced: Option<bool>,
+    
+    /// environment: e.g:`live`
+    #[validate(length(min = 1, max = 6))]
+    pub environment: Option<String>
 }
 
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
@@ -522,7 +526,6 @@ pub struct ApplicationWithUsage {
     pub current_month_bytes_sent: i64,
     pub current_month_bytes_received: i64,
     pub current_month_rate_limit_hits: i64,
-    pub current_month_cost_cents: i64,
     #[schema(value_type = f64)]
     pub quota_usage_percentage: Decimal,
     #[schema(value_type = f64)]
@@ -534,7 +537,6 @@ pub struct ApplicationWithUsage {
 
     // Totals
     pub lifetime_messages_sent: i64,
-    pub lifetime_cost_cents: i64,
 }
 
 
@@ -721,8 +723,6 @@ pub struct UserUsageSummary {
     pub total_monthly_messages: i64,
     /// Total registered clients across the entire developer bundle
     pub total_clients: i64,
-    /// Total estimated cost in cents for the current month
-    pub total_monthly_cost: i64,
     /// Number of applications that have exceeded 90% of their shared quota
     pub critical_quota_apps: i32,
     /// Number of applications that have exceeded 90% of their bandwidth quota

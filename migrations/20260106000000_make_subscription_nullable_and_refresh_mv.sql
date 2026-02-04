@@ -52,7 +52,6 @@ SELECT
     COALESCE(current_month.total_bytes_sent, 0) AS current_month_bytes_sent,
     COALESCE(current_month.total_bytes_received, 0) AS current_month_bytes_received,
     COALESCE(current_month.total_rate_limit_hits, 0) AS current_month_rate_limit_hits,
-    COALESCE(current_month.total_estimated_cost_cents, 0) AS current_month_cost_cents,
     
     -- Quota percentage (Calculated against the shared Subscription pool)
     CASE 
@@ -62,9 +61,7 @@ SELECT
     END AS quota_usage_percentage,
     
     -- LIFETIME USAGE (Aggregated by Application ID)
-    COALESCE(lifetime.total_messages_sent, 0) AS lifetime_messages_sent,
-    COALESCE(lifetime.total_estimated_cost_cents, 0) AS lifetime_cost_cents
-
+    COALESCE(lifetime.total_messages_sent, 0) AS lifetime_messages_sent
 FROM public.applications a
 LEFT JOIN public.developer_subscriptions s ON a.subscription_id = s.id
 LEFT JOIN public.api_keys sk ON (sk.application_id = a.id AND sk.key_type = 'secret' AND sk.is_active = true)
@@ -87,25 +84,23 @@ LEFT JOIN LATERAL (
 
 -- LATERAL: Monthly Metrics
 LEFT JOIN LATERAL (
-    SELECT 
+    SELECT
         SUM(total_messages_sent) AS total_messages_sent,
         SUM(total_messages_received) AS total_messages_received,
         SUM(total_proofs_verified) AS total_proofs_verified,
         SUM(total_bytes_stored) AS total_bytes_stored,
         SUM(total_bytes_sent) AS total_bytes_sent,
         SUM(total_bytes_received) AS total_bytes_received,
-        SUM(total_rate_limit_hits) AS total_rate_limit_hits,
-        SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
-    FROM usage_metrics_daily
+        SUM(total_rate_limit_hits) AS total_rate_limit_hits
+    FROM application_usage_metrics_daily
     WHERE application_id = a.id  -- Linked to App ID for rotation safety
       AND day >= date_trunc('month', NOW())
 ) current_month ON true
 
 -- LATERAL: Lifetime Summary
 LEFT JOIN LATERAL (
-    SELECT SUM(total_messages_sent) AS total_messages_sent,
-           SUM(total_estimated_cost_cents) AS total_estimated_cost_cents
-    FROM usage_metrics_daily
+    SELECT SUM(total_messages_sent) AS total_messages_sent
+    FROM application_usage_metrics_daily
     WHERE application_id = a.id
 ) lifetime ON true
 

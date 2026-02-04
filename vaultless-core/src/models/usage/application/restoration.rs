@@ -54,7 +54,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
                    COALESCE(total_bytes_sent, 0) as total_bytes_sent,
                    COALESCE(total_bytes_received, 0) as total_bytes_received,
                    COALESCE(rate_limit_hits, 0) as rate_limit_hits
-            FROM usage_metrics
+            FROM application_usage_metrics
             WHERE period_start >= (now() - ($1 || ' seconds')::interval)
             "#,
         )
@@ -147,7 +147,7 @@ pub async fn restore_recent_or_missing_periods_from_pg(
                    COALESCE(total_bytes_sent, 0) as total_bytes_sent,
                    COALESCE(total_bytes_received, 0) as total_bytes_received,
                    COALESCE(rate_limit_hits, 0) as rate_limit_hits
-            FROM usage_metrics
+            FROM application_usage_metrics
             WHERE application_id = $1
               AND period_start > $2
             "#,

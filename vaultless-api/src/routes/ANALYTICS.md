@@ -78,7 +78,6 @@ curl -X GET https://api.example.com/analytics/overview
         "total_proofs_verified": 6,
         "total_bytes_stored": 14500,
         "total_rate_limit_hits": 0,
-        "total_estimated_cost_cents": 9
       },
       {
         "api_key_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -88,7 +87,6 @@ curl -X GET https://api.example.com/analytics/overview
         "total_proofs_verified": 7,
         "total_bytes_stored": 15200,
         "total_rate_limit_hits": 1,
-        "total_estimated_cost_cents": 11
       }
     ]
   },

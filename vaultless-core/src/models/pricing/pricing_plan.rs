@@ -292,7 +292,7 @@ impl PricingPlan {
                 plan_prepaid_amount_cents,
                 plan_created_at as "plan_created_at!",
                 plan_attached_app_count as "plan_attached_app_count!",
-                attached_apps_json
+                attached_apps AS "attached_apps_json"
             FROM find_pricing_plan_with_attached_apps($1, $2, $3)
             "#,
             id,

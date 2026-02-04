@@ -301,6 +301,10 @@ pub struct ApplicationDashboardResponse {
     /// Lifetime usage statistics
     pub lifetime: LifetimeStats,
 
+    /// Revenue information
+    pub current_month_revenue_cents: i64,
+    pub billable_clients_count: i32,
+
     /// Attached pricing plan information (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pricing_plan: Option<vaultless_core::models::applications::material_view::AttachedPricingPlan>,
@@ -328,8 +332,6 @@ pub struct UsageStats {
     pub bytes_received: i64,
     /// Rate limit hits
     pub rate_hits: i64,
-    /// Cost in cents
-    pub cost: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -337,8 +339,6 @@ pub struct UsageStats {
 pub struct LifetimeStats {
     /// Lifetime messages sent
     pub msg_sent: i64,
-    /// Lifetime cost in cents
-    pub cost: i64,
 }
 
 impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::material_view::AttachedPricingPlan>)> for ApplicationDashboardResponse {
@@ -429,12 +429,12 @@ impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::ma
                 bytes_sent: app.current_month_bytes_sent,
                 bytes_received: app.current_month_bytes_received,
                 rate_hits: app.current_month_rate_limit_hits,
-                cost: app.current_month_cost_cents,
             },
             lifetime: LifetimeStats {
                 msg_sent: app.lifetime_messages_sent,
-                cost: app.lifetime_cost_cents,
             },
+            current_month_revenue_cents: app.current_month_revenue_cents,
+            billable_clients_count: app.billable_clients_count,
             pricing_plan,
             quota_status: QuotaStatus {
                 messages_used: app.current_month_messages_sent,

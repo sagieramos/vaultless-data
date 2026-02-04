@@ -19,9 +19,6 @@ CREATE TABLE IF NOT EXISTS public.client_usage_metrics (
     total_bytes_received bigint NOT NULL DEFAULT 0,
     rate_limit_hits integer NOT NULL DEFAULT 0,
 
-    -- Billing
-    estimated_cost_cents bigint NOT NULL DEFAULT 0,
-
     created_at timestamptz NOT NULL DEFAULT now(),
 
     -- Enforce one row per client per application per period
@@ -38,8 +35,7 @@ CREATE TABLE IF NOT EXISTS public.client_usage_metrics (
         total_bytes_stored >= 0 AND
         total_bytes_sent >= 0 AND
         total_bytes_received >= 0 AND
-        rate_limit_hits >= 0 AND
-        estimated_cost_cents >= 0
+        rate_limit_hits >= 0
     ),
 
     CONSTRAINT client_usage_client_fkey
@@ -94,8 +90,7 @@ SELECT
     sum(total_bytes_stored) AS total_bytes_stored,
     sum(total_bytes_sent) AS total_bytes_sent,
     sum(total_bytes_received) AS total_bytes_received,
-    sum(rate_limit_hits) AS rate_limit_hits,
-    sum(estimated_cost_cents) AS estimated_cost_cents
+    sum(rate_limit_hits) AS rate_limit_hits
 FROM public.client_usage_metrics
 GROUP BY application_id, client_id, time_bucket('30 days', period_start)
 WITH NO DATA;

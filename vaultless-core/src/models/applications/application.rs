@@ -1,12 +1,14 @@
 use super::dto::*;
 use super::integrity::integrity_handler::IntegrityConfigHandler;
 use crate::cache_key;
-use crate::crypto;
 use crate::error::{Result, VaultlessError};
-use crate::models::{ApiKey, CreateApiKey};
 use crate::types::KeyType;
+use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
-use sqlx::{Executor, Postgres};
+use hex;
+use sha2::{Digest, Sha256};
+use sqlx::QueryBuilder;
+use sqlx::{Executor, FromRow, Postgres};
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -17,197 +19,146 @@ pub(crate) const PROJECTION: &str = "id, developer_id AS user_id, subscription_i
     deletion_requested_at,
     internal_notes, app_meta";
 
+// Struct to match the PostgreSQL function return type
+#[derive(Debug, FromRow)]
+struct PgCreateApplicationResult {
+    application_id: Uuid,
+    user_id: Uuid,
+    subscription_id: Option<Uuid>,
+    name: String,
+    description: Option<String>,
+    is_active: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    max_ttl_seconds: Option<i64>,
+    is_key_rotation_forced: bool,
+    deletion_requested_at: Option<DateTime<Utc>>,
+    internal_notes: Option<String>,
+    app_meta: serde_json::Value,
+    secret_key: String,
+    publishable_key_plaintext: String,
+}
+
 impl Application {
-    /// Create a new application with secret and publishable keys
+    /// Create a new application with secret and publishable keys using PostgreSQL function
     pub async fn create(
         db_pool: Arc<sqlx::Pool<Postgres>>,
         redis: Option<Arc<RedisPool>>,
         input: CreateApplication,
     ) -> Result<CreateApplicationResponse> {
-        let mut tx = (*db_pool).begin().await.map_err(VaultlessError::Database)?;
-
         // Validate input
         input
             .validate()
             .map_err(|e| VaultlessError::Validation(e.to_string()))?;
 
-        // ============================================================
-        // 1. CREATE APPLICATION FIRST
-        // ============================================================
-        let app = sqlx::query_as::<_, Application>(
+        // Call the PostgreSQL function to create the application and keys
+        let result = sqlx::query_as::<_, PgCreateApplicationResult>(
             r#"
-            INSERT INTO applications (
-                developer_id,
-                name,
-                description,
-                max_ttl_seconds,
-                is_key_rotation_forced
+            SELECT * FROM create_application(
+                $1,  -- p_user_id
+                $2,  -- p_name
+                $3,  -- p_description
+                $4,  -- p_max_ttl_seconds
+                $5,  -- p_is_key_rotation_forced
+                COALESCE($6, 'live')  -- p_environment
             )
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, developer_id AS user_id, subscription_id, name, description, is_active, created_at, updated_at, max_ttl_seconds, is_key_rotation_forced, deletion_requested_at, internal_notes, app_meta
             "#,
         )
         .bind(input.user_id)
         .bind(&input.name)
         .bind(&input.description)
-        .bind(input.max_ttl_seconds.unwrap_or(604800))
-        .bind(input.is_key_rotation_forced.unwrap_or(false))
-        .fetch_one(&mut *tx)
+        .bind(input.max_ttl_seconds)
+        .bind(input.is_key_rotation_forced)
+        .bind(input.environment.as_deref())
+        .fetch_one(db_pool.as_ref())
         .await?;
-
-        // ============================================================
-        // 2. CREATE SECRET KEY
-        // ============================================================
-        let secret_key = crypto::generate_api_key("sk", "live")?;
-        let secret_key_hash = crypto::hash_content(secret_key.as_bytes());
-        let secret_key_prefix = secret_key.chars().take(8).collect::<String>();
-
-        let _created_secret_key = ApiKey::create(
-            &mut *tx,
-            CreateApiKey {
-                user_id: Some(input.user_id),
-                key_hash: Some(secret_key_hash),
-                key_prefix: secret_key_prefix,
-                description: Some(format!("Secret key for {}", input.name)),
-                scopes: None,
-                expires_at: None,
-                application_id: Some(app.id),
-                key_type: crate::types::KeyType::Secret,
-                publishable_key_plaintext: None,
-            },
-        )
-        .await?;
-
-        // ============================================================
-        // 3. CREATE PUBLISHABLE KEY
-        // ============================================================
-        let publishable_key = crypto::generate_api_key("pk", "live")?;
-        let pk_prefix = publishable_key.chars().take(16).collect::<String>();
-
-        let _created_publishable_key = ApiKey::create(
-            &mut *tx,
-            CreateApiKey {
-                user_id: Some(input.user_id),
-                key_hash: None,
-                key_prefix: pk_prefix,
-                description: Some(format!("Publishable key for {}", input.name)),
-                scopes: None,
-                expires_at: None,
-                application_id: Some(app.id),
-                key_type: crate::types::KeyType::Publishable,
-                publishable_key_plaintext: Some(publishable_key.clone()),
-            },
-        )
-        .await?;
-
-        // Commit
-        tx.commit().await?;
 
         if let Some(redis_pool) = redis {
             super::material_view_helper::trigger_view_refresh(db_pool.clone(), redis_pool.clone());
         }
 
         tracing::info!(
-            application_id = %app.id,
+            application_id = %result.application_id,
             "Application created with secret + publishable keys"
         );
 
         Ok(CreateApplicationResponse {
-            application: app,
-            secret_key: Some(secret_key),
-            publishable_key_plaintext: publishable_key,
+            application: Application {
+                id: result.application_id,
+                user_id: result.user_id,
+                subscription_id: result.subscription_id,
+                name: result.name,
+                description: result.description,
+                is_active: result.is_active,
+                created_at: result.created_at,
+                updated_at: result.updated_at,
+                max_ttl_seconds: result.max_ttl_seconds.unwrap_or(604800) as i32,
+                is_key_rotation_forced: result.is_key_rotation_forced,
+                deletion_requested_at: result.deletion_requested_at,
+                internal_notes: result.internal_notes,
+                app_meta: sqlx::types::Json(serde_json::from_value(result.app_meta).map_err(
+                    |e| VaultlessError::Internal(format!("Failed to deserialize app_meta: {}", e)),
+                )?),
+            },
+            secret_key: Some(result.secret_key),
+            publishable_key_plaintext: result.publishable_key_plaintext,
         })
     }
 
-    /// Find application by ID
-    pub async fn find_by_id<'c, E>(exec: E, id: Uuid) -> Result<Application>
+    /// Find an application based on various filters with optional joins for API keys 
+    pub async fn find<'c, E>(exec: E, filter: ApplicationFilter<'_>) -> Result<Application>
     where
         E: Executor<'c, Database = Postgres>,
     {
-        // Fetch from DB
-        sqlx::query_as::<_, Application>(&format!(
-            r#"
-                SELECT {}
-                FROM applications WHERE id = $1
-                "#,
-            PROJECTION
-        ))
-        .bind(id)
-        .fetch_optional(exec)
-        .await?
-        .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
-    }
+        let mut qb = QueryBuilder::new(format!("SELECT {} FROM applications a ", PROJECTION));
 
-    // Find application by ID and User ID
-    pub async fn find_by_id_and_user_id<'c, E>(
-        exec: E,
-        id: Uuid,
-        user_id: Uuid,
-    ) -> Result<Application>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        sqlx::query_as::<_, Application>(&format!(
-            r#"
-                SELECT {}
-                FROM applications WHERE id = $1 AND developer_id = $2
-                "#,
-            PROJECTION
-        ))
-        .bind(id)
-        .bind(user_id)
-        .fetch_optional(exec)
-        .await?
-        .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
-    }
+        if filter.publishable_key.is_some() || filter.secret_key.is_some() {
+            qb.push("JOIN api_keys ak ON a.id = ak.application_id ");
+        }
 
-    /// Find application by publishable key (for client registration) (UNCHANGED logic)
-    pub async fn find_by_publishable_key<'c, E>(
-        exec: E,
-        publishable_key: &str,
-    ) -> Result<Application>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        // Logic remains correct as it JOINs api_keys to find application_id
-        // FIXED: Bind key_type as string (assuming enum stored as string)
-        let key_type_str = crate::types::KeyType::Publishable.to_string();
-        let app = sqlx::query_as::<_, Application>(&format!(
-            r#"
-            SELECT a.{} FROM applications a
-            JOIN api_keys ak ON a.id = ak.application_id
-            WHERE ak.publishable_key_plaintext = $1
-              AND ak.key_type = $2
-              AND a.is_active = true
-            "#,
-            PROJECTION // Use the updated projection here
-        ))
-        .bind(publishable_key)
-        .bind(&key_type_str)
-        .fetch_optional(exec)
-        .await?
-        .ok_or_else(|| VaultlessError::NotFound("Application not found".into()))?;
+        qb.push("WHERE 1=1 ");
 
-        Ok(app)
-    }
+        if let Some(id) = filter.id {
+            qb.push(" AND a.id = ");
+            qb.push_bind(id);
+        }
 
-    /// Helper to find the secret key ID associated with this application.
-    /// This is needed because `secret_key_id` was removed from the Application struct.
-    pub async fn find_secret_key_id<'c, E>(exec: E, app_id: Uuid) -> Result<Uuid>
-    where
-        E: Executor<'c, Database = Postgres>,
-    {
-        sqlx::query_scalar(
-            r#"
-            SELECT id FROM api_keys 
-            WHERE application_id = $1 AND key_type = $2
-            "#,
-        )
-        .bind(app_id)
-        .bind(KeyType::Secret.to_string())
-        .fetch_optional(exec)
-        .await?
-        .ok_or_else(|| VaultlessError::NotFound("Associated Secret Key not found.".to_string()))
+        if let Some(dev_id) = filter.developer_id {
+            qb.push(" AND a.developer_id = ");
+            qb.push_bind(dev_id);
+        }
+
+        if let Some(is_active) = filter.is_active {
+            qb.push(" AND a.is_active = ");
+            qb.push_bind(is_active);
+        }
+
+        if let Some(pk) = filter.publishable_key {
+            qb.push(" AND ak.publishable_key_plaintext = ");
+            qb.push_bind(pk);
+
+            qb.push(" AND ak.key_type = ");
+            qb.push_bind(KeyType::Publishable.to_string());
+        }
+
+        if let Some(sk) = filter.secret_key {
+            let mut hasher = Sha256::new();
+            hasher.update(sk.as_bytes());
+            let key_hash = hex::encode(hasher.finalize());
+
+            qb.push(" AND ak.key_hash = ");
+            qb.push_bind(key_hash);
+
+            qb.push(" AND ak.key_type = ");
+            qb.push_bind(KeyType::Secret.to_string());
+        }
+
+        let query = qb.build_query_as::<Application>();
+
+        query
+            .fetch_optional(exec)
+            .await?
+            .ok_or_else(|| VaultlessError::NotFound("Application not found.".to_string()))
     }
 
     pub async fn deactivate_deep(
@@ -348,50 +299,56 @@ impl Application {
         Ok(())
     }
 
-    pub async fn get_live_usage(
-        redis_pool: Arc<RedisPool>,
-        application_id: Uuid,
-        quota_limit: i64,
-    ) -> Result<QuotaStatus> {
-        let quota_key = Application::quota_key(application_id);
-
-        // 1. ACQUIRE CONNECTION from the pool
-        // This is now the responsibility of the utility function.
-        let mut conn = redis_pool.get().await.map_err(|e| {
-            VaultlessError::Internal(format!("Failed to acquire Redis connection: {}", e))
-        })?;
-
-        // 2. Execute command using the acquired connection reference
-        let monthly_count: Option<i64> = redis::cmd("GET")
-            .arg(&quota_key)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| VaultlessError::Internal(e.to_string()))?;
-
-        // When 'conn' goes out of scope here, it is automatically returned to the pool.
-
-        let used = monthly_count.unwrap_or(0);
-        let remaining = quota_limit.saturating_sub(used);
-        let percentage_used = if quota_limit > 0 {
-            (used as f64 / quota_limit as f64 * 100.0).min(100.0)
-        } else {
-            0.0
-        };
-
-        Ok(QuotaStatus {
-            limit: quota_limit,
-            used,
-            remaining,
-            percentage_used,
-            is_exceeded: used >= quota_limit,
-        })
-    }
-
     pub fn integrity(&self) -> Result<IntegrityConfigHandler> {
         IntegrityConfigHandler::new_from_jsonb(&serde_json::to_value(&self.app_meta.0)?)
     }
 
     pub fn quota_key(application_id: Uuid) -> String {
         cache_key!("app", "quota", application_id)
+    }
+}
+pub struct ApplicationFilter<'a> {
+    pub id: Option<Uuid>,
+    pub developer_id: Option<Uuid>,
+    pub publishable_key: Option<&'a str>,
+    pub secret_key: Option<&'a str>,
+    pub is_active: Option<bool>,
+}
+
+impl<'a> ApplicationFilter<'a> {
+    pub fn new() -> Self {
+        Self {
+            id: None,
+            developer_id: None,
+            publishable_key: None,
+            secret_key: None,
+            is_active: None,
+        }
+    }
+
+    pub fn id(mut self, id: Uuid) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn developer_id(mut self, developer_id: Uuid) -> Self {
+        self.developer_id = Some(developer_id);
+        self
+    }
+
+    pub fn publishable_key(mut self, publishable_key: &'a str) -> Self {
+        self.publishable_key = Some(publishable_key);
+        self
+    }
+
+    pub fn secret_key(mut self, secret_key: &'a str) -> Self {
+        // NEW
+        self.secret_key = Some(secret_key);
+        self
+    }
+
+    pub fn is_active(mut self, is_active: bool) -> Self {
+        self.is_active = Some(is_active);
+        self
     }
 }

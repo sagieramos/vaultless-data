@@ -153,7 +153,7 @@ impl MonthlyRevenueData {
                 0 AS revenue_cents,  -- Revenue calculation now separate from usage metrics
                 COUNT(*) OVER() as total_count
             FROM applications a
-            LEFT JOIN usage_metrics um ON a.id = um.application_id
+            LEFT JOIN application_usage_metrics um ON a.id = um.application_id
             WHERE a.developer_id = $1
                 AND date_trunc('month', um.period_start) = date_trunc('month', $2)
             GROUP BY a.id, a.name
