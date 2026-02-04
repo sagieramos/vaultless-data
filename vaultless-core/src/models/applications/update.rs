@@ -38,8 +38,7 @@ impl Application {
         user_id: Uuid,
     ) -> Result<Application> {
         let mut tx = exec.begin().await?;
-        let updated_app =
-            Self::update_with_tx(&mut tx, update, application_id, user_id).await?;
+        let updated_app = Self::update_with_tx(&mut tx, update, application_id, user_id).await?;
         tx.commit().await?;
 
         if let Some(pool) = redis {
@@ -93,7 +92,7 @@ impl Application {
         let updated_app = sqlx::query_as::<_, Application>(
             r#"
             SELECT
-                application_id,
+                application_id as id,
                 developer_id as user_id,
                 subscription_id,
                 name,
@@ -147,23 +146,25 @@ impl Application {
     }
 
     fn validate_app_meta<T: serde::Serialize>(config: &T) -> Result<()> {
-        let config_json =
-            serde_json::to_value(config).map_err(|e| VaultlessError::Serialization(e.to_string()))?;
+        let config_json = serde_json::to_value(config)
+            .map_err(|e| VaultlessError::Serialization(e.to_string()))?;
 
         let app_meta = AppMetaData::from_jsonb(&config_json)?;
         let config = app_meta.integrity_config;
 
         if let Some(ref c) = config.browser {
-            c.validate()
-                .map_err(|e| VaultlessError::Validation(format!("Browser config invalid: {}", e)))?;
+            c.validate().map_err(|e| {
+                VaultlessError::Validation(format!("Browser config invalid: {}", e))
+            })?;
         }
         if let Some(ref c) = config.ios {
             c.validate()
                 .map_err(|e| VaultlessError::Validation(format!("iOS config invalid: {}", e)))?;
         }
         if let Some(ref c) = config.android {
-            c.validate()
-                .map_err(|e| VaultlessError::Validation(format!("Android config invalid: {}", e)))?;
+            c.validate().map_err(|e| {
+                VaultlessError::Validation(format!("Android config invalid: {}", e))
+            })?;
         }
         if let Some(ref c) = config.iot {
             c.validate()
@@ -191,37 +192,5 @@ impl Application {
                 "Cache invalidation failed"
             );
         }
-    }
-
-    pub async fn batch_update(
-        exec: Arc<sqlx::Pool<Postgres>>,
-        redis: Option<Arc<RedisPool>>,
-        updates: Vec<(Uuid, UpdateApplication)>,
-        user_id: Uuid,
-    ) -> Result<Vec<Application>> {
-        let mut tx = exec.begin().await?;
-        let mut results: Vec<Application> = Vec::with_capacity(updates.len());
-        let mut updated_ids: Vec<Uuid> = Vec::with_capacity(updates.len());
-
-        for (app_id, update) in updates {
-            let app = Self::update_with_tx(&mut tx, update, app_id, user_id).await?;
-            updated_ids.push(app_id);
-            results.push(app);
-        }
-
-        tx.commit().await?;
-
-        if let Some(pool) = redis {
-            let exec_clone = exec.clone();
-            for app_id in updated_ids {
-                let pool_clone = pool.clone();
-                let exec_clone2 = exec_clone.clone();
-                tokio::spawn(async move {
-                    Self::invalidate_caches(exec_clone2, pool_clone, app_id).await;
-                });
-            }
-        }
-
-        Ok(results)
     }
 }

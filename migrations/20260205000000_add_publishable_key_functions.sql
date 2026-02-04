@@ -1,10 +1,6 @@
--- ============================================================================
--- Migration: Add PostgreSQL functions for publishable key management
--- Description: Moves add_publishable_key and deactivate_publishable_key
---              logic from application layer to database layer
--- ============================================================================
-
-BEGIN;
+-- Migration: Fix ambiguous column references in add_publishable_key and deactivate_publishable_key functions
+-- Date: 2026-02-05
+-- Description: Add table aliases to disambiguate column references
 
 -- ============================================================================
 -- Function: add_publishable_key
@@ -13,7 +9,7 @@ BEGIN;
 CREATE OR REPLACE FUNCTION add_publishable_key(
     p_application_id UUID,
     p_user_id UUID,
-    p_publishable_key_plaintext VARCHAR(64),
+    p_publishable_key_plaintext VARCHAR(128),
     p_key_prefix VARCHAR(32),
     p_max_keys INTEGER DEFAULT 5
 )
@@ -52,10 +48,10 @@ BEGIN
     -- 2. Check current publishable key count
     SELECT COUNT(*)
     INTO v_current_count
-    FROM api_keys
-    WHERE application_id = p_application_id
-      AND key_type = 'publishable'
-      AND is_active = true;
+    FROM api_keys ak
+    WHERE ak.application_id = p_application_id
+      AND ak.key_type = 'publishable'::key_type
+      AND ak.is_active = true;
 
     IF v_current_count >= p_max_keys THEN
         RAISE EXCEPTION 'Maximum of % active publishable keys allowed per application', p_max_keys;
@@ -71,6 +67,7 @@ BEGIN
         scopes,
         is_active,
         created_at,
+        updated_at,
         expires_at,
         last_used_at,
         application_id,
@@ -86,13 +83,14 @@ BEGIN
         NULL,
         true,
         NOW(),
+        NOW(),
         NULL,
         NULL,
         p_application_id,
-        'publishable',
+        'publishable'::key_type,
         p_publishable_key_plaintext
     )
-    RETURNING id, created_at INTO v_new_key_id, v_created_at;
+    RETURNING api_keys.id, api_keys.created_at INTO v_new_key_id, v_created_at;
 
     -- 4. Return result
     RETURN QUERY
@@ -106,12 +104,12 @@ $$;
 
 -- ============================================================================
 -- Function: deactivate_publishable_key
--- Description: Deactivate a specific publishable key by its plaintext value
+-- Description: Deactivate a specific publishable key
 -- ============================================================================
 CREATE OR REPLACE FUNCTION deactivate_publishable_key(
     p_application_id UUID,
     p_user_id UUID,
-    p_publishable_key_plaintext VARCHAR(64)
+    p_publishable_key_plaintext VARCHAR(128)
 )
 RETURNS TABLE (
     deactivated_key_id UUID,
@@ -122,65 +120,55 @@ SECURITY DEFINER
 AS $$
 DECLARE
     v_app_id UUID;
-    v_active_count BIGINT;
+    v_is_active BOOLEAN;
     v_key_id UUID;
+    v_remaining_count BIGINT;
 BEGIN
-    -- 1. Verify application exists and belongs to user
-    SELECT id
-    INTO v_app_id
-    FROM applications
-    WHERE id = p_application_id
-      AND developer_id = p_user_id;
+    -- 1. Verify application exists, belongs to user, and is active
+    SELECT a.id, a.is_active
+    INTO v_app_id, v_is_active
+    FROM applications a
+    WHERE a.id = p_application_id
+      AND a.developer_id = p_user_id;
 
     IF v_app_id IS NULL THEN
         RAISE EXCEPTION 'Application not found or access denied';
     END IF;
 
-    -- 2. Check how many active publishable keys exist
-    SELECT COUNT(*)
-    INTO v_active_count
-    FROM api_keys
-    WHERE application_id = p_application_id
-      AND key_type = 'publishable'
-      AND is_active = true;
-
-    IF v_active_count <= 1 THEN
-        RAISE EXCEPTION 'Cannot deactivate the last active publishable key. Use rotate instead.';
+    IF NOT v_is_active THEN
+        RAISE EXCEPTION 'Cannot deactivate keys for inactive application';
     END IF;
 
-    -- 3. Fetch the key to deactivate by publishable_key_plaintext
-    SELECT id
-    INTO v_key_id
-    FROM api_keys
-    WHERE publishable_key_plaintext = p_publishable_key_plaintext
-      AND application_id = p_application_id
-      AND key_type = 'publishable'
-      AND is_active = true;
-
-    IF v_key_id IS NULL THEN
-        RAISE EXCEPTION 'Specified publishable key not found or already inactive';
-    END IF;
-
-    -- 4. Deactivate the key
-    UPDATE api_keys
+    -- 2. Find and deactivate the key
+    UPDATE api_keys ak
     SET is_active = false,
         updated_at = NOW()
-    WHERE id = v_key_id;
+    WHERE ak.publishable_key_plaintext = p_publishable_key_plaintext
+      AND ak.application_id = p_application_id
+      AND ak.key_type = 'publishable'::key_type
+      AND ak.is_active = true
+    RETURNING ak.id INTO v_key_id;
 
-    -- 5. Return result
+    IF v_key_id IS NULL THEN
+        RAISE EXCEPTION 'Publishable key not found or already inactive';
+    END IF;
+
+    -- 3. Count remaining active publishable keys
+    SELECT COUNT(*)
+    INTO v_remaining_count
+    FROM api_keys ak
+    WHERE ak.application_id = p_application_id
+      AND ak.key_type = 'publishable'::key_type
+      AND ak.is_active = true;
+
+    -- 4. Return result
     RETURN QUERY
     SELECT
         v_key_id,
-        v_active_count - 1;
+        v_remaining_count;
 END;
 $$;
 
 -- Grant execute permissions
 GRANT EXECUTE ON FUNCTION add_publishable_key(UUID, UUID, VARCHAR, VARCHAR, INTEGER) TO vaultless;
 GRANT EXECUTE ON FUNCTION deactivate_publishable_key(UUID, UUID, VARCHAR) TO vaultless;
-
-COMMIT;
-
--- migrate:down
--- DROP FUNCTION IF EXISTS add_publishable_key(UUID, UUID, VARCHAR, VARCHAR, INTEGER);
--- DROP FUNCTION IF EXISTS deactivate_publishable_key(UUID, UUID, VARCHAR);

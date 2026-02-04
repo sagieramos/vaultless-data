@@ -574,23 +574,26 @@ async fn test_find_with_attachment_count_single_plan() {
 
 #[tokio::test]
 async fn test_find_owned_by_user_with_pricing_plan() {
-    use vaultless_core::models::applications::Application;
+    use vaultless_core::models::applications::{Application, dto::CreateApplication};
+    use std::sync::Arc;
 
     let setup = setup_test().await;
 
-    // Create an application
-    let application_id = sqlx::query_scalar!(
-        "INSERT INTO applications (developer_id, name, description, is_active, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
-         RETURNING id",
-        setup.developer_id,
-        "Test App With Pricing",
-        "Test Description",
-        true
-    )
-    .fetch_one(&setup.pool)
-    .await
-    .expect("Failed to create test application");
+    // Create an application using the proper method (this creates API keys too)
+    let create_input = CreateApplication {
+        user_id: setup.developer_id,
+        name: "Test App With Pricing".to_string(),
+        description: Some("Test Description".to_string()),
+        max_ttl_seconds: None,
+        is_key_rotation_forced: None,
+        environment: None,
+    };
+
+    let created_app = Application::create(Arc::new(setup.pool.clone()), None, create_input)
+        .await
+        .expect("Failed to create test application");
+
+    let application_id = created_app.application.id;
 
     // Create a pricing plan
     let input = CreatePricingPlan {
@@ -662,23 +665,26 @@ async fn test_find_owned_by_user_with_pricing_plan() {
 
 #[tokio::test]
 async fn test_find_owned_by_user_with_pricing_plan_no_plan_attached() {
-    use vaultless_core::models::applications::Application;
+    use vaultless_core::models::applications::{Application, dto::CreateApplication};
+    use std::sync::Arc;
 
     let setup = setup_test().await;
 
     // Create an application without attaching a pricing plan
-    let application_id = sqlx::query_scalar!(
-        "INSERT INTO applications (developer_id, name, description, is_active, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
-         RETURNING id",
-        setup.developer_id,
-        "Test App Without Pricing",
-        "Test Description",
-        true
-    )
-    .fetch_one(&setup.pool)
-    .await
-    .expect("Failed to create test application");
+    let create_input = CreateApplication {
+        user_id: setup.developer_id,
+        name: "Test App Without Pricing".to_string(),
+        description: Some("Test Description".to_string()),
+        max_ttl_seconds: None,
+        is_key_rotation_forced: None,
+        environment: None,
+    };
+
+    let created_app = Application::create(Arc::new(setup.pool.clone()), None, create_input)
+        .await
+        .expect("Failed to create test application");
+
+    let application_id = created_app.application.id;
 
     // Refresh the materialized view so our application shows up
     sqlx::query("REFRESH MATERIALIZED VIEW mv_applications_with_usage")

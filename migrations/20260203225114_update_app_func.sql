@@ -28,31 +28,31 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    UPDATE applications
+    UPDATE applications a
     SET
-        name = COALESCE(p_name, name),
-        description = COALESCE(p_description, description),
-        is_active = COALESCE(p_is_active, is_active),
-        max_ttl_seconds = COALESCE(p_max_ttl_seconds, max_ttl_seconds),
-        is_key_rotation_forced = COALESCE(p_is_key_rotation_forced, is_key_rotation_forced),
-        internal_notes = COALESCE(p_internal_notes, internal_notes),
-        app_meta = jsonb_merge_patch(app_meta, COALESCE(p_integrity_patch, '{}'::jsonb)),
+        name = COALESCE(p_name, a.name),
+        description = COALESCE(p_description, a.description),
+        is_active = COALESCE(p_is_active, a.is_active),
+        max_ttl_seconds = COALESCE(p_max_ttl_seconds, a.max_ttl_seconds),
+        is_key_rotation_forced = COALESCE(p_is_key_rotation_forced, a.is_key_rotation_forced),
+        internal_notes = COALESCE(p_internal_notes, a.internal_notes),
+        app_meta = jsonb_merge_patch(a.app_meta, COALESCE(p_integrity_patch, '{}'::jsonb)),
         updated_at = NOW()
-    WHERE id = p_app_id AND developer_id = p_user_id
+    WHERE a.id = p_app_id AND a.developer_id = p_user_id
     RETURNING
-        id,
-        developer_id,
-        subscription_id,
-        name,
-        description,
-        is_active,
-        created_at,
-        updated_at,
-        max_ttl_seconds,
-        is_key_rotation_forced,
-        deletion_requested_at,
-        internal_notes,
-        app_meta
+        a.id,
+        a.developer_id,
+        a.subscription_id,
+        a.name,
+        a.description,
+        a.is_active,
+        a.created_at,
+        a.updated_at,
+        a.max_ttl_seconds,
+        a.is_key_rotation_forced,
+        a.deletion_requested_at,
+        a.internal_notes,
+        a.app_meta
     INTO STRICT
         application_id,
         developer_id,
