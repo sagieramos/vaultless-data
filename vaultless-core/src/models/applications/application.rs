@@ -35,8 +35,8 @@ struct PgCreateApplicationResult {
     deletion_requested_at: Option<DateTime<Utc>>,
     internal_notes: Option<String>,
     app_meta: serde_json::Value,
-    secret_key_prefix: String,
-    publishable_key_plaintext: String,
+    _secret_key_prefix: String,
+    _publishable_key_plaintext: String,
 }
 
 impl Application {
@@ -129,9 +129,10 @@ impl Application {
                 is_key_rotation_forced: result.is_key_rotation_forced,
                 deletion_requested_at: result.deletion_requested_at,
                 internal_notes: result.internal_notes,
-                app_meta: sqlx::types::Json(serde_json::from_value(result.app_meta).map_err(
-                    |e| VaultlessError::Internal(format!("Failed to deserialize app_meta: {}", e)),
-                )?),
+                app_meta: sqlx::types::Json(
+                    serde_json::from_value(result.app_meta)
+                        .unwrap_or_else(|_| super::integrity::dto::AppMetaData::default())
+                ),
             },
             secret_key: Some(secret_key),
             publishable_key_plaintext: publishable_key,
@@ -246,51 +247,6 @@ impl Application {
         Ok(())
     }
 
-    pub async fn deactivate_weak(
-        exec: Arc<sqlx::Pool<Postgres>>,
-        redis: Option<Arc<RedisPool>>,
-        app_id: Uuid,
-        user_id: Uuid,
-    ) -> Result<()> {
-        let row = sqlx::query!(
-            r#"
-        UPDATE applications
-        SET is_active = false, updated_at = NOW()
-        WHERE id = $1 AND developer_id = $2
-        RETURNING id
-        "#,
-            app_id,
-            user_id
-        )
-        .fetch_optional(exec.as_ref())
-        .await?;
-
-        let Some(app_row) = row else {
-            return Err(VaultlessError::NotFound(format!(
-                "Application not found or access denied for ID: {}",
-                app_id
-            )));
-        };
-
-        if let Some(redis_pool) = redis {
-            super::material_view_helper::trigger_view_refresh_debounced(
-                exec.clone(),
-                redis_pool.clone(),
-            );
-            tokio::spawn(async move {
-                if let Err(e) = Self::invalidate_auth_cache(app_row.id, &exec, redis_pool).await {
-                    tracing::error!(
-                        "Background cache invalidation failed for app {}: {}",
-                        app_row.id,
-                        e
-                    );
-                }
-            });
-        }
-
-        Ok(())
-    }
-
     pub async fn delete<'c, E>(
         exec: Arc<sqlx::Pool<Postgres>>,
         app_id: Uuid,
@@ -375,7 +331,6 @@ impl<'a> ApplicationFilter<'a> {
     }
 
     pub fn secret_key(mut self, secret_key: &'a str) -> Self {
-        // NEW
         self.secret_key = Some(secret_key);
         self
     }

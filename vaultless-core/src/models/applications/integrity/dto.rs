@@ -118,14 +118,19 @@ impl PlatformConfigVersion {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct AppMetaData {
     #[serde(rename = "PlatformFingerPrint")]
     pub platform_fingerprint: PlatformConfigVersion,
     #[serde(rename = "IntegrityConfig")]
     pub integrity_config: IntegrityConfig,
 }
+
 impl AppMetaData {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn from_jsonb(json: &serde_json::Value) -> VaultlessErrorResult<Self> {
         let pf_json = json
             .get("PlatformFingerPrint")

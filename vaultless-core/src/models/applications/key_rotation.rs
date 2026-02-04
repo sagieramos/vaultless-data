@@ -10,7 +10,6 @@ use super::dto::*;
 use super::material_view_helper;
 use crate::crypto;
 use crate::error::{Result, VaultlessError};
-use crate::models::{ApiKey, CreateApiKey};
 use crate::types::KeyType;
 use chrono::{DateTime, Utc};
 use deadpool_redis::Pool as RedisPool;
@@ -31,6 +30,22 @@ struct RotateApiKeyResult {
     old_key_hash: Option<String>,
     old_publishable_key_plaintext: Option<String>,
     created_at: DateTime<Utc>,
+}
+
+/// Result returned from the SQL add_publishable_key function
+#[derive(Debug, FromRow)]
+struct AddPublishableKeyResult {
+    new_key_id: Uuid,
+    key_prefix: String,
+    created_at: DateTime<Utc>,
+    total_active_publishable_keys: i64,
+}
+
+/// Result returned from the SQL deactivate_publishable_key function
+#[derive(Debug, FromRow)]
+struct DeactivatePublishableKeyResult {
+    deactivated_key_id: Uuid,
+    remaining_active_keys: i64,
 }
 
 impl Application {
@@ -139,7 +154,7 @@ impl Application {
                     tokio::spawn(async move {
                         if let Some(hash) = old_key_hash {
                             if let Ok(mut conn) = redis_pool.get().await {
-                                let cache_key = secret_key_resolution_cache_key(&hash);
+                                let cache_key = secret_key_resolution_cache_key(hash.as_str());
                                 let _: std::result::Result<(), _> = conn.del(&cache_key).await;
                             }
                         }
@@ -150,7 +165,7 @@ impl Application {
                     tokio::spawn(async move {
                         if let Some(pk) = old_pk_plaintext {
                             if let Ok(mut conn) = redis_pool.get().await {
-                                let cache_key = publishable_key_resolution_cache_key(&pk);
+                                let cache_key = publishable_key_resolution_cache_key(pk.as_str());
                                 let _: std::result::Result<(), _> = conn.del(&cache_key).await;
                             }
                         }
@@ -270,6 +285,7 @@ impl Application {
     /// * `redis` - Optional Redis pool for cache management
     /// * `app_id` - The application ID
     /// * `user_id` - The user ID (for authorization)
+    /// * `environment` - Key environment (e.g., "live", "test", max 4 chars)
     /// * `max_keys` - Maximum allowed publishable keys (default: 5)
     ///
     /// # Returns
@@ -279,98 +295,55 @@ impl Application {
         redis: Option<Arc<RedisPool>>,
         app_id: Uuid,
         user_id: Uuid,
+        environment: Option<&str>,
         max_keys: Option<i64>,
     ) -> Result<AddPublishableKeyResponse> {
         let max_keys = max_keys.unwrap_or(5);
-        let mut tx = db_pool.begin().await?;
+        let environment = environment.unwrap_or("live");
 
-        // 1. Verify application exists and belongs to user
-        let app = sqlx::query_as::<_, Application>(
+        // Validate environment length (max 4 characters)
+        if environment.len() > 4 || environment.len() < 4 {
+            return Err(VaultlessError::InvalidInput(
+                "Environment must be 4 characters or less".to_string(),
+            ));
+        }
+
+        // Generate new publishable key in application layer for security
+        let new_publishable_key = crypto::generate_api_key("pk", environment)?;
+        let new_key_prefix = new_publishable_key.chars().take(16).collect::<String>();
+
+        // Call PostgreSQL function to add the key atomically
+        let result = sqlx::query_as::<_, AddPublishableKeyResult>(
             r#"
-            SELECT id, user_id, subscription_id, name, description, is_active, created_at,
-                   updated_at, max_ttl_seconds, is_key_rotation_forced,
-                   deletion_requested_at, internal_notes, app_meta
-            FROM applications
-            WHERE id = $1 AND developer_id = $2
+            SELECT * FROM add_publishable_key($1, $2, $3, $4, $5)
             "#,
         )
         .bind(app_id)
         .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            VaultlessError::NotFound("Application not found or access denied".to_string())
-        })?;
-
-        if !app.is_active {
-            return Err(VaultlessError::InvalidInput(
-                "Cannot add keys to inactive application".to_string(),
-            ));
-        }
-
-        // 2. Check current publishable key count
-        let current_count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM api_keys
-            WHERE application_id = $1
-              AND key_type = 'publishable'
-              AND is_active = true
-            "#,
-        )
-        .bind(app_id)
-        .fetch_one(&mut *tx)
+        .bind(&new_publishable_key)
+        .bind(&new_key_prefix)
+        .bind(max_keys as i32)
+        .fetch_one(db_pool.as_ref())
         .await?;
 
-        if current_count >= max_keys {
-            return Err(VaultlessError::InvalidInput(format!(
-                "Maximum of {} active publishable keys allowed per application",
-                max_keys
-            )));
-        }
-
-        // 3. Generate new publishable key
-        let new_publishable_key = crypto::generate_api_key("pk", "live")?;
-        let new_key_prefix = new_publishable_key.chars().take(16).collect::<String>();
-
-        let created_key = ApiKey::create(
-            &mut *tx,
-            CreateApiKey {
-                user_id: Some(user_id),
-                key_hash: None,
-                key_prefix: new_key_prefix.clone(),
-                description: Some(format!("Publishable key for {} (additional)", app.name)),
-                scopes: None,
-                expires_at: None,
-                application_id: Some(app_id),
-                key_type: KeyType::Publishable,
-                publishable_key_plaintext: Some(new_publishable_key.clone()),
-            },
-        )
-        .await?;
-
-        // 4. Commit transaction
-        tx.commit().await?;
-
-        // 5. Trigger materialized view refresh
+        // Trigger materialized view refresh
         if let Some(redis_pool) = redis {
             material_view_helper::trigger_view_refresh_debounced(db_pool, redis_pool);
         }
 
-        let total_active = current_count + 1;
-
         tracing::info!(
             application_id = %app_id,
-            new_key_id = %created_key.id,
-            total_active_publishable_keys = total_active,
+            new_key_id = %result.new_key_id,
+            total_active_publishable_keys = result.total_active_publishable_keys,
             "Additional publishable key created"
         );
 
         Ok(AddPublishableKeyResponse {
             application_id: app_id,
             new_publishable_key,
-            key_prefix: new_key_prefix,
-            created_at: created_key.created_at,
-            total_active_publishable_keys: total_active,
+            key_prefix: result.key_prefix,
+            created_at: result.created_at,
+            total_active_publishable_keys: result.total_active_publishable_keys,
         })
     }
 
@@ -395,80 +368,22 @@ impl Application {
         user_id: Uuid,
         publishable_key: &str,
     ) -> Result<()> {
-        let mut tx = db_pool.begin().await?;
-
-        // 1. Verify application exists and belongs to user
-        let _app = sqlx::query_scalar::<_, Uuid>(
-            r#"SELECT id FROM applications WHERE id = $1 AND developer_id = $2"#,
+        // Call PostgreSQL function to deactivate the key atomically
+        let result = sqlx::query_as::<_, DeactivatePublishableKeyResult>(
+            r#"
+            SELECT * FROM deactivate_publishable_key($1, $2, $3)
+            "#,
         )
         .bind(app_id)
         .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            VaultlessError::NotFound("Application not found or access denied".to_string())
-        })?;
-
-        // 2. Check how many active publishable keys exist
-        let active_count: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM api_keys
-            WHERE application_id = $1
-              AND key_type = 'publishable'
-              AND is_active = true
-            "#,
-        )
-        .bind(app_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        if active_count <= 1 {
-            return Err(VaultlessError::InvalidInput(
-                "Cannot deactivate the last active publishable key. Use rotate instead."
-                    .to_string(),
-            ));
-        }
-
-        // 3. Fetch the key to deactivate by publishable_key_plaintext
-        let key: ApiKey = sqlx::query_as(
-            r#"
-            SELECT id, user_id, key_hash, key_prefix, description, scopes, is_active,
-                   created_at, expires_at, last_used_at, application_id, key_type,
-                   publishable_key_plaintext
-            FROM api_keys
-            WHERE publishable_key_plaintext = $1
-              AND application_id = $2
-              AND key_type = 'publishable'
-              AND is_active = true
-            "#,
-        )
         .bind(publishable_key)
-        .bind(app_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            VaultlessError::NotFound(
-                "Specified publishable key not found or already inactive".to_string(),
-            )
-        })?;
-
-        // 4. Deactivate the key
-        sqlx::query(
-            r#"
-            UPDATE api_keys
-            SET is_active = false, updated_at = NOW()
-            WHERE id = $1
-            "#,
-        )
-        .bind(key.id)
-        .execute(&mut *tx)
+        .fetch_one(db_pool.as_ref())
         .await?;
 
-        // 5. Commit transaction
-        tx.commit().await?;
+        // Invalidate cache (background task)
+        if let Some(redis_pool) = redis {
+            material_view_helper::trigger_view_refresh_debounced(db_pool, redis_pool.clone());
 
-        // 6. Invalidate cache (background task)
-        if let Some(redis_pool) = redis.clone() {
             let pk_plaintext = publishable_key.to_string();
             tokio::spawn(async move {
                 if let Ok(mut conn) = redis_pool.get().await {
@@ -478,14 +393,10 @@ impl Application {
             });
         }
 
-        // 7. Trigger materialized view refresh
-        if let Some(redis_pool) = redis {
-            material_view_helper::trigger_view_refresh_debounced(db_pool, redis_pool);
-        }
-
         tracing::info!(
             application_id = %app_id,
-            deactivated_key_id = %key.id,
+            deactivated_key_id = %result.deactivated_key_id,
+            remaining_active_keys = result.remaining_active_keys,
             "Publishable key deactivated"
         );
 

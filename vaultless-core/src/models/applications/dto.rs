@@ -288,6 +288,13 @@ application.integrity().get_app_meta()?; */
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct SecretKeyTimestamps {
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PublishableKey {
     pub id: Uuid,
     pub key_prefix: String,
@@ -508,6 +515,10 @@ pub struct ApplicationWithUsage {
     #[serde(skip_serializing)]
     pub secret_key_id: Option<Uuid>,
     pub secret_key_prefix: Option<String>,
+    pub secret_key_scopes: Option<String>,
+    pub secret_key_is_active: Option<bool>,
+    #[schema(value_type = Option<SecretKeyTimestamps>)]
+    pub secret_key_timestamps: Option<Json<SecretKeyTimestamps>>,
     pub publishable_key_count: i64,
     #[schema(value_type = Vec<PublishableKey>)]
     pub publishable_keys: Json<Vec<PublishableKey>>,
@@ -753,6 +764,8 @@ pub struct ApplicationSummary {
     pub updated_at: DateTime<Utc>,
     pub tier: Option<String>,
     pub monthly_message_quota: Option<i64>,
+    pub secret_key_prefix: Option<String>,
+    pub secret_key_is_active: Option<bool>,
     pub publishable_key_count: i64,
     pub webhook_count: i64,
     pub client_count: i64,

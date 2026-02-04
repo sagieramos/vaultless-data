@@ -99,6 +99,16 @@ pub struct AddPublishableKeyResponse {
 // Request DTOs
 // =============================================================================
 
+/// Request to add a publishable key
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AddPublishableKeyRequest {
+    /// Key environment (e.g., "live", "test", max 4 chars)
+    #[schema(example = "live")]
+    #[serde(default)]
+    pub environment: Option<String>,
+}
+
 /// Request to rotate a specific publishable key
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -252,6 +262,7 @@ pub async fn rotate_publishable_key(
     post,
     path = "/dev/applications/{app_id}/keys/publishable",
     params(("app_id" = Uuid, Path, description = "Application ID")),
+    request_body = AddPublishableKeyRequest,
     responses(
         (status = 200, description = "Publishable key added successfully", body = AddPublishableKeyResponse,
             example = json!({
@@ -262,7 +273,7 @@ pub async fn rotate_publishable_key(
                 "totalActivePublishableKeys": 2
             })
         ),
-        (status = 400, description = "Bad request - maximum keys reached or application inactive"),
+        (status = 400, description = "Bad request - maximum keys reached, application inactive, or invalid environment"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Application not found"),
@@ -275,12 +286,14 @@ pub async fn add_publishable_key(
     State(state): State<AppState>,
     SessionDataUserExt(session): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
+    Json(req): Json<AddPublishableKeyRequest>,
 ) -> Result<Json<AddPublishableKeyResponse>, ApiError> {
     let result = Application::add_publishable_key(
         state.db,
         Some(state.redis_pool),
         app_id,
         session.user_id,
+        req.environment.as_deref(),
         None, // Use default max keys (5)
     )
     .await

@@ -55,6 +55,7 @@ pub async fn create_application(
         description: req.description,
         max_ttl_seconds: None,
         is_key_rotation_forced: Some(false),
+        environment: Some("live".to_string()),
     };
 
     let response = Application::create(state.db, Some(state.redis_pool), input)
@@ -193,7 +194,7 @@ pub async fn deactivate_application(
     SessionDataUserExt(user): SessionDataUserExt,
     Path(app_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    Application::deactivate_weak(
+    Application::deactivate_deep(
         state.db,
         Some(state.redis_pool.clone()),
         app_id,

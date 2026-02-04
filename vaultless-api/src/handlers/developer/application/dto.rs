@@ -286,6 +286,21 @@ pub struct ApplicationDashboardResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention_seconds: Option<i64>,
 
+    // Secret key info
+    /// Secret key prefix (e.g., "sk_live_...")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key_prefix: Option<String>,
+    /// Whether the secret key is active
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key_is_active: Option<bool>,
+    /// Secret key scopes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key_scopes: Option<String>,
+    /// Secret key timestamps (created/expires)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub secret_key_timestamps: Option<vaultless_core::models::applications::dto::SecretKeyTimestamps>,
+
     /// List of publishable keys
     #[schema(value_type = Vec<Object>)]
     pub keys: Vec<PublishableKey>,
@@ -418,6 +433,10 @@ impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::ma
             monthly_quota: app.monthly_message_quota,
             rate_limit: app.rate_limit_per_minute,
             retention_seconds: app.message_retention_seconds,
+            secret_key_prefix: app.secret_key_prefix,
+            secret_key_is_active: app.secret_key_is_active,
+            secret_key_scopes: app.secret_key_scopes,
+            secret_key_timestamps: app.secret_key_timestamps.map(|ts| ts.0),
             keys: app.publishable_keys.0,
             webhooks: app.webhooks.0,
             quota_usage_pct: usage_pct,

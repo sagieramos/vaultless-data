@@ -41,6 +41,12 @@ SELECT
     -- SECRET KEY IDENTITY
     sk.id AS secret_key_id,
     sk.key_prefix AS secret_key_prefix,
+    sk.scopes AS secret_key_scopes,
+    sk.is_active AS secret_key_is_active,
+    jsonb_build_object(
+        'createdAt', sk.created_at,
+        'expiresAt', sk.expires_at
+    ) AS secret_key_timestamps,
 
     -- PUBLISHABLE KEYS (LATERAL) - FIXED CASING
     COALESCE(pk_data.count, 0) AS publishable_key_count,

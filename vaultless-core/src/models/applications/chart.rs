@@ -188,7 +188,7 @@ impl Application {
     {
         let table_name = match granularity {
             ChartGranularity::Daily => "application_usage_metrics_daily",
-            ChartGranularity::Weekly => "application_usage_metrics_weekly",  // Assuming weekly view exists
+            ChartGranularity::Weekly => "application_usage_metrics_weekly",
         };
 
         let bucket_interval = granularity.bucket_interval();
