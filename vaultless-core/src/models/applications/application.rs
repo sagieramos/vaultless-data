@@ -13,11 +13,11 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-pub(crate) const PROJECTION: &str = "id, developer_id AS user_id, subscription_id, name,
-    description, is_active, created_at,
-    updated_at, max_ttl_seconds, is_key_rotation_forced,
-    deletion_requested_at,
-    internal_notes, app_meta";
+pub(crate) const PROJECTION: &str = "a.id, a.developer_id AS user_id, a.subscription_id, a.name,
+    a.description, a.is_active, a.created_at,
+    a.updated_at, a.max_ttl_seconds, a.is_key_rotation_forced,
+    a.deletion_requested_at,
+    a.internal_notes, a.app_meta";
 
 // Struct to match the PostgreSQL function return type
 #[derive(Debug, FromRow)]
@@ -35,8 +35,8 @@ struct PgCreateApplicationResult {
     deletion_requested_at: Option<DateTime<Utc>>,
     internal_notes: Option<String>,
     app_meta: serde_json::Value,
-    _secret_key_prefix: String,
-    _publishable_key_plaintext: String,
+    secret_key_prefix: String,
+    publishable_key_plaintext: String,
 }
 
 impl Application {
@@ -173,6 +173,7 @@ impl Application {
 
             qb.push(" AND ak.key_type = ");
             qb.push_bind(KeyType::Publishable.to_string());
+            qb.push("::key_type");
         }
 
         if let Some(sk) = filter.secret_key {
@@ -185,6 +186,7 @@ impl Application {
 
             qb.push(" AND ak.key_type = ");
             qb.push_bind(KeyType::Secret.to_string());
+            qb.push("::key_type");
         }
 
         let query = qb.build_query_as::<Application>();
@@ -201,20 +203,20 @@ impl Application {
         app_id: Uuid,
         user_id: Uuid,
     ) -> Result<()> {
-        let row = sqlx::query(
+        let result = sqlx::query(
         "UPDATE applications SET is_active = false, updated_at = NOW() WHERE id = $1 AND developer_id = $2",
         )
         .bind(app_id)
         .bind(user_id)
-        .fetch_optional(exec.as_ref())
+        .execute(exec.as_ref())
         .await?;
 
-        let Some(_) = row else {
+        if result.rows_affected() == 0 {
             return Err(VaultlessError::NotFound(format!(
                 "Application not found or access denied for ID: {}",
                 app_id
             )));
-        };
+        }
 
         sqlx::query(
             "UPDATE api_keys SET is_active = false, updated_at = NOW() WHERE application_id = $1",

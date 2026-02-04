@@ -58,7 +58,7 @@ ADD COLUMN IF NOT EXISTS key_type key_type NOT NULL DEFAULT 'secret';
 
 -- Add publishable key plaintext column (max 64 chars is standard for prefix + key)
 ALTER TABLE public.api_keys
-    ADD COLUMN IF NOT EXISTS publishable_key_plaintext character varying(64) COLLATE pg_catalog."default";
+    ADD COLUMN IF NOT EXISTS publishable_key_plaintext character varying(128) COLLATE pg_catalog."default";
 
 -- Drop and re-add unique constraint on key_hash to allow NULLs for publishable keys
 ALTER TABLE public.api_keys

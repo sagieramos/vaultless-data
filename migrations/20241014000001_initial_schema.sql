@@ -247,24 +247,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================================
--- TRIGGERS
--- ============================================================================
-
--- Update updated_at on users table
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_users_updated_at
-    BEFORE UPDATE ON users
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
--- ============================================================================
 -- COMMENTS
 -- ============================================================================
 
@@ -286,21 +268,22 @@ CREATE TYPE subscription_tier AS ENUM ('free', 'starter', 'pro', 'enterprise');
 
 CREATE TABLE api_keys (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    
+
     -- Core link
     user_id UUID REFERENCES users(id) ON DELETE CASCADE, -- Owner of the API key
-    
+
     -- API key data
     key_hash VARCHAR(64) NOT NULL UNIQUE,               -- SHA-256 hash of the API key
     key_prefix VARCHAR(32) NOT NULL,                    -- First 8 chars for identification (vlt_xxxxx...)
-    
+
     -- Metadata
     description TEXT,                                   -- User-friendly description
     scopes TEXT,                                        -- Space-separated OAuth scopes
-    
+
     -- Status
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ,                             -- NULL = no expiration
     last_used_at TIMESTAMPTZ
 );
@@ -312,6 +295,29 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix
     TABLESPACE pg_default;
 CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX idx_api_keys_active ON api_keys(is_active) WHERE is_active = true;
+
+-- ============================================================================
+-- TRIGGERS
+-- ============================================================================
+
+-- Update updated_at on users table
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trigger_api_keys_updated_at
+    BEFORE UPDATE ON api_keys
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
 -- MESSAGES TABLE

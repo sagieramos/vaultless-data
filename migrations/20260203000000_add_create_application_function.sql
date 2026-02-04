@@ -23,7 +23,7 @@ RETURNS TABLE (
     is_active BOOLEAN,
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ,
-    max_ttl_seconds INTEGER,
+    max_ttl_seconds BIGINT,
     is_key_rotation_forced BOOLEAN,
     deletion_requested_at TIMESTAMPTZ,
     internal_notes TEXT,
@@ -129,21 +129,21 @@ BEGIN
         p_publishable_key_plaintext
     );
 
-    -- Return the application and key information
+    -- Return the application and key information with proper type casting
     RETURN QUERY
     SELECT
         v_app_row.id,
         v_app_row.developer_id,
         v_app_row.subscription_id,
-        v_app_row.name,
-        v_app_row.description,
+        v_app_row.name::TEXT,
+        v_app_row.description::TEXT,
         v_app_row.is_active,
         v_app_row.created_at,
         v_app_row.updated_at,
-        v_app_row.max_ttl_seconds,
+        v_app_row.max_ttl_seconds::BIGINT,
         v_app_row.is_key_rotation_forced,
         v_app_row.deletion_requested_at,
-        v_app_row.internal_notes,
+        v_app_row.internal_notes::TEXT,
         v_app_row.app_meta,
         p_secret_key_prefix::TEXT,
         p_publishable_key_plaintext::TEXT;
