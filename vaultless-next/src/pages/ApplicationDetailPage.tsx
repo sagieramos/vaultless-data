@@ -1,8 +1,8 @@
 "use client";
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Edit, BarChart3, Key, Webhook, Settings as SettingsIcon, CreditCard, Zap, AlertTriangle, Check } from 'lucide-react';
+import { ArrowLeft, Edit, BarChart3, Key, Webhook, Settings as SettingsIcon, CreditCard, Zap, AlertTriangle, Check, Copy, RefreshCw, Plus, Trash2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -11,14 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import DashboardLayout from '../components/layout/DashboardLayout';
 import { formatRelativeTime } from '@/lib/date';
-
-// Mock application data
-const applicationsData: Record<string, { name: string; description: string; tier: string; status: string; createdAt: string; type: string; iotStats?: { devices: number; attested: number; trusted: number } }> = {
-  '1': { name: 'Production API', description: 'Main production messaging service', tier: 'Pro', status: 'active', createdAt: '2025-11-07T12:00:00Z', type: 'messaging' },
-  '2': { name: 'Staging Environment', description: 'Testing and staging deployment', tier: 'Free', status: 'active', createdAt: '2025-12-07T12:00:00Z', type: 'messaging' },
-  '3': { name: 'Smart Home Hub', description: 'IoT device management and attestation', tier: 'Enterprise', status: 'active', createdAt: '2025-12-17T12:00:00Z', type: 'iot', iotStats: { devices: 847, attested: 842, trusted: 98 } },
-  '4': { name: 'Mobile App Backend', description: 'iOS and Android messaging service', tier: 'Pro', status: 'active', createdAt: '2025-12-17T12:00:00Z', type: 'messaging' },
-};
+import { applicationsApi } from '@/lib/api/applications';
+import type { ApplicationDashboardResponse, AttachedPricingPlan } from '@/types/api';
 
 // Available plans
 const plans = [
@@ -26,37 +20,87 @@ const plans = [
     name: 'Free',
     price: 0,
     features: ['10,000 messages/month', '5 GB bandwidth', '1 GB storage', '2 API keys'],
-    current: false
   },
   {
     name: 'Pro',
     price: 29,
     features: ['100,000 messages/month', '50 GB bandwidth', '10 GB storage', '10 API keys', 'Priority support'],
-    current: true
   },
   {
     name: 'Enterprise',
     price: 99,
     features: ['Unlimited messages', '500 GB bandwidth', '100 GB storage', 'Unlimited API keys', '24/7 support', 'Custom integrations'],
-    current: false
   }
 ];
 
 export default function ApplicationDetailPage() {
   const params = useParams();
   const id = params?.id as string | undefined;
+  
+  // State
+  const [data, setData] = useState<ApplicationDashboardResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [upgradeDialogOpen, setUpgradeDialogOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const appData = id ? applicationsData[id] : null;
-  const appName = appData?.name || 'Application';
-  const appDescription = appData?.description || '';
-  const appTier = appData?.tier || 'Free';
-  const appStatus = appData?.status || 'active';
-  const appCreatedAt = appData?.createdAt || '';
-  const appType = appData?.type || 'messaging';
+  // Fetch data
+  const fetchData = async () => {
+    if (!id) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await applicationsApi.getAnalytics(id);
+      setData(response);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load application data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const currentPlan = plans.find(p => p.name === appTier) || plans[0];
+  useEffect(() => {
+    fetchData();
+  }, [id]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchData();
+    setRefreshing(false);
+  };
+
+  if (loading) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
+            <p className="text-gray-600 dark:text-gray-400">Loading application data...</p>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <div className="text-center">
+            <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Failed to Load Data</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-4">{error || 'Application not found'}</p>
+            <Button onClick={fetchData}>Try Again</Button>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  const currentPlan = plans.find(p => p.name === (data.tier || 'Free')) || plans[0];
+  const isOverQuota = data.quotaStatus.isOverQuota || data.quotaStatus.usagePct >= 100;
+  const isApproachingQuota = data.quotaStatus.usagePct >= 80 && !isOverQuota;
 
   return (
     <DashboardLayout>
@@ -69,23 +113,26 @@ export default function ApplicationDetailPage() {
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">{appName}</h1>
-              <Badge>{appTier}</Badge>
-              {appType === 'iot' && (
-                <Badge variant="outline">IoT</Badge>
-              )}
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">{data.name}</h1>
+              <Badge>{data.tier || 'Free'}</Badge>
               <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-500" />
-                <span className="text-sm text-gray-600 dark:text-gray-400 capitalize">{appStatus}</span>
+                <div className={`w-2 h-2 rounded-full ${data.active ? 'bg-green-500' : 'bg-gray-500'}`} />
+                <span className="text-sm text-gray-600 dark:text-gray-400 capitalize">{data.active ? 'active' : 'inactive'}</span>
               </div>
             </div>
-            <p className="text-gray-600 dark:text-gray-400">{appDescription}</p>
+            {data.desc && (
+              <p className="text-gray-600 dark:text-gray-400">{data.desc}</p>
+            )}
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-              Created {(appData?.createdAt || (appData as any)?.created_at) ? formatRelativeTime(appData?.createdAt ?? (appData as any)?.created_at) : 'Unknown'}
+              Created {formatRelativeTime(data.created)}
             </p>
           </div>
 
           <div className="flex gap-2">
+            <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
             <Button variant="outline">
               <Edit className="w-4 h-4 mr-2" />
               Edit
@@ -113,52 +160,64 @@ export default function ApplicationDetailPage() {
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
             <Card className="p-6">
               <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Messages Today</div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">2,847</div>
-              <div className="text-sm text-green-600 mt-1">+12% from yesterday</div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white">
+                {data.currentMonth.msgSent.toLocaleString()}
+              </div>
+              <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">This month</div>
             </Card>
 
             <Card className="p-6">
               <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Bandwidth</div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">12.4 GB</div>
-              <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">of {appTier === 'Enterprise' ? '500' : appTier === 'Pro' ? '50' : '5'} GB</div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white">
+                {((data.currentMonth.bytesSent + data.currentMonth.bytesReceived) / (1024 * 1024 * 1024)).toFixed(2)} GB
+              </div>
+              <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                of {data.tier === 'Enterprise' ? '500' : data.tier === 'Pro' ? '50' : '5'} GB
+              </div>
             </Card>
 
             <Card className="p-6">
-              <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">
-                {appType === 'iot' ? 'Devices' : 'Active Clients'}
-              </div>
+              <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Active Clients</div>
               <div className="text-3xl font-bold text-gray-900 dark:text-white">
-                {appType === 'iot' ? appData?.iotStats?.devices : '142'}
+                {data.billableClientsCount}
               </div>
               <div className="text-sm text-green-600 mt-1">
-                {appType === 'iot' ? `${appData?.iotStats?.trusted}% trusted` : '+8 new today'}
+                {data.pricingPlan ? data.pricingPlan.planName : 'No plan'}
               </div>
             </Card>
 
             <Card className="p-6">
               <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">This Month</div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">${currentPlan.price}</div>
-              <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">{currentPlan.name} plan</div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white">
+                ${(data.currentMonthRevenueCents / 100).toFixed(2)}
+              </div>
+              <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                Revenue generated
+              </div>
             </Card>
           </div>
 
           <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Quota Usage</h2>
-              <Badge variant="secondary">{currentPlan.name} Plan</Badge>
+              <Badge variant={isOverQuota ? 'destructive' : isApproachingQuota ? 'secondary' : 'default'}>
+                {data.tier || 'Free'} Plan
+              </Badge>
             </div>
             <div className="mb-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-gray-600 dark:text-gray-400">Messages</span>
-                <span className="text-sm font-medium text-gray-900 dark:text-white">65%</span>
+                <span className={`text-sm font-medium ${isOverQuota ? 'text-red-600' : isApproachingQuota ? 'text-yellow-600' : 'text-gray-900 dark:text-white'}`}>
+                  {data.quotaUsagePct.toFixed(1)}%
+                </span>
               </div>
-              <Progress value={65} className="h-3" />
+              <Progress value={Math.min(data.quotaUsagePct, 100)} className="h-3" />
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                65,000 / {appTier === 'Enterprise' ? 'Unlimited' : appTier === 'Pro' ? '100,000' : '10,000'} messages
+                {data.quotaStatus.messagesUsed.toLocaleString()} / {data.monthlyQuota?.toLocaleString() || 'Unlimited'} messages
               </p>
             </div>
 
-            {65 > 80 && (
+            {isApproachingQuota && (
               <div className="mt-4 p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
                 <p className="text-sm text-yellow-800 dark:text-yellow-200">
                   You're using over 80% of your quota. Consider upgrading to avoid interruptions.
@@ -168,6 +227,49 @@ export default function ApplicationDetailPage() {
                 </Button>
               </div>
             )}
+
+            {isOverQuota && (
+              <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 rounded-lg">
+                <p className="text-sm text-red-800 dark:text-red-200">
+                  You've exceeded your quota! {data.quotaStatus.overageCount.toLocaleString()} messages over limit.
+                </p>
+                <Button size="sm" className="mt-2" variant="destructive" onClick={() => setUpgradeDialogOpen(true)}>
+                  Upgrade Now
+                </Button>
+              </div>
+            )}
+          </Card>
+
+          {/* Usage Trends */}
+          <Card className="p-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Usage Trends</h2>
+            <div className="grid md:grid-cols-3 gap-4">
+              <div>
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Daily Average</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {data.trends.dailyAvgMessages.toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600 dark:text-gray-400">messages/day</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Projected Monthly</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {data.trends.projectedMonthlyMessages.toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-600 dark:text-gray-400">messages</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Trend</div>
+                <div className={`text-2xl font-bold capitalize ${
+                  data.trends.quotaTrend === 'critical' ? 'text-red-600' :
+                  data.trends.quotaTrend === 'increasing' ? 'text-yellow-600' :
+                  'text-green-600'
+                }`}>
+                  {data.trends.quotaTrend}
+                </div>
+                <div className="text-sm text-gray-600 dark:text-gray-400">quota trend</div>
+              </div>
+            </div>
           </Card>
         </TabsContent>
 
@@ -200,7 +302,7 @@ export default function ApplicationDetailPage() {
                   </Badge>
                 </div>
                 <p className="text-gray-600 dark:text-gray-400">
-                  ${currentPlan.price}/month • Renews on Jan 1, 2025
+                  ${currentPlan.price}/month
                 </p>
               </div>
             </div>
@@ -225,31 +327,37 @@ export default function ApplicationDetailPage() {
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Messages</span>
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">65,000</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {data.currentMonth.msgSent.toLocaleString()}
+                  </span>
                 </div>
-                <Progress value={65} className="h-3" />
+                <Progress value={data.quotaUsagePct} className="h-3" />
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                  of {appTier === 'Enterprise' ? 'Unlimited' : appTier === 'Pro' ? '100,000' : '10,000'}
+                  of {data.monthlyQuota?.toLocaleString() || 'Unlimited'}
                 </p>
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Bandwidth</span>
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">12.4 GB</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {((data.currentMonth.bytesSent + data.currentMonth.bytesReceived) / (1024 * 1024 * 1024)).toFixed(2)} GB
+                  </span>
                 </div>
-                <Progress value={25} className="h-3" />
+                <Progress value={Math.min(((data.currentMonth.bytesSent + data.currentMonth.bytesReceived) / (1024 * 1024 * 1024)) / (data.tier === 'Enterprise' ? 500 : data.tier === 'Pro' ? 50 : 5) * 100, 100)} className="h-3" />
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                  of {appTier === 'Enterprise' ? '500 GB' : appTier === 'Pro' ? '50 GB' : '5 GB'}
+                  of {data.tier === 'Enterprise' ? '500 GB' : data.tier === 'Pro' ? '50 GB' : '5 GB'}
                 </p>
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-600 dark:text-gray-400">Storage</span>
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">2.4 GB</span>
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    {(data.currentMonth.msgStored / (1024 * 1024)).toFixed(2)} MB
+                  </span>
                 </div>
-                <Progress value={24} className="h-3" />
+                <Progress value={Math.min((data.currentMonth.msgStored / (1024 * 1024)) / (data.tier === 'Enterprise' ? 100 : data.tier === 'Pro' ? 10 : 1) * 100, 100)} className="h-3" />
                 <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                  of {appTier === 'Enterprise' ? '100 GB' : appTier === 'Pro' ? '10 GB' : '1 GB'}
+                  of {data.tier === 'Enterprise' ? '100 GB' : data.tier === 'Pro' ? '10 GB' : '1 GB'}
                 </p>
               </div>
             </div>
@@ -272,21 +380,21 @@ export default function ApplicationDetailPage() {
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                   <tr>
                     <td className="px-4 py-3 text-sm text-gray-900 dark:text-white">Dec 1, 2024</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{appName} - {currentPlan.name} Plan</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{data.name} - {currentPlan.name} Plan</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">${currentPlan.price}.00</td>
                     <td className="px-4 py-3"><Badge variant="secondary" className="bg-green-100 text-green-700">Paid</Badge></td>
                     <td className="px-4 py-3 text-right"><Button variant="ghost" size="sm">PDF</Button></td>
                   </tr>
                   <tr>
                     <td className="px-4 py-3 text-sm text-gray-900 dark:text-white">Nov 1, 2024</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{appName} - {currentPlan.name} Plan</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{data.name} - {currentPlan.name} Plan</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">${currentPlan.price}.00</td>
                     <td className="px-4 py-3"><Badge variant="secondary" className="bg-green-100 text-green-700">Paid</Badge></td>
                     <td className="px-4 py-3 text-right"><Button variant="ghost" size="sm">PDF</Button></td>
                   </tr>
                   <tr>
                     <td className="px-4 py-3 text-sm text-gray-900 dark:text-white">Oct 1, 2024</td>
-                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{appName} - {currentPlan.name} Plan</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{data.name} - {currentPlan.name} Plan</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">${currentPlan.price}.00</td>
                     <td className="px-4 py-3"><Badge variant="secondary" className="bg-green-100 text-green-700">Paid</Badge></td>
                     <td className="px-4 py-3 text-right"><Button variant="ghost" size="sm">PDF</Button></td>
@@ -314,7 +422,7 @@ export default function ApplicationDetailPage() {
                   <DialogHeader>
                     <DialogTitle>Cancel Subscription</DialogTitle>
                     <DialogDescription>
-                      Are you sure you want to cancel the subscription for <strong>{appName}</strong>?
+                      Are you sure you want to cancel the subscription for <strong>{data.name}</strong>?
                       This will downgrade the application to the Free plan at the end of the current billing period.
                     </DialogDescription>
                   </DialogHeader>
@@ -360,16 +468,22 @@ export default function ApplicationDetailPage() {
             </div>
             <div className="grid md:grid-cols-3 gap-4">
               <Card className="p-4">
-                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Messages Today</div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">2,847</div>
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Messages This Month</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {data.currentMonth.msgSent.toLocaleString()}
+                </div>
               </Card>
               <Card className="p-4">
-                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Avg Response</div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">12ms</div>
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Proofs Verified</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {data.currentMonth.msgProof.toLocaleString()}
+                </div>
               </Card>
               <Card className="p-4">
-                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Active Clients</div>
-                <div className="text-2xl font-bold text-gray-900 dark:text-white">142</div>
+                <div className="text-sm text-gray-600 dark:text-gray-400 mb-1">Rate Limit Hits</div>
+                <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                  {data.currentMonth.rateHits.toLocaleString()}
+                </div>
               </Card>
             </div>
           </Card>
@@ -378,21 +492,211 @@ export default function ApplicationDetailPage() {
         {/* API Keys Tab */}
         <TabsContent value="keys">
           <Card className="p-6">
-            <p className="text-gray-600 dark:text-gray-400">API keys management coming soon...</p>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-1">
+                  Secret Key
+                </h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Your secret key for server-side authentication
+                </p>
+              </div>
+              <Button variant="outline">
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Rotate Key
+              </Button>
+            </div>
+
+            {data.secretKeyPrefix && (
+              <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg mb-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">Secret Key Prefix</p>
+                    <code className="text-lg font-mono text-gray-900 dark:text-white">{data.secretKeyPrefix}...</code>
+                  </div>
+                  <Badge variant={data.secretKeyIsActive ? 'default' : 'secondary'}>
+                    {data.secretKeyIsActive ? 'Active' : 'Inactive'}
+                  </Badge>
+                </div>
+                {data.secretKeyScopes && (
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                    Scopes: <code className="text-xs">{data.secretKeyScopes}</code>
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="border-t pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Publishable Keys ({data.keys.length})
+                </h3>
+                <Button>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Key
+                </Button>
+              </div>
+
+              {data.keys.length === 0 ? (
+                <p className="text-gray-600 dark:text-gray-400 text-sm">No publishable keys configured.</p>
+              ) : (
+                <div className="space-y-3">
+                  {data.keys.map((key) => (
+                    <div key={key.id} className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <code className="text-sm font-mono text-gray-900 dark:text-white">{key.keyPrefix}...</code>
+                          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                            Created {formatRelativeTime(key.createdAt)}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={key.isActive ? 'default' : 'secondary'}>
+                            {key.isActive ? 'Active' : 'Inactive'}
+                          </Badge>
+                          <Button variant="ghost" size="sm">
+                            <Copy className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </Card>
         </TabsContent>
 
         {/* Webhooks Tab */}
         <TabsContent value="webhooks">
           <Card className="p-6">
-            <p className="text-gray-600 dark:text-gray-400">Webhooks configuration coming soon...</p>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-1">
+                  Webhooks
+                </h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Configure webhook endpoints for real-time notifications
+                </p>
+              </div>
+              <Button>
+                <Plus className="w-4 h-4 mr-2" />
+                Add Webhook
+              </Button>
+            </div>
+
+            {data.webhooks.length === 0 ? (
+              <div className="text-center py-8">
+                <Webhook className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-600 dark:text-gray-400">No webhooks configured</p>
+                <p className="text-sm text-gray-500 dark:text-gray-500 mt-1">
+                  Add a webhook to receive real-time notifications
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {data.webhooks.map((webhook) => (
+                  <div key={webhook.id} className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <code className="text-sm font-mono text-gray-900 dark:text-white">{webhook.url}</code>
+                          <Badge variant={webhook.isActive ? 'default' : 'secondary'}>
+                            {webhook.isActive ? 'Active' : 'Inactive'}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-xs text-gray-600 dark:text-gray-400">Events:</span>
+                          <div className="flex gap-1">
+                            {webhook.events.map((event) => (
+                              <Badge key={event} variant="outline" className="text-xs">
+                                {event}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button variant="ghost" size="sm">
+                          <Edit className="w-4 h-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm">
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
         </TabsContent>
 
         {/* Settings Tab */}
         <TabsContent value="settings">
           <Card className="p-6">
-            <p className="text-gray-600 dark:text-gray-400">Settings coming soon...</p>
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
+              Application Settings
+            </h2>
+            
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">General</h3>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-white">Application Name</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">{data.name}</p>
+                    </div>
+                    <Button variant="outline" size="sm">Edit</Button>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-white">Status</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 capitalize">{data.active ? 'Active' : 'Inactive'}</p>
+                    </div>
+                    <Button variant="outline" size="sm">Toggle</Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t pt-6">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Advanced</h3>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-white">Rate Limit</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">{data.rateLimit || 'N/A'} requests/minute</p>
+                    </div>
+                    <Button variant="outline" size="sm">Configure</Button>
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-white">Message Retention</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        {data.retentionSeconds ? `${Math.floor(data.retentionSeconds / 86400)} days` : 'N/A'}
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm">Configure</Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t pt-6">
+                <h3 className="text-lg font-semibold text-red-600 mb-4">Danger Zone</h3>
+                <div className="p-4 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-800 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-white">Delete Application</p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        Permanently delete this application and all its data
+                      </p>
+                    </div>
+                    <Button variant="destructive">Delete</Button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </Card>
         </TabsContent>
       </Tabs>
@@ -401,7 +705,7 @@ export default function ApplicationDetailPage() {
       <Dialog open={upgradeDialogOpen} onOpenChange={setUpgradeDialogOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Change Plan for {appName}</DialogTitle>
+            <DialogTitle>Change Plan for {data.name}</DialogTitle>
             <DialogDescription>
               Choose a plan that best fits your needs
             </DialogDescription>
@@ -411,12 +715,12 @@ export default function ApplicationDetailPage() {
               <div
                 key={plan.name}
                 className={`p-6 rounded-lg border-2 transition-all ${
-                  plan.name === appTier
+                  plan.name === data.tier
                     ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/10'
                     : 'border-gray-200 dark:border-gray-700'
                 }`}
               >
-                {plan.name === appTier && (
+                {plan.name === data.tier && (
                   <Badge className="mb-4 bg-blue-600">Current</Badge>
                 )}
                 <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
@@ -438,14 +742,14 @@ export default function ApplicationDetailPage() {
                 </ul>
                 <Button
                   className={`w-full ${
-                    plan.name === appTier
+                    plan.name === data.tier
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-gray-800'
                       : 'bg-blue-600 hover:bg-blue-700'
                   }`}
-                  disabled={plan.name === appTier}
+                  disabled={plan.name === data.tier}
                   onClick={() => setUpgradeDialogOpen(false)}
                 >
-                  {plan.name === appTier ? 'Current Plan' : plan.price > currentPlan.price ? 'Upgrade' : 'Downgrade'}
+                  {plan.name === data.tier ? 'Current Plan' : plan.price > currentPlan.price ? 'Upgrade' : 'Downgrade'}
                 </Button>
               </div>
             ))}

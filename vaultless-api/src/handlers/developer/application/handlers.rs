@@ -219,7 +219,7 @@ pub async fn deactivate_application(
 /// Full analytics endpoint for dashboards or heavy reporting
 #[utoipa::path(
     get,
-    path = "/dev/applications/{application_id}/analytics",
+    path = "/dev/applications/{application_id}",
     params(("application_id" = Uuid, Path, description = "Application ID")),
     responses(
         (status = 200, description = "Application details with usage data", body = super::dto::ApplicationDashboardResponse),

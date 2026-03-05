@@ -2,7 +2,7 @@ use super::dto::Application;
 use crate::error::{Result, VaultlessError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, FromRow, Postgres};
+use sqlx::{FromRow, Postgres};
 use std::fmt;
 use std::str::FromStr;
 use utoipa::ToSchema;
@@ -170,22 +170,38 @@ pub struct ApplicationChartData {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_rate_limit_hits: Option<i64>,
+
+    /// Optional trend data comparing current period vs previous period
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trends: Option<ChartTrends>,
+}
+
+/// Trend data comparing current period vs previous period
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartTrends {
+    /// Current period total (messages or bytes depending on metric)
+    pub current_period: i64,
+    /// Previous period total
+    pub previous_period: i64,
+    /// Percentage change (-100 to +N)
+    pub change_percent: f64,
+    /// "up", "down", or "stable"
+    pub trend_direction: String,
 }
 
 impl Application {
     /// Fetch chart data for a given app, metric, and bucket range in a single query.
-    pub async fn get_chart_data<'c, E>(
-        exec: E,
+    pub async fn get_chart_data(
+        pool: &sqlx::PgPool,
         app_id: Uuid,
         user_id: Uuid,
         granularity: ChartGranularity,
         metric_view: ChartMetric,
         start_ts: DateTime<Utc>,
         end_ts: DateTime<Utc>,
-    ) -> Result<ApplicationChartData>
-    where
-        E: Executor<'c, Database = Postgres> + Clone,
-    {
+        include_trends: bool,
+    ) -> Result<ApplicationChartData> {
         let table_name = match granularity {
             ChartGranularity::Daily => "application_usage_metrics_daily",
             ChartGranularity::Weekly => "application_usage_metrics_weekly",
@@ -199,49 +215,36 @@ impl Application {
             ChartGranularity::Weekly => CHART_MAX_POINTS_WEEKLY,
         };
 
-        let select_fields = match metric_view {
-            ChartMetric::Messages => {
-                "COALESCE(MAX(m.total_messages_sent), 0) AS messages_sent,
-                 COALESCE(MAX(m.total_messages_received), 0) AS messages_received"
-            }
-            ChartMetric::Bandwidth => {
-                "COALESCE(MAX(m.total_bytes_sent), 0) AS bytes_sent,
-                 COALESCE(MAX(m.total_bytes_received), 0) AS bytes_received"
-            }
-            ChartMetric::Storage => "COALESCE(MAX(m.total_bytes_stored), 0) AS bytes_stored",
-            ChartMetric::Proofs => "COALESCE(MAX(m.total_proofs_verified), 0) AS proofs_verified",
-            ChartMetric::RateLimits => {
-                "COALESCE(MAX(m.total_rate_limit_hits), 0) AS rate_limit_hits"
-            }
-            ChartMetric::All => {
-                "COALESCE(MAX(m.total_messages_sent), 0) AS messages_sent,
-                 COALESCE(MAX(m.total_messages_received), 0) AS messages_received,
-                 COALESCE(MAX(m.total_proofs_verified), 0) AS proofs_verified,
-                 COALESCE(MAX(m.total_bytes_sent), 0) AS bytes_sent,
-                 COALESCE(MAX(m.total_bytes_received), 0) AS bytes_received,
-                 COALESCE(MAX(m.total_bytes_stored), 0) AS bytes_stored,
-                 COALESCE(MAX(m.total_rate_limit_hits), 0) AS rate_limit_hits"
-            }
-        };
-
         let sql = format!(
             r#"
+            WITH time_series AS (
+                SELECT generate_series(
+                    $1,
+                    $2,
+                    {bucket_interval}::interval
+                ) AS timestamp
+            )
             SELECT
                 a.name AS application_name,
-                time_bucket_gapfill({bucket_interval}, m.{time_column}, $1, $2) AS timestamp,
-                {select_fields}
+                ts.timestamp,
+                COALESCE(m.total_messages_sent, 0) AS messages_sent,
+                COALESCE(m.total_messages_received, 0) AS messages_received,
+                COALESCE(m.total_proofs_verified, 0) AS proofs_verified,
+                COALESCE(m.total_bytes_sent, 0) AS bytes_sent,
+                COALESCE(m.total_bytes_received, 0) AS bytes_received,
+                COALESCE(m.total_bytes_stored, 0) AS bytes_stored,
+                COALESCE(m.total_rate_limit_hits, 0) AS rate_limit_hits
             FROM applications a
             INNER JOIN api_keys k ON k.application_id = a.id
                 AND k.key_type = 'secret'
                 AND k.is_active = true
+            CROSS JOIN time_series ts
             LEFT JOIN {table_name} m ON m.application_id = a.id
-                AND m.{time_column} >= $1
-                AND m.{time_column} <= $2
+                AND m.{time_column} = ts.timestamp
             WHERE a.id = $3
               AND a.developer_id = $4
               AND a.is_active = true
-            GROUP BY a.name, timestamp
-            ORDER BY timestamp ASC
+            ORDER BY ts.timestamp ASC
             LIMIT $5
             "#
         );
@@ -252,7 +255,7 @@ impl Application {
             .bind(app_id)
             .bind(user_id)
             .bind(max_points)
-            .fetch_all(exec)
+            .fetch_all(pool)
             .await?;
 
         if rows.is_empty() {
@@ -263,9 +266,25 @@ impl Application {
 
         let app_name = rows[0].application_name.clone();
 
-        let sum_or_none = |f: fn(&UsageChartPoint) -> Option<i64>| -> Option<i64> {
-            rows.first().and_then(f)?;
+        // Sum all data points for totals (values are already COALESCE'd to 0)
+        let sum_values = |f: fn(&UsageChartPoint) -> Option<i64>| -> Option<i64> {
             Some(rows.iter().filter_map(f).sum())
+        };
+
+        // Calculate trends if requested using PostgreSQL function
+        let trends = if include_trends {
+            calculate_trends_db(
+                pool,
+                app_id,
+                start_ts,
+                end_ts,
+                granularity,
+                metric_view,
+            )
+            .await
+            .ok()
+        } else {
+            None
         };
 
         Ok(ApplicationChartData {
@@ -279,15 +298,67 @@ impl Application {
             ),
             granularity: granularity.as_api_str().to_owned(),
 
-            total_messages_sent: sum_or_none(|p| p.messages_sent),
-            total_messages_received: sum_or_none(|p| p.messages_received),
-            total_proofs_verified: sum_or_none(|p| p.proofs_verified),
-            total_bytes_sent: sum_or_none(|p| p.bytes_sent),
-            total_bytes_received: sum_or_none(|p| p.bytes_received),
-            total_bytes_stored: sum_or_none(|p| p.bytes_stored),
-            total_rate_limit_hits: sum_or_none(|p| p.rate_limit_hits),
+            total_messages_sent: sum_values(|p| p.messages_sent),
+            total_messages_received: sum_values(|p| p.messages_received),
+            total_proofs_verified: sum_values(|p| p.proofs_verified),
+            total_bytes_sent: sum_values(|p| p.bytes_sent),
+            total_bytes_received: sum_values(|p| p.bytes_received),
+            total_bytes_stored: sum_values(|p| p.bytes_stored),
+            total_rate_limit_hits: sum_values(|p| p.rate_limit_hits),
 
             data_points: rows,
+            trends,
         })
     }
+}
+
+/// Calculate trends by calling PostgreSQL function
+async fn calculate_trends_db(
+    pool: &sqlx::PgPool,
+    app_id: Uuid,
+    start_ts: DateTime<Utc>,
+    end_ts: DateTime<Utc>,
+    granularity: ChartGranularity,
+    metric_view: ChartMetric,
+) -> Result<ChartTrends> {
+    let granularity_str = granularity.as_api_str();
+    let metric_str = match metric_view {
+        ChartMetric::Messages => "messages",
+        ChartMetric::Bandwidth => "bandwidth",
+        ChartMetric::Storage => "storage",
+        ChartMetric::Proofs => "proofs",
+        ChartMetric::RateLimits => "rate_limits",
+        ChartMetric::All => "messages",
+    };
+
+    let result: (i64, i64, f64, String) = sqlx::query_as(
+        r#"
+        SELECT 
+            current_period,
+            previous_period,
+            change_percent,
+            trend_direction
+        FROM calculate_chart_trends(
+            $1,
+            $2,
+            $3,
+            $4,
+            $5
+        )
+        "#
+    )
+    .bind(app_id)
+    .bind(start_ts)
+    .bind(end_ts)
+    .bind(granularity_str)
+    .bind(metric_str)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ChartTrends {
+        current_period: result.0,
+        previous_period: result.1,
+        change_percent: result.2,
+        trend_direction: result.3,
+    })
 }

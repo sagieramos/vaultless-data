@@ -40,7 +40,7 @@ pub fn application_routes(state: AppState) -> Router<AppState> {
     // Routes without query parameters that read from materialized view (ETag cacheable)
     let mv_cached_no_query_routes = Router::new()
         .route(
-            "/{id}/analytics",
+            "/{id}",
             get(application::get_application_analytics),
         )
         .route("/usage-summary", get(application::get_user_usage_summary))

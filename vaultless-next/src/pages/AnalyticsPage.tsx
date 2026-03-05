@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { motion } from 'motion/react';
@@ -19,13 +19,11 @@ import {
 } from 'recharts';
 import {
   Calendar,
-  Download,
   TrendingUp,
   TrendingDown,
   MessageSquare,
   Clock,
   Activity,
-  DollarSign,
   ArrowLeft,
   AlertCircle,
   ChevronRight,
@@ -39,22 +37,17 @@ import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { applicationsApi } from '@/lib/api';
-import type { ApplicationDashboardResponse } from '@/types/api';
+import { applicationsApi } from '@/lib/api/applications';
+import type { ApplicationDashboardResponse, ApplicationChartData, UsageChartPoint } from '@/types/api';
 
-// NOTE: Analytics UI was initially built on mock time-series data.
-// The backend analytics endpoint currently returns aggregate stats (currentMonth + lifetime).
-// We map those aggregate values into the existing UI below.
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
 
 const formatNumber = (num: number) => {
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
   return num.toString();
-};
-
-const formatCostDollars = (costCents?: number) => {
-  if (costCents === undefined || costCents === null) return '—';
-  return `$${(costCents / 100).toFixed(2)}`;
 };
 
 const formatBytes = (bytes?: number) => {
@@ -68,108 +61,142 @@ const formatBytes = (bytes?: number) => {
   return `${bytes} B`;
 };
 
-const buildDaySeriesFromMonth = (
-  currentMonth: ApplicationDashboardResponse['currentMonth'] | undefined,
-  metric: 'messages' | 'bandwidth' | 'cost'
-) => {
-  const today = new Date();
-  const label = today.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-
-  if (metric === 'messages') {
-    const total = (currentMonth?.msgSent ?? 0) + (currentMonth?.msgReceived ?? 0);
-    return [
-      {
-        date: label,
-        messages: total,
-        sent: currentMonth?.msgSent ?? 0,
-        received: currentMonth?.msgReceived ?? 0,
-      },
-    ];
-  }
-
-  if (metric === 'bandwidth') {
-    const totalBytes = (currentMonth?.bytesSent ?? 0) + (currentMonth?.bytesReceived ?? 0);
-    const gb = totalBytes / (1024 * 1024 * 1024);
-    return [{ date: label, bandwidth: Number(gb.toFixed(4)) }];
-  }
-
-  // cost is in cents
-  return [{ date: label, messages: currentMonth?.cost ?? 0, sent: 0, received: 0 }];
+const formatDate = (timestamp: string) => {
+  const date = new Date(timestamp);
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
 
-const buildHourlySeriesPlaceholder = (totalMessages: number) => {
-  // No per-hour data from API yet; distribute evenly just to keep UI working with real totals.
-  const perHour = Math.round(totalMessages / 24);
-  return Array.from({ length: 24 }).map((_, i) => ({
-    hour: String(i).padStart(2, '0'),
-    messages: perHour,
-  }));
-};
+// Date range helpers
+const getDateRange = (range: string) => {
+  const end = new Date();
+  const start = new Date();
 
-const buildQuotaStatusFromDashboard = (dashboard: ApplicationDashboardResponse | null) => {
-  if (!dashboard) return null;
-
-  const used = (dashboard.currentMonth?.msgSent ?? 0) + (dashboard.currentMonth?.msgReceived ?? 0);
-  const limit = dashboard.monthlyQuota ?? 0;
-  const pct = limit > 0 ? (used / limit) * 100 : 0;
+  switch (range) {
+    case '7d':
+      start.setDate(start.getDate() - 7);
+      break;
+    case '14d':
+      start.setDate(start.getDate() - 14);
+      break;
+    case '30d':
+      start.setDate(start.getDate() - 30);
+      break;
+    case '60d':
+      start.setDate(start.getDate() - 60);
+      break;
+    case '90d':
+      start.setDate(start.getDate() - 90);
+      break;
+  }
 
   return {
-    messagesUsed: used,
-    messagesLimit: limit,
-    usagePercentage: pct,
-    isOverQuota: limit > 0 ? used > limit : false,
-    overageCount: limit > 0 ? Math.max(0, used - limit) : 0,
-    alertLevel: pct >= 90 ? 'critical' : pct >= 75 ? 'warning' : 'ok',
+    start: start.toISOString().split('T')[0],
+    end: end.toISOString().split('T')[0],
   };
 };
 
-const buildCostBreakdownPlaceholder = (totalCostCents: number) => {
-  // API doesn't provide category breakdown. Keep the UI but make it reflect real total cost.
-  const messages = Math.round(totalCostCents * 0.7);
-  const bandwidth = Math.round(totalCostCents * 0.2);
-  const other = totalCostCents - messages - bandwidth;
-  const toPct = (n: number) => (totalCostCents > 0 ? Math.round((n / totalCostCents) * 100) : 0);
-
-  return [
-    { name: 'Messages', revenue: messages, percentage: toPct(messages), color: 'bg-green-500' },
-    { name: 'Bandwidth', revenue: bandwidth, percentage: toPct(bandwidth), color: 'bg-blue-500' },
-    { name: 'Other', revenue: other, percentage: toPct(other), color: 'bg-purple-500' },
-  ];
+// Get label for date range
+const getDateRangeLabel = (range: string) => {
+  const labels: Record<string, string> = {
+    '7d': 'Past 7 days',
+    '14d': 'Past 2 weeks',
+    '30d': 'Past month',
+    '60d': 'Past 2 months',
+    '90d': 'Past 3 months',
+  };
+  return labels[range] || range;
 };
+
+// Get recommended granularity for date range
+const getRecommendedGranularity = (range: string): 'daily' | 'weekly' => {
+  // Backend limits: daily max 100 buckets, weekly max 160 buckets
+  if (['7d', '14d', '30d'].includes(range)) return 'daily';
+  return 'weekly'; // 60d, 90d look better with weekly aggregation
+};
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
 
 export default function AnalyticsPage({ id: idProp }: { id?: string }) {
   const params = useParams();
   const idFromParams = params?.id as string | undefined;
   const id = idProp ?? idFromParams;
 
+  // UI state
   const [dateRange, setDateRange] = useState('14d');
-  const [granularity, setGranularity] = useState<'day' | 'week' | 'month'>('day');
-  // Metric is kept for UI tab switching; we don't fetch time-series yet.
-  const [, setMetric] = useState('messages');
+  const [granularity, setGranularity] = useState<'daily' | 'weekly'>('daily');
+  const [activeTab, setActiveTab] = useState('messages');
 
+  // Auto-switch granularity when date range changes
+  useEffect(() => {
+    const recommended = getRecommendedGranularity(dateRange);
+    setGranularity(recommended);
+  }, [dateRange]);
+  
+  // Data state
   const [dashboard, setDashboard] = useState<ApplicationDashboardResponse | null>(null);
+  const [chartData, setChartData] = useState<ApplicationChartData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [chartLoading, setChartLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch dashboard data
+  const fetchDashboard = useCallback(async () => {
+    if (!id || id === 'undefined') return;
+    
+    try {
+      const data = await applicationsApi.getAnalytics(id);
+      setDashboard(data);
+      setError(null);
+    } catch (err: any) {
+      console.error('Failed to fetch analytics:', err);
+      setError(err.message || 'Failed to load analytics');
+    }
+  }, [id]);
+
+  // Fetch chart data
+  const fetchChartData = useCallback(async () => {
+    if (!id || id === 'undefined') return;
+
+    setChartLoading(true);
+    try {
+      const { start, end } = getDateRange(dateRange);
+      const metric = activeTab;
+
+      const data = await applicationsApi.getChartData(id, {
+        granularity,
+        metric: metric as any,
+        start,
+        end,
+        includeTrends: true,
+      });
+      setChartData(data);
+    } catch (err: any) {
+      console.error('Failed to fetch chart data:', err);
+      // Don't show error for chart failures, just use empty data
+    } finally {
+      setChartLoading(false);
+    }
+  }, [id, dateRange, granularity, activeTab]);
 
   useEffect(() => {
     if (!id || id === 'undefined') return;
 
-    const fetchAnalytics = async () => {
+    const init = async () => {
       setLoading(true);
-      try {
-        const data = await applicationsApi.getAnalytics(id);
-        setDashboard(data);
-        setError(null);
-      } catch (err: any) {
-        console.error('Failed to fetch analytics:', err);
-        setError(err.message || 'Failed to load analytics');
-      } finally {
-        setLoading(false);
-      }
+      await fetchDashboard();
+      setLoading(false);
     };
 
-    fetchAnalytics();
-  }, [id]);
+    init();
+  }, [id, fetchDashboard]);
+
+  useEffect(() => {
+    if (dashboard) {
+      fetchChartData();
+    }
+  }, [dateRange, granularity, activeTab, fetchChartData]);
 
   if (!id || id === 'undefined') {
     return (
@@ -224,24 +251,65 @@ export default function AnalyticsPage({ id: idProp }: { id?: string }) {
   const tierText = dashboard?.tier ? String(dashboard.tier) : '';
   const tierNormalized = tierText.toLowerCase();
 
-  const quotaStatus = buildQuotaStatusFromDashboard(dashboard);
+  // Build quota status from dashboard data
+  const quotaStatus = dashboard ? {
+    messagesUsed: (dashboard.currentMonth?.msgSent ?? 0) + (dashboard.currentMonth?.msgReceived ?? 0),
+    messagesLimit: dashboard.monthlyQuota ?? 0,
+    usagePercentage: dashboard.monthlyQuota 
+      ? ((dashboard.currentMonth?.msgSent ?? 0) + (dashboard.currentMonth?.msgReceived ?? 0)) / dashboard.monthlyQuota * 100
+      : 0,
+    isOverQuota: dashboard.monthlyQuota 
+      ? ((dashboard.currentMonth?.msgSent ?? 0) + (dashboard.currentMonth?.msgReceived ?? 0)) > dashboard.monthlyQuota
+      : false,
+    overageCount: dashboard.monthlyQuota
+      ? Math.max(0, ((dashboard.currentMonth?.msgSent ?? 0) + (dashboard.currentMonth?.msgReceived ?? 0)) - dashboard.monthlyQuota)
+      : 0,
+    alertLevel: dashboard.quotaUsagePct >= 90 ? 'critical' : dashboard.quotaUsagePct >= 75 ? 'warning' : 'ok',
+  } : null;
+
   const totalMessages = (dashboard?.currentMonth?.msgSent ?? 0) + (dashboard?.currentMonth?.msgReceived ?? 0);
   const bandwidthBytes = (dashboard?.currentMonth?.bytesSent ?? 0) + (dashboard?.currentMonth?.bytesReceived ?? 0);
-  const currentCostCents = dashboard?.currentMonth?.cost ?? 0;
 
-  const messageData = buildDaySeriesFromMonth(dashboard?.currentMonth, 'messages');
-  const revenueData = buildDaySeriesFromMonth(dashboard?.currentMonth, 'cost');
-  const bandwidthData = buildDaySeriesFromMonth(dashboard?.currentMonth, 'bandwidth');
-  const hourlyData = buildHourlySeriesPlaceholder(totalMessages);
+  // Get trend data from chart
+  const messagesTrend = chartData?.trends?.trendDirection ?? 'up';
+  const messagesChange = chartData?.trends?.changePercent ?? 0;
 
-  const costBreakdown = buildCostBreakdownPlaceholder(currentCostCents);
+  // Transform chart data for Recharts
+  const getChartData = () => {
+    if (!chartData?.dataPoints) return [];
 
+    return chartData.dataPoints.map((point: UsageChartPoint) => {
+      const base: any = {
+        date: formatDate(point.timestamp),
+        timestamp: point.timestamp,
+      };
+
+      if (activeTab === 'messages') {
+        base.messages = (point.messagesSent ?? 0) + (point.messagesReceived ?? 0);
+        base.sent = point.messagesSent ?? 0;
+        base.received = point.messagesReceived ?? 0;
+        base.proofs = point.proofsVerified ?? 0;
+        base.rateHits = point.rateLimitHits ?? 0;
+      } else if (activeTab === 'bandwidth') {
+        base.bytesSent = point.bytesSent ?? 0;
+        base.bytesReceived = point.bytesReceived ?? 0;
+        base.bytesStored = point.bytesStored ?? 0;
+        base.bandwidth = ((point.bytesSent ?? 0) + (point.bytesReceived ?? 0)) / (1024 * 1024 * 1024);
+      }
+
+      return base;
+    });
+  };
+
+  const chartDataTransformed = getChartData();
+
+  // Stats cards data
   const stats = [
     {
       title: 'Total Messages',
       value: formatNumber(totalMessages),
-      change: '—',
-      trend: 'up',
+      change: messagesChange !== 0 ? `${messagesChange > 0 ? '+' : ''}${messagesChange.toFixed(1)}%` : '—',
+      trend: messagesTrend as 'up' | 'down',
       icon: MessageSquare,
       color: 'blue',
     },
@@ -249,23 +317,15 @@ export default function AnalyticsPage({ id: idProp }: { id?: string }) {
       title: 'Bandwidth',
       value: formatBytes(bandwidthBytes),
       change: '—',
-      trend: 'up',
+      trend: 'up' as const,
       icon: Activity,
       color: 'purple',
-    },
-    {
-      title: 'Cost (month)',
-      value: formatCostDollars(currentCostCents),
-      change: '—',
-      trend: 'up',
-      icon: DollarSign,
-      color: 'green',
     },
     {
       title: 'Rate Limit',
       value: dashboard?.rateLimit ? `${dashboard.rateLimit}/min` : '—',
       change: '—',
-      trend: 'up',
+      trend: 'up' as const,
       icon: Clock,
       color: 'orange',
     },
@@ -291,53 +351,29 @@ export default function AnalyticsPage({ id: idProp }: { id?: string }) {
             <p className="text-gray-600 dark:text-gray-400">Analytics for this application</p>
           </div>
           <div className="flex items-center gap-3">
-            {/* Granularity Selector */}
-            <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
-              <Button
-                variant={granularity === 'day' ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setGranularity('day')}
-                className="text-xs"
-              >
-                Day
-              </Button>
-              <Button
-                variant={granularity === 'week' ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setGranularity('week')}
-                className="text-xs"
-              >
-                Week
-              </Button>
-              <Button
-                variant={granularity === 'month' ? 'secondary' : 'ghost'}
-                size="sm"
-                onClick={() => setGranularity('month')}
-                className="text-xs"
-              >
-                Month
-              </Button>
+            {/* Date Range Selector */}
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-gray-500" />
+              <Select value={dateRange} onValueChange={setDateRange}>
+                <SelectTrigger className="w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7d">Past 7 days</SelectItem>
+                  <SelectItem value="14d">Past 2 weeks</SelectItem>
+                  <SelectItem value="30d">Past month</SelectItem>
+                  <SelectItem value="60d">Past 2 months</SelectItem>
+                  <SelectItem value="90d">Past 3 months</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
-            {/* Date Range Selector (UI only until we have time-series endpoints) */}
-            <Select value={dateRange} onValueChange={setDateRange}>
-              <SelectTrigger className="w-[140px]">
-                <Calendar className="w-4 h-4 mr-2" />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="7d">Last 7 days</SelectItem>
-                <SelectItem value="14d">Last 14 days</SelectItem>
-                <SelectItem value="30d">Last 30 days</SelectItem>
-                <SelectItem value="90d">Last 90 days</SelectItem>
-              </SelectContent>
-            </Select>
+            {/* Granularity Badge (auto-selected) */}
+            <Badge variant="outline" className="hidden sm:inline-flex">
+              {granularity === 'daily' ? '📊 Daily' : '📈 Weekly'} view
+            </Badge>
 
-            {/* Export Button */}
-            <Button variant="outline">
-              <Download className="w-4 h-4 mr-2" />
-              Export
-            </Button>
+            {/* Remove export button - not implemented */}
           </div>
         </div>
       </div>
@@ -474,148 +510,82 @@ export default function AnalyticsPage({ id: idProp }: { id?: string }) {
       </div>
 
       {/* Main Charts */}
-      <Tabs defaultValue="messages" className="space-y-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
         <TabsList>
-          <TabsTrigger value="messages" onClick={() => setMetric('messages')}>
-            Messages
-          </TabsTrigger>
-          <TabsTrigger value="revenue" onClick={() => setMetric('revenue')}>
-            Revenue
-          </TabsTrigger>
-          <TabsTrigger value="bandwidth" onClick={() => setMetric('bandwidth')}>
-            Bandwidth
-          </TabsTrigger>
-          <TabsTrigger value="hourly" onClick={() => setMetric('hourly')}>
-            Hourly
-          </TabsTrigger>
+          <TabsTrigger value="messages">Messages</TabsTrigger>
+          <TabsTrigger value="bandwidth">Bandwidth</TabsTrigger>
         </TabsList>
 
-        {/* Revenue Chart */}
-        <TabsContent value="revenue">
-          <div className="grid lg:grid-cols-2 gap-6">
-            <Card className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Revenue Trend</h2>
-                <Badge variant="secondary" className="capitalize">
-                  {granularity === 'day' ? 'Daily' : granularity === 'week' ? 'Weekly' : 'Monthly'} view
-                </Badge>
+        {/* Messages Chart */}
+        <TabsContent value="messages" className="space-y-6">
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Message Volume</h2>
+              <Badge variant="secondary" className="capitalize">
+                {granularity === 'daily' ? 'Daily' : 'Weekly'} view
+              </Badge>
+            </div>
+
+            {chartLoading ? (
+              <div className="flex items-center justify-center h-[400px]">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
               </div>
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={revenueData}>
+            ) : (
+              <ResponsiveContainer width="100%" height={400}>
+                <AreaChart data={chartDataTransformed}>
                   <defs>
-                    <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    <linearGradient id="colorMessages" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
                   <XAxis dataKey="date" className="text-gray-600 dark:text-gray-400" />
-                  <YAxis
-                    className="text-gray-600 dark:text-gray-400"
-                    tickFormatter={(value) => `$${(Number(value) / 100).toFixed(0)}`}
-                  />
+                  <YAxis className="text-gray-600 dark:text-gray-400" tickFormatter={formatNumber} />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: 'var(--background)',
                       border: '1px solid var(--border)',
                       borderRadius: '8px',
                     }}
-                    formatter={(value?: number) =>
-                      value === undefined ? ['—', 'Revenue'] : [`$${(value / 100).toFixed(2)}`, 'Revenue']
-                    }
+                    formatter={(value?: number, name?: string) => {
+                      if (value === undefined) return ['—', name || ''];
+                      if (name === 'sent') return [formatNumber(value), 'Sent'];
+                      if (name === 'received') return [formatNumber(value), 'Received'];
+                      if (name === 'proofs') return [formatNumber(value), 'Proofs Verified'];
+                      return [formatNumber(value), 'Total Messages'];
+                    }}
                   />
+                  <Legend />
                   <Area
                     type="monotone"
                     dataKey="messages"
-                    stroke="#10b981"
+                    stroke="#2563eb"
                     strokeWidth={2}
                     fillOpacity={1}
-                    fill="url(#colorRevenue)"
-                    name="Revenue"
+                    fill="url(#colorMessages)"
+                    name="Total Messages"
+                  />
+                  <Line type="monotone" dataKey="sent" stroke="#10b981" strokeWidth={2} dot={false} name="Sent" />
+                  <Line
+                    type="monotone"
+                    dataKey="received"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    dot={false}
+                    name="Received"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="proofs"
+                    stroke="#8b5cf6"
+                    strokeWidth={2}
+                    dot={false}
+                    name="Proofs Verified"
                   />
                 </AreaChart>
               </ResponsiveContainer>
-            </Card>
-
-            <Card className="p-6">
-              <h2 className="text-xl font-semibold mb-6 text-gray-900 dark:text-white">Revenue Breakdown</h2>
-              <div className="space-y-4">
-                {costBreakdown.map((item) => (
-                  <div key={item.name}>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-900 dark:text-white">{item.name}</span>
-                      <span className="text-sm text-gray-600 dark:text-gray-400">
-                        {formatCostDollars(item.revenue)} ({item.percentage}%)
-                      </span>
-                    </div>
-                    <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full ${item.color} rounded-full transition-all`}
-                        style={{ width: `${item.percentage}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
-                <div className="flex items-center justify-between">
-                  <span className="text-lg font-semibold text-gray-900 dark:text-white">Total This Month</span>
-                  <span className="text-2xl font-bold text-green-600">{formatCostDollars(currentCostCents)}</span>
-                </div>
-              </div>
-            </Card>
-          </div>
-        </TabsContent>
-
-        {/* Messages Chart */}
-        <TabsContent value="messages">
-          <Card className="p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Message Volume</h2>
-              <Badge variant="secondary" className="capitalize">
-                {granularity === 'day' ? 'Daily' : granularity === 'week' ? 'Weekly' : 'Monthly'} view
-              </Badge>
-            </div>
-            <ResponsiveContainer width="100%" height={400}>
-              <AreaChart data={messageData}>
-                <defs>
-                  <linearGradient id="colorMessages" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
-                <XAxis dataKey="date" className="text-gray-600 dark:text-gray-400" />
-                <YAxis className="text-gray-600 dark:text-gray-400" tickFormatter={formatNumber} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'var(--background)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                  }}
-                  formatter={(value?: number) => (value === undefined ? ['—', 'Messages'] : [formatNumber(value), 'Messages'])}
-                />
-                <Legend />
-                <Area
-                  type="monotone"
-                  dataKey="messages"
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                  fillOpacity={1}
-                  fill="url(#colorMessages)"
-                  name="Total Messages"
-                />
-                <Line type="monotone" dataKey="sent" stroke="#10b981" strokeWidth={2} dot={false} name="Sent" />
-                <Line
-                  type="monotone"
-                  dataKey="received"
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Received"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            )}
           </Card>
         </TabsContent>
 
@@ -625,80 +595,45 @@ export default function AnalyticsPage({ id: idProp }: { id?: string }) {
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Bandwidth Usage</h2>
               <Badge variant="secondary" className="capitalize">
-                {granularity === 'day' ? 'Daily' : granularity === 'week' ? 'Weekly' : 'Monthly'} view
+                {granularity === 'daily' ? 'Daily' : 'Weekly'} view
               </Badge>
             </div>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={bandwidthData as any}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
-                <XAxis dataKey="date" className="text-gray-600 dark:text-gray-400" />
-                <YAxis className="text-gray-600 dark:text-gray-400" tickFormatter={(value) => `${value} GB`} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'var(--background)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                  }}
-                  formatter={(value?: number) => (value === undefined ? ['—', 'Bandwidth'] : [`${value} GB`, 'Bandwidth'])}
-                />
-                <Bar dataKey="bandwidth" fill="#8b5cf6" radius={[4, 4, 0, 0]} name="Bandwidth (GB)" />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
-        </TabsContent>
 
-        {/* Hourly Chart */}
-        <TabsContent value="hourly">
-          <Card className="p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Hourly Message Distribution</h2>
-              <Badge variant="secondary">Approximation (API has no hourly series yet)</Badge>
-            </div>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={hourlyData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
-                <XAxis
-                  dataKey="hour"
-                  className="text-gray-600 dark:text-gray-400"
-                  tickFormatter={(value) => `${value}:00`}
-                />
-                <YAxis className="text-gray-600 dark:text-gray-400" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'var(--background)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                  }}
-                  formatter={(value?: number) => (value === undefined ? ['—', 'Messages'] : [value, 'Messages'])}
-                  labelFormatter={(value) => `${value}:00`}
-                />
-                <Bar dataKey="messages" fill="#10b981" radius={[4, 4, 0, 0]} name="Messages" />
-              </BarChart>
-            </ResponsiveContainer>
+            {chartLoading ? (
+              <div className="flex items-center justify-center h-[400px]">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={400}>
+                <BarChart data={chartDataTransformed}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
+                  <XAxis dataKey="date" className="text-gray-600 dark:text-gray-400" />
+                  <YAxis className="text-gray-600 dark:text-gray-400" tickFormatter={(value) => `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'var(--background)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '8px',
+                    }}
+                    formatter={(value?: number, name?: string) => {
+                      if (value === undefined) return ['—', name || ''];
+                      const gb = (value / (1024 * 1024 * 1024)).toFixed(2);
+                      if (name === 'bytesSent') return [`${gb} GB`, 'Bytes Sent'];
+                      if (name === 'bytesReceived') return [`${gb} GB`, 'Bytes Received'];
+                      if (name === 'bytesStored') return [`${gb} GB`, 'Bytes Stored'];
+                      return [`${gb} GB`, 'Total Bandwidth'];
+                    }}
+                  />
+                  <Legend />
+                  <Bar dataKey="bytesSent" fill="#8b5cf6" radius={[4, 4, 0, 0]} name="Bytes Sent" stackId="a" />
+                  <Bar dataKey="bytesReceived" fill="#06b6d4" radius={[4, 4, 0, 0]} name="Bytes Received" stackId="a" />
+                  <Bar dataKey="bytesStored" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Bytes Stored" stackId="a" />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </Card>
         </TabsContent>
       </Tabs>
-
-      {/* Quick Insights (kept, but now reflects aggregate API data) */}
-      <div className="mt-8 grid lg:grid-cols-3 gap-6">
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Keys</h3>
-          <p className="text-3xl font-bold text-gray-900 dark:text-white mb-2">{dashboard?.keys?.length ?? 0}</p>
-          <p className="text-sm text-gray-600 dark:text-gray-400">Publishable keys</p>
-        </Card>
-
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Webhooks</h3>
-          <p className="text-3xl font-bold text-gray-900 dark:text-white mb-2">{dashboard?.webhooks?.length ?? 0}</p>
-          <p className="text-sm text-gray-600 dark:text-gray-400">Configured webhooks</p>
-        </Card>
-
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Quota Usage</h3>
-          <p className="text-3xl font-bold text-green-600 mb-2">{(dashboard?.quotaUsagePct ?? 0).toFixed(1)}%</p>
-          <p className="text-sm text-gray-600 dark:text-gray-400">This month</p>
-        </Card>
-      </div>
     </DashboardLayout>
   );
 }

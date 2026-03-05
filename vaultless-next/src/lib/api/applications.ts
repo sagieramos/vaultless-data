@@ -15,6 +15,7 @@ import type {
   RotatePublishableKeyResponse,
   AddPublishableKeyResponse,
   DeactivatePublishableKeyRequest,
+  ApplicationChartData,
 } from '@/types/api';
 
 // ============================================================================
@@ -135,13 +136,39 @@ export const applicationsApi = {
 
   /**
    * Get full analytics for an application
-   * GET /dev/applications/{application_id}/analytics
+   * GET /dev/applications/{application_id}
    */
   getAnalytics: async (
     applicationId: string
   ): Promise<ApplicationDashboardResponse> => {
     return apiClient.get<ApplicationDashboardResponse>(
-      `/dev/applications/${applicationId}/analytics`
+      `/dev/applications/${applicationId}`
+    );
+  },
+
+  /**
+   * Get chart data for an application
+   * GET /dev/applications/{application_id}/chart
+   */
+  getChartData: async (
+    applicationId: string,
+    params: {
+      granularity: 'daily' | 'weekly';
+      metric: 'messages' | 'bandwidth' | 'storage' | 'proofs' | 'rate_limits' | 'all';
+      start: string;
+      end: string;
+      includeTrends?: boolean;
+    }
+  ): Promise<ApplicationChartData> => {
+    return apiClient.get<ApplicationChartData>(
+      `/dev/applications/${applicationId}/chart`,
+      {
+        granularity: params.granularity,
+        metric: params.metric,
+        start: params.start,
+        end: params.end,
+        includeTrends: params.includeTrends?.toString() || 'false',
+      }
     );
   },
 

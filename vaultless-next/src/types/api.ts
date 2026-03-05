@@ -210,6 +210,51 @@ export interface ApplicationWithUsage {
   webhooks: { 0: Webhook[] };
 }
 
+export interface SecretKeyTimestamps {
+  created: string;
+  expires?: string;
+}
+
+export interface AppMetaData {
+  IntegrityConfig: {
+    allow_unauthenticated: boolean;
+    allowed_platforms: string[] | null;
+    android: any | null;
+    browser: any | null;
+    ios: any | null;
+    iot: any | null;
+    rate_limits: any | null;
+  };
+  PlatformFingerPrint: {
+    android: string;
+    browser: string;
+    ios: string;
+    iot: string;
+  };
+}
+
+export interface QuotaStatus {
+  messagesUsed: number;
+  messagesLimit?: number;
+  usagePct: number;
+  isOverQuota: boolean;
+  overageCount: number;
+  resetsAt: string;
+  alertLevel?: string;
+}
+
+export interface UsageTrends {
+  dailyAvgMessages: number;
+  projectedMonthlyMessages: number;
+  quotaTrend: string;
+}
+
+export interface AttachedPricingPlan {
+  planId: string;
+  planName: string;
+  priceCents: number;
+}
+
 export interface ApplicationDashboardResponse {
   id: string;
   name: string;
@@ -217,15 +262,25 @@ export interface ApplicationDashboardResponse {
   active: boolean;
   created: string;
   updated: string;
+  meta: AppMetaData;
   tier?: string;
-  monthlyQuota: number;
-  rateLimit: number;
-  retentionSeconds: number;
+  monthlyQuota?: number;
+  rateLimit?: number;
+  retentionSeconds?: number;
+  secretKeyPrefix?: string;
+  secretKeyIsActive?: boolean;
+  secretKeyScopes?: string;
+  secretKeyTimestamps?: SecretKeyTimestamps;
   keys: PublishableKey[];
   webhooks: Webhook[];
   quotaUsagePct: number;
   currentMonth: UsageStats;
   lifetime: LifetimeStats;
+  currentMonthRevenueCents: number;
+  billableClientsCount: number;
+  pricingPlan?: AttachedPricingPlan;
+  quotaStatus: QuotaStatus;
+  trends: UsageTrends;
 }
 
 export interface UserUsageSummary {
@@ -373,6 +428,45 @@ export interface UsagePoint {
 export interface UsageOverTime {
   data: UsagePoint[];
   total_quota: number;
+}
+
+// ============================================================================
+// CHART DATA TYPES
+// ============================================================================
+
+export interface UsageChartPoint {
+  timestamp: string;
+  messagesSent?: number;
+  messagesReceived?: number;
+  proofsVerified?: number;
+  bytesSent?: number;
+  bytesReceived?: number;
+  bytesStored?: number;
+  rateLimitHits?: number;
+}
+
+export interface ChartTrends {
+  currentPeriod: number;
+  previousPeriod: number;
+  changePercent: number;
+  trendDirection: 'up' | 'down' | 'stable';
+}
+
+export interface ApplicationChartData {
+  applicationId: string;
+  applicationName: string;
+  timeRange: string;
+  granularity: string;
+  metricView: 'messages' | 'bandwidth' | 'storage' | 'proofs' | 'rateLimits' | 'all';
+  dataPoints: UsageChartPoint[];
+  totalMessagesSent?: number;
+  totalMessagesReceived?: number;
+  totalProofsVerified?: number;
+  totalBytesSent?: number;
+  totalBytesReceived?: number;
+  totalBytesStored?: number;
+  totalRateLimitHits?: number;
+  trends?: ChartTrends;
 }
 
 // ============================================================================

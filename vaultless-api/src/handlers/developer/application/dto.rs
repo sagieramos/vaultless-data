@@ -195,6 +195,8 @@ pub struct ChartQueryParams {
     pub start: String,
     #[schema(example = "2023-01-31")]
     pub end: String,
+    #[schema(example = false)]
+    pub include_trends: Option<bool>,
 }
 
 // =============================================================================

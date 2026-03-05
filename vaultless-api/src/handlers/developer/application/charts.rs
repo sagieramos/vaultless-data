@@ -121,6 +121,7 @@ pub async fn get_chart_data(
         metric,
         start_ts,
         end_ts,
+        params.include_trends.unwrap_or(false),
     )
     .await
     .map_err(ApiError::from)?;
