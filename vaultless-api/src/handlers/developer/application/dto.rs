@@ -367,7 +367,7 @@ impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::ma
             .unwrap_or(0.0);
 
         // Compute quota status
-        let messages_limit = app.monthly_message_quota.unwrap_or(0);
+        let messages_limit = app.message_quota.unwrap_or(0);
         let is_over_quota =
             messages_limit > 0 && app.current_month_messages_sent > messages_limit;
         let overage_count = if is_over_quota {
@@ -432,7 +432,7 @@ impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::ma
             updated: app.updated_at,
             meta: app.app_meta.0,
             tier: app.tier,
-            monthly_quota: app.monthly_message_quota,
+            monthly_quota: app.message_quota,
             rate_limit: app.rate_limit_per_minute,
             retention_seconds: app.message_retention_seconds,
             secret_key_prefix: app.secret_key_prefix,
@@ -459,7 +459,7 @@ impl From<(ApplicationWithUsage, Option<vaultless_core::models::applications::ma
             pricing_plan,
             quota_status: QuotaStatus {
                 messages_used: app.current_month_messages_sent,
-                messages_limit: app.monthly_message_quota,
+                messages_limit: app.message_quota,
                 usage_pct,
                 is_over_quota,
                 overage_count,

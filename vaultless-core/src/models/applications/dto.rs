@@ -20,7 +20,6 @@ use validator::Validate;
 pub struct Application {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub subscription_id: Option<Uuid>,
     pub name: String,
     pub description: Option<String>,
     pub is_active: bool,
@@ -253,9 +252,14 @@ pub struct ApplicationKeyView {
     pub sk_key_prefix: String,
 
     pub sub_tier: SubscriptionTier,
-    pub sub_monthly_message_quota: i64,
+    pub sub_message_quota: i64,
     pub sub_message_retention_seconds: i64,
     pub sub_rate_limit_per_minute: i32,
+    pub sub_bandwidth_quota: i64,
+    pub sub_bandwidth_rate_limit_bytes: i64,
+    pub sub_proof_enabled: bool,
+    pub sub_period_start: Option<DateTime<Utc>>,
+    pub sub_period_end: Option<DateTime<Utc>>,
 }
 
 impl ApplicationKeyView {
@@ -507,7 +511,7 @@ pub struct ApplicationWithUsage {
     #[serde(skip_serializing)]
     pub subscription_id: Option<Uuid>,
     pub tier: Option<String>,
-    pub monthly_message_quota: Option<i64>,
+    pub message_quota: Option<i64>,
     pub rate_limit_per_minute: Option<i32>,
     pub message_retention_seconds: Option<i64>,
 
@@ -568,6 +572,9 @@ pub struct AuthCacheEntry {
     pub retention_seconds: i64,
     pub bandwidth_quota_bytes: i64,
     pub bandwidth_rate_limit_bytes: i64,
+    pub proof_enabled: bool,
+    pub period_start: Option<i64>,
+    pub period_end: Option<i64>,
 }
 
 /// Redis field names for AuthCacheEntry HASH storage
@@ -584,6 +591,9 @@ pub mod auth_cache_field {
     pub const RETENTION: &str = "retention";
     pub const BANDWIDTH_QUOTA: &str = "bandwidth_quota";
     pub const BANDWIDTH_RATE_LIMIT: &str = "bandwidth_rate_limit";
+    pub const PROOF_ENABLED: &str = "proof_enabled";
+    pub const PERIOD_START: &str = "period_start";
+    pub const PERIOD_END: &str = "period_end";
 }
 
 impl AuthCacheEntry {
@@ -591,28 +601,97 @@ impl AuthCacheEntry {
     pub const TTL_SECONDS: i64 = 3600;
 
     /// Convert from Redis HASH (HashMap<String, String>)
-    /// Returns None if required fields are missing
-    pub fn from_redis(vals: std::collections::HashMap<String, String>) -> Option<Self> {
-        Some(Self {
-            app_id: vals.get(auth_cache_field::APP_ID)?.parse().ok()?,
-            user_id: vals.get(auth_cache_field::USER_ID)?.parse().ok()?,
-            is_active: vals.get(auth_cache_field::IS_ACTIVE).map(|v| v == "1").unwrap_or(false),
-            rotation_forced: vals.get(auth_cache_field::ROTATION_FORCED).map(|v| v == "1").unwrap_or(false),
-            sk_id: vals.get(auth_cache_field::SK_ID)?.parse().ok()?,
-            sk_prefix: vals.get(auth_cache_field::SK_PREFIX)?.clone(),
-            tier: vals.get(auth_cache_field::TIER)?.clone(),
-            rate_limit_per_minute: vals.get(auth_cache_field::RATE_LIMIT)?.parse().ok()?,
-            monthly_quota: vals.get(auth_cache_field::QUOTA)?.parse().ok()?,
-            retention_seconds: vals.get(auth_cache_field::RETENTION)?.parse().ok()?,
-            bandwidth_quota_bytes: vals.get(auth_cache_field::BANDWIDTH_QUOTA)?.parse().ok()?,
-            bandwidth_rate_limit_bytes: vals.get(auth_cache_field::BANDWIDTH_RATE_LIMIT)?.parse().ok()?,
+    /// Returns Err if required fields are missing or invalid
+    pub fn from_redis(vals: std::collections::HashMap<String, String>) -> Result<Self, String> {
+        let app_id_str = vals.get(auth_cache_field::APP_ID)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::APP_ID))?;
+        let app_id = app_id_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::APP_ID, app_id_str))?;
+
+        let user_id_str = vals.get(auth_cache_field::USER_ID)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::USER_ID))?;
+        let user_id = user_id_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::USER_ID, user_id_str))?;
+
+        let sk_id_str = vals.get(auth_cache_field::SK_ID)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::SK_ID))?;
+        let sk_id = sk_id_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::SK_ID, sk_id_str))?;
+
+        let sk_prefix = vals.get(auth_cache_field::SK_PREFIX)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::SK_PREFIX))?
+            .clone();
+
+        let tier = vals.get(auth_cache_field::TIER)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::TIER))?
+            .clone();
+
+        let rate_limit_str = vals.get(auth_cache_field::RATE_LIMIT)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::RATE_LIMIT))?;
+        let rate_limit_per_minute = rate_limit_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::RATE_LIMIT, rate_limit_str))?;
+
+        let quota_str = vals.get(auth_cache_field::QUOTA)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::QUOTA))?;
+        let monthly_quota = quota_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::QUOTA, quota_str))?;
+
+        let retention_str = vals.get(auth_cache_field::RETENTION)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::RETENTION))?;
+        let retention_seconds = retention_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::RETENTION, retention_str))?;
+
+        let bandwidth_quota_str = vals.get(auth_cache_field::BANDWIDTH_QUOTA)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::BANDWIDTH_QUOTA))?;
+        let bandwidth_quota_bytes = bandwidth_quota_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::BANDWIDTH_QUOTA, bandwidth_quota_str))?;
+
+        let bandwidth_rate_limit_str = vals.get(auth_cache_field::BANDWIDTH_RATE_LIMIT)
+            .ok_or_else(|| format!("Missing required field: {}", auth_cache_field::BANDWIDTH_RATE_LIMIT))?;
+        let bandwidth_rate_limit_bytes = bandwidth_rate_limit_str.parse()
+            .map_err(|_| format!("Invalid {}: {}", auth_cache_field::BANDWIDTH_RATE_LIMIT, bandwidth_rate_limit_str))?;
+
+        let is_active = vals.get(auth_cache_field::IS_ACTIVE)
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        let rotation_forced = vals.get(auth_cache_field::ROTATION_FORCED)
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        let proof_enabled = vals.get(auth_cache_field::PROOF_ENABLED)
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        let period_start = vals.get(auth_cache_field::PERIOD_START)
+            .and_then(|v| v.parse().ok());
+
+        let period_end = vals.get(auth_cache_field::PERIOD_END)
+            .and_then(|v| v.parse().ok());
+
+        Ok(Self {
+            app_id,
+            user_id,
+            is_active,
+            rotation_forced,
+            sk_id,
+            sk_prefix,
+            tier,
+            rate_limit_per_minute,
+            monthly_quota,
+            retention_seconds,
+            bandwidth_quota_bytes,
+            bandwidth_rate_limit_bytes,
+            proof_enabled,
+            period_start,
+            period_end,
         })
     }
 
     /// Convert to Redis HASH compatible values for hset_multiple
     /// Returns Vec of String for redis pipe
     pub fn to_redis_args(&self) -> Vec<String> {
-        let mut args = Vec::with_capacity(24);
+        let mut args = Vec::with_capacity(30);
         args.push(auth_cache_field::APP_ID.to_string());
         args.push(self.app_id.to_string());
         args.push(auth_cache_field::USER_ID.to_string());
@@ -637,6 +716,16 @@ impl AuthCacheEntry {
         args.push(self.bandwidth_quota_bytes.to_string());
         args.push(auth_cache_field::BANDWIDTH_RATE_LIMIT.to_string());
         args.push(self.bandwidth_rate_limit_bytes.to_string());
+        args.push(auth_cache_field::PROOF_ENABLED.to_string());
+        args.push(if self.proof_enabled { "1".to_string() } else { "0".to_string() });
+        if let Some(ps) = self.period_start {
+            args.push(auth_cache_field::PERIOD_START.to_string());
+            args.push(ps.to_string());
+        }
+        if let Some(pe) = self.period_end {
+            args.push(auth_cache_field::PERIOD_END.to_string());
+            args.push(pe.to_string());
+        }
         args
     }
 
@@ -651,10 +740,13 @@ impl AuthCacheEntry {
             sk_prefix: view.sk_key_prefix.clone(),
             tier: view.sub_tier.to_string(),
             rate_limit_per_minute: view.sub_rate_limit_per_minute,
-            monthly_quota: view.sub_monthly_message_quota,
+            monthly_quota: view.sub_message_quota,
             retention_seconds: view.sub_message_retention_seconds,
-            bandwidth_quota_bytes: view.sub_tier.default_bandwidth_quota_bytes() as i64,
-            bandwidth_rate_limit_bytes: view.sub_tier.default_bandwidth_rate_limit_bytes() as i64,
+            bandwidth_quota_bytes: view.sub_bandwidth_quota,
+            bandwidth_rate_limit_bytes: view.sub_bandwidth_rate_limit_bytes,
+            proof_enabled: view.sub_proof_enabled,
+            period_start: view.sub_period_start.map(|t| t.timestamp()),
+            period_end: view.sub_period_end.map(|t| t.timestamp()),
         }
     }
 
@@ -678,7 +770,7 @@ pub struct CachedApplicationKeyView {
     pub sk_id: Uuid,
 
     pub sub_tier: SubscriptionTier,
-    pub sub_monthly_message_quota: i64,
+    pub sub_message_quota: i64,
     pub sub_message_retention_seconds: i64,
     pub sub_rate_limit_per_minute: i32,
 
@@ -703,7 +795,7 @@ impl From<ApplicationKeyView> for CachedApplicationKeyView {
             sk_id: a.sk_id,
 
             sub_tier: a.sub_tier,
-            sub_monthly_message_quota: a.sub_monthly_message_quota,
+            sub_message_quota: a.sub_message_quota,
             sub_message_retention_seconds: a.sub_message_retention_seconds,
             sub_rate_limit_per_minute: a.sub_rate_limit_per_minute,
 
@@ -763,7 +855,7 @@ pub struct ApplicationSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub tier: Option<String>,
-    pub monthly_message_quota: Option<i64>,
+    pub message_quota: Option<i64>,
     pub secret_key_prefix: Option<String>,
     pub secret_key_is_active: Option<bool>,
     pub publishable_key_count: i64,

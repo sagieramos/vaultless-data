@@ -327,15 +327,17 @@ async fn get_subscription_ids_batch(
         return Ok(HashMap::new());
     }
 
-    // Path: applications -> developer_subscriptions (active)
+    // Get the most recent non-expired subscription for each application
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
         r#"
-        SELECT
-            a.id as application_id,
+        SELECT DISTINCT ON (s.application_id)
+            s.application_id,
             s.id as subscription_id
-        FROM applications a
-        JOIN developer_subscriptions s ON a.subscription_id = s.id AND s.is_active = true
-        WHERE a.id = ANY($1)
+        FROM developer_subscriptions s
+        WHERE s.application_id = ANY($1)
+          AND s.is_active = true
+          AND (s.period_end IS NULL OR s.period_end > NOW())
+        ORDER BY s.application_id, s.created_at DESC
         "#,
     )
     .bind(application_ids)

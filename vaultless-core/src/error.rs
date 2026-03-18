@@ -125,6 +125,12 @@ pub enum VaultlessError {
     
     #[error("Circuit breaker open")]
     CircuitBreakerOpen(String),
+
+    // =========================================================================
+    // Cache errors
+    // =========================================================================
+    #[error("Cache miss")]
+    CacheMiss,
 }
 
 pub type Result<T> = std::result::Result<T, VaultlessError>;
@@ -177,6 +183,7 @@ impl VaultlessError {
             VaultlessError::MessageAccessLimitReached => 410,
             VaultlessError::Timeout(_) => 408,
             VaultlessError::Serialization(_) => 500,
+            VaultlessError::CacheMiss => 404,
             _ => 500,
         }
     }

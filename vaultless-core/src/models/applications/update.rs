@@ -94,7 +94,6 @@ impl Application {
             SELECT
                 application_id as id,
                 developer_id as user_id,
-                subscription_id,
                 name,
                 description,
                 is_active,

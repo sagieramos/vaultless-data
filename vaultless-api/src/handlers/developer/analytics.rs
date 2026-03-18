@@ -164,7 +164,7 @@ fn generate_usage_csv(
         dashboard.tier.as_deref().unwrap_or("none")
     ));
     csv.push_str(&format!(
-        "subscription,monthly_message_quota,{}\n",
+        "subscription,message_quota,{}\n",
         dashboard.monthly_quota.map(|q| q.to_string()).unwrap_or_else(|| "unlimited".to_string())
     ));
     csv.push_str(&format!(

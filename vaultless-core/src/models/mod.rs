@@ -9,6 +9,7 @@ pub mod pricing;
 pub mod proof;
 pub mod session;
 pub mod session_keys;
+pub mod subscriptions;
 pub mod usage;
 pub mod user;
 pub mod webhook;

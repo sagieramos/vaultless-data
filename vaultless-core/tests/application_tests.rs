@@ -97,7 +97,7 @@ async fn test_create_application() {
 
     // Verify application exists in database
     let db_app: Application = sqlx::query_as(
-        "SELECT id, developer_id AS user_id, subscription_id, name, description, is_active,
+        "SELECT id, developer_id AS user_id, name, description, is_active,
          created_at, updated_at, max_ttl_seconds, is_key_rotation_forced,
          deletion_requested_at, internal_notes, app_meta
          FROM applications WHERE id = $1"

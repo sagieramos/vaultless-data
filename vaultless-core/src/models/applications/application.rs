@@ -13,7 +13,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-pub(crate) const PROJECTION: &str = "a.id, a.developer_id AS user_id, a.subscription_id, a.name,
+pub(crate) const PROJECTION: &str = "a.id, a.developer_id AS user_id, a.name,
     a.description, a.is_active, a.created_at,
     a.updated_at, a.max_ttl_seconds, a.is_key_rotation_forced,
     a.deletion_requested_at,
@@ -24,7 +24,6 @@ pub(crate) const PROJECTION: &str = "a.id, a.developer_id AS user_id, a.subscrip
 struct PgCreateApplicationResult {
     application_id: Uuid,
     user_id: Uuid,
-    subscription_id: Option<Uuid>,
     name: String,
     description: Option<String>,
     is_active: bool,
@@ -119,7 +118,6 @@ impl Application {
             application: Application {
                 id: result.application_id,
                 user_id: result.user_id,
-                subscription_id: result.subscription_id,
                 name: result.name,
                 description: result.description,
                 is_active: result.is_active,
